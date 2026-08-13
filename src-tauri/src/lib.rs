@@ -360,6 +360,38 @@ fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     Ok(())
 }
 
+/// 应用便签窗口状态：display 模式 → 点击穿透 + 禁止 resize；
+/// 其他模式 → 正常交互 + 可 resize。
+#[tauri::command]
+fn apply_window_state_cmd(
+    app: tauri::AppHandle,
+    id: i64,
+    is_display: bool,
+) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
+        win.set_ignore_cursor_events(is_display)
+            .map_err(|e| format!("设置点击穿透失败: {e}"))?;
+        win.set_resizable(!is_display)
+            .map_err(|e| format!("设置 resize 失败: {e}"))?;
+        tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display}");
+    }
+    Ok(())
+}
+
+/// 唤醒便签窗口（display 穿透状态下）：取消穿透 + 置前聚焦。
+#[tauri::command]
+fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
+        win.set_ignore_cursor_events(false)
+            .map_err(|e| format!("取消穿透失败: {e}"))?;
+        win.set_resizable(true).map_err(|e| format!("设置 resize 失败: {e}"))?;
+        let _ = win.show();
+        let _ = win.set_focus();
+        tracing::info!("[cmd] wake_sticker id={id}");
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn debug_notify_cmd(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
     crate::platform::notify::send(&app, &title, &body);
@@ -478,6 +510,8 @@ pub fn run() {
             toggle_todo_cmd,
             debug_notify_cmd,
             main_close_cmd,
+            apply_window_state_cmd,
+            wake_sticker_cmd,
             slash_query_cmd
         ])
         .run(tauri::generate_context!())

@@ -45,7 +45,7 @@ async function load() {
   }
 }
 
-/** 应用模式：持久化 + 自动收起计时（背景透明度由 cardStyle 控制）。 */
+/** 应用模式：持久化 + 窗口状态（display=穿透+禁resize）+ 自动收起计时。 */
 async function applyMode(next: StickerMode) {
   mode.value = next;
   if (sticker.value) {
@@ -54,6 +54,8 @@ async function applyMode(next: StickerMode) {
       patch: { display_mode: next },
     });
   }
+  // display：点击穿透 + 禁止 resize；interact/edit：正常交互
+  await invoke("apply_window_state_cmd", { id: stickerId, display: next === "display" });
   resetCollapseTimer();
 }
 
@@ -128,6 +130,18 @@ onBeforeUnmount(() => {
     @mousemove="onInteract"
     @keydown="onKeydown"
   >
+    <!-- 透明顶部蒙版：interact 模式显示三功能按钮 + 拖动窗口（无背景色） -->
+    <div
+      v-if="mode === 'interact'"
+      class="overlay"
+      data-tauri-drag-region
+      @mousemove.stop="onInteract"
+    >
+      <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
+      <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
+      <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
+    </div>
+
     <div class="body" :style="{ fontSize: bodyFontSize + 'px' }">
       <StickerViewer
         v-if="mode === 'display' || mode === 'interact'"
@@ -175,5 +189,53 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-y: auto;
   padding: 14px 16px;
+}
+
+/* ── 透明顶部蒙版（interact 模式） ── */
+.overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 30px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
+  background: transparent;
+  cursor: grab;
+  z-index: 15;
+  opacity: 0.25;
+  transition: opacity 0.15s;
+}
+
+.overlay:hover {
+  opacity: 1;
+}
+
+.ov-btn {
+  border: none;
+  background: rgba(255, 255, 255, 0.75);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #555;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.ov-btn:hover {
+  background: #fff;
+  color: #4f7cff;
+}
+
+.ov-btn.close:hover {
+  background: #ffe3e3;
+  color: #d33;
 }
 </style>
