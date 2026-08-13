@@ -14,10 +14,10 @@
 | 验证 Demo — 多窗口背景半透明 | [`docs/plan/phase-demo.md`](plan/phase-demo.md) | ✅ 已完成（2026-08-13，视觉验证通过） |
 | 阶段 1 — 数据层（models + db） | [`docs/plan/phase-1.md`](plan/phase-1.md) | ✅ 已完成（2026-08-13，13 单测全绿） |
 | 阶段 2 — 核心逻辑（datetime / slash / editing / commands） | [`docs/plan/phase-2.md`](plan/phase-2.md) | ✅ 已完成（2026-08-13，92 单测全绿） |
-| 阶段 3 — 平台集成（tray / notify / autostart / window_style） | [`docs/plan/phase-3.md`](plan/phase-3.md) | ⏳ 未开始（**下一步**） |
-| 阶段 4 — 提醒调度（reminder/scheduler） | [`docs/plan/phase-4.md`](plan/phase-4.md) | ⏳ 未开始 |
-| 阶段 5 — Vue UI（全新设计） | [`docs/plan/phase-5.md`](plan/phase-5.md) | ⏳ 未开始 |
-| 阶段 6 — 集成联调（多窗口 + 命令 + 事件） | [`docs/plan/phase-6.md`](plan/phase-6.md) | ⏳ 未开始 |
+| 阶段 3 — 平台集成（tray / notify / autostart / window_style） | [`docs/plan/phase-3.md`](plan/phase-3.md) | ✅ 已完成（2026-08-13） |
+| 阶段 4 — 提醒调度（reminder/scheduler） | [`docs/plan/phase-4.md`](plan/phase-4.md) | ✅ 已完成（2026-08-13，98 单测全绿） |
+| 阶段 5 — Vue UI（全新设计） | [`docs/plan/phase-5.md`](plan/phase-5.md) | ✅ 已完成（2026-08-13，视觉验证通过） |
+| 阶段 6 — 集成联调（多窗口 + 命令 + 事件） | [`docs/plan/phase-6.md`](plan/phase-6.md) | ⏳ 未开始（**下一步**） |
 | 阶段 7 — 测试与对等性验证 | [`docs/plan/phase-7.md`](plan/phase-7.md) | ⏳ 未开始 |
 
 > **更新规则**：每完成一个阶段 → 更新上表状态为 ✅ 已完成、把"下一步"指向下一个阶段 → **用中文写 git 提交信息提交**（每个完成的小块功能单独提交，见 §5）。
