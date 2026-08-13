@@ -79,3 +79,55 @@ impl AppState {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+
+    fn test_state() -> AppState {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        schema::run_migrations(&conn).unwrap();
+        let config = SystemConfig::default();
+        AppState::new(conn, config, ":memory:".to_string())
+    }
+
+    /// 多线程并发写：单连接 Mutex + 每线程独立 with_conn，无死锁且不丢数据。
+    #[test]
+    fn concurrent_writes_no_deadlock() {
+        let state = test_state();
+        let state = std::sync::Arc::new(state);
+
+        let mut handles = Vec::new();
+        for t in 0..8u32 {
+            let state = state.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..5u32 {
+                    state
+                        .with_conn(|c| {
+                            crate::db::sticker_repo::insert(
+                                c,
+                                &crate::db::sticker_repo::NewSticker {
+                                    title: format!("t{t}-{i}"),
+                                    ..Default::default()
+                                },
+                            )
+                        })
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let count: i64 = state
+            .with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM stickers", [], |r| r.get(0))
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap();
+        assert_eq!(count, 40, "8 线程 × 5 条应全部写入");
+    }
+}
