@@ -136,10 +136,12 @@ onMounted(async () => {
       if (id === stickerId) load();
     }),
   );
-  // 鼠标钩子右键双击唤醒（display 穿透状态）→ 前端切换 interact
+  // 全局鼠标钩子中键+左键唤醒（display 穿透状态）→ 前端切换 interact。
+  // 事件经 emit_to 定向发送到本窗口，无需校验 id（旧实现校验导致
+  // payload 为 unit 时恒不匹配，唤醒后 UI 不切换）。
   unlisteners.push(
-    await listen<number>("sticky://wake", (id) => {
-      if (id === stickerId && mode.value === "display") {
+    await listen<number>("sticky://wake", () => {
+      if (mode.value === "display") {
         applyMode("interact");
       }
     }),
