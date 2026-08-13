@@ -5,8 +5,12 @@
 use serde::Serialize;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
+mod commands;
 mod db;
+mod datetime;
+mod editing;
 mod models;
+mod slash;
 mod state;
 
 use state::AppState;
