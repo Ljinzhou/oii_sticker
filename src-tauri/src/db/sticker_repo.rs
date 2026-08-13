@@ -196,7 +196,10 @@ fn row_to_attrs(row: &rusqlite::Row<'_>) -> rusqlite::Result<StickerAttrs> {
 }
 
 /// 新建便签入参。
+/// `#[serde(default)]`：前端未传的字段（如 heading_level）用 Default，
+/// 避免 invoke 报 "missing field"。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NewSticker {
     pub parent_id: Option<i64>,
     pub title: String,
@@ -234,6 +237,28 @@ pub struct StickerPatch {
 mod tests {
     use super::*;
     use crate::db::connection::open;
+
+    /// 前端可能不传可选字段（如 heading_level）：serde(default) 保证不报 missing field。
+    #[test]
+    fn new_sticker_missing_fields_deserializes() {
+        let json = r##"{
+            "title": "测试",
+            "content": "正文",
+            "pos_x": 10,
+            "pos_y": 20,
+            "width": 300,
+            "height": 400,
+            "opacity": 0.9,
+            "bg_color": "#FFEEAA",
+            "always_on_top": false,
+            "auto_scroll": false
+        }"##;
+        let s: NewSticker = serde_json::from_str(json).expect("缺失 heading_level 等字段也应成功");
+        assert_eq!(s.title, "测试");
+        assert_eq!(s.heading_level, 0);
+        assert_eq!(s.parent_id, None);
+        assert_eq!(s.bg_color.as_deref(), Some("#FFEEAA"));
+    }
 
     fn test_conn() -> Connection {
         // 用临时文件库测试（WAL 模式在内存库上可用但行为略有差异）

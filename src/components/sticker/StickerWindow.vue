@@ -161,8 +161,6 @@ onBeforeUnmount(() => {
 .sticker {
   height: 100vh;
   box-sizing: border-box;
-  margin: 8px;
-  border-radius: 14px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

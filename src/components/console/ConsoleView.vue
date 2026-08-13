@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useNotesStore } from "../../stores/notes";
 import { useSettingsStore } from "../../stores/settings";
 import { listen } from "../../composables/useTauri";
@@ -43,6 +44,14 @@ function reminderText(s: Sticker): string {
   return s.display_mode;
 }
 
+function minimizeWindow() {
+  getCurrentWindow().minimize();
+}
+
+function closeWindow() {
+  getCurrentWindow().close();
+}
+
 onMounted(async () => {
   notes.refresh();
   settings.refresh();
@@ -66,6 +75,10 @@ onBeforeUnmount(() => {
         <button class="btn primary" @click="createSticker">＋ 新建便签</button>
         <button class="btn" @click="notes.refresh()">刷新</button>
         <button class="btn" @click="showSettings = true">系统设置</button>
+        <span class="win-ctl">
+          <button class="btn ctl" title="最小化" @click="minimizeWindow">─</button>
+          <button class="btn ctl close" title="关闭" @click="closeWindow">✕</button>
+        </span>
       </div>
     </header>
 
@@ -96,13 +109,30 @@ onBeforeUnmount(() => {
 .console {
   height: 100vh;
   box-sizing: border-box;
-  margin: 8px;
-  border-radius: 14px;
   background: rgba(255, 255, 255, 0.94);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+}
+
+.win-ctl {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.btn.ctl {
+  padding: 3px 9px;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.btn.ctl.close:hover {
+  background: #ffe3e3;
+  color: #d33;
 }
 
 .console-header {

@@ -1,12 +1,25 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
+import { useNotesStore } from "../../stores/notes";
 import { invoke } from "../../composables/useTauri";
 
 const emit = defineEmits<{ close: [] }>();
 const settings = useSettingsStore();
+const notes = useNotesStore();
 
+type MenuKey = "general" | "defaults" | "about" | "debug";
+const activeMenu = ref<MenuKey>("general");
 const autoStart = ref(false);
+
+// Debug 状态
+const notifyResult = ref("");
+const dbInfo = ref<{ user_version: number; tables: string[]; db_path: string; config_keys: number } | null>(null);
+const debugLog = ref<string[]>([]);
+
+function log(msg: string) {
+  debugLog.value.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
+}
 
 async function toggleAutoStart() {
   if (autoStart.value) {
@@ -16,9 +29,54 @@ async function toggleAutoStart() {
     await invoke("plugin:autostart|enable");
     autoStart.value = true;
   }
+  log(`开机自启：${autoStart.value ? "已启用" : "已禁用"}`);
+}
+
+async function sendTestNotify() {
+  notifyResult.value = "发送中…";
+  try {
+    await invoke("debug_notify_cmd", {
+      title: "oii_sticker 测试通知",
+      body: "这是一条来自 Debug 菜单的测试通知。",
+    });
+    notifyResult.value = "已发送 ✅（请查看系统通知）";
+    log("测试通知已发送");
+  } catch (e) {
+    notifyResult.value = `发送失败：${e}`;
+    log(`测试通知失败：${e}`);
+  }
+}
+
+async function checkDbHealth() {
+  try {
+    const info = await invoke<{ user_version: number; tables: string[]; db_path: string; config_keys: number }>("db_health");
+    dbInfo.value = info;
+    log(`DB 健康检查：v${info.user_version}，${info.tables.length} 张表，${info.config_keys} 个配置键`);
+  } catch (e) {
+    log(`DB 健康检查失败：${e}`);
+  }
+}
+
+async function createTestSticker() {
+  try {
+    await notes.create({
+      title: "测试便签",
+      content: "# 测试便签\n\n这是 Debug 菜单创建的测试便签。",
+      pos_x: 250,
+      pos_y: 180,
+      width: 360,
+      height: 420,
+      opacity: settings.opacity,
+      bg_color: "#D6E9FF",
+    });
+    log("测试便签已创建");
+  } catch (e) {
+    log(`创建测试便签失败：${e}`);
+  }
 }
 
 onMounted(async () => {
+  settings.refresh();
   try {
     autoStart.value = await invoke<boolean>("plugin:autostart|is_enabled");
   } catch {
@@ -28,22 +86,44 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="modal-mask" @click.self="emit('close')">
-    <div class="panel">
-      <header>
-        <h2>系统设置</h2>
-        <button class="close" @click="emit('close')">✕</button>
-      </header>
+  <div class="settings-page">
+    <aside class="nav">
+      <h2 class="page-title">系统设置</h2>
+      <button
+        class="nav-item"
+        :class="{ active: activeMenu === 'general' }"
+        @click="activeMenu = 'general'"
+      >⚙ 通用</button>
+      <button
+        class="nav-item"
+        :class="{ active: activeMenu === 'defaults' }"
+        @click="activeMenu = 'defaults'"
+      >🖌 便签默认</button>
+      <button
+        class="nav-item"
+        :class="{ active: activeMenu === 'debug' }"
+        @click="activeMenu = 'debug'"
+      >🐞 Debug</button>
+      <button
+        class="nav-item"
+        :class="{ active: activeMenu === 'about' }"
+        @click="activeMenu = 'about'"
+      >ℹ 关于</button>
+    </aside>
 
-      <section class="group">
+    <section class="content">
+      <!-- 通用 -->
+      <div v-if="activeMenu === 'general'">
         <h3>通用</h3>
         <label class="row">
           <span>开机自启</span>
           <input type="checkbox" :checked="autoStart" @change="toggleAutoStart" />
         </label>
-      </section>
+        <p class="hint">开机自动启动 oii_sticker（Windows 注册表 / macOS LaunchAgent）。</p>
+      </div>
 
-      <section class="group">
+      <!-- 便签默认 -->
+      <div v-else-if="activeMenu === 'defaults'">
         <h3>新建便签默认偏好</h3>
         <label class="row">
           <span>背景透明度</span>
@@ -79,104 +159,203 @@ onMounted(async () => {
             @change="(e) => settings.set('default_sticker_body_font_size', (e.target as HTMLInputElement).value)"
           />
         </label>
-      </section>
+      </div>
 
-      <footer>
-        <button class="btn primary" @click="emit('close')">完成</button>
-      </footer>
-    </div>
+      <!-- Debug -->
+      <div v-else-if="activeMenu === 'debug'">
+        <h3>Debug 工具</h3>
+        <div class="debug-actions">
+          <button class="btn" @click="sendTestNotify">🔔 发送测试通知</button>
+          <button class="btn" @click="checkDbHealth">🗄 数据库健康检查</button>
+          <button class="btn" @click="createTestSticker">📝 创建测试便签</button>
+        </div>
+        <p v-if="notifyResult" class="result">{{ notifyResult }}</p>
+        <pre v-if="dbInfo" class="db-info">
+数据库版本：v{{ dbInfo.user_version }}
+配置键数量：{{ dbInfo.config_keys }}
+表：{{ dbInfo.tables.join(", ") }}
+路径：{{ dbInfo.db_path }}
+        </pre>
+        <div v-if="debugLog.length" class="log">
+          <div v-for="(l, i) in debugLog" :key="i" class="log-line">{{ l }}</div>
+        </div>
+      </div>
+
+      <!-- 关于 -->
+      <div v-else-if="activeMenu === 'about'">
+        <h3>关于</h3>
+        <p class="about-line"><strong>oii_sticker</strong> v0.1.0</p>
+        <p class="about-line">Tauri 2 + Vue 3 桌面便签应用</p>
+        <p class="about-line">重写自 <code>oi_sticker</code>（GPL v3）</p>
+        <p class="about-line">数据库：SQLite（user_version=5，兼容旧库）</p>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <button class="btn primary" @click="emit('close')">完成</button>
+    </footer>
   </div>
 </template>
 
 <style scoped>
-.modal-mask {
+.settings-page {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.97);
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  grid-template-rows: 1fr auto;
+  z-index: 30;
+}
+
+.nav {
+  grid-row: 1;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  padding: 16px 10px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 14px;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(248, 249, 251, 0.9);
 }
 
-.panel {
-  width: 340px;
-  max-height: 80%;
-  overflow-y: auto;
-  background: #fff;
-  border-radius: 12px;
-  padding: 16px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
-}
-
-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-h2 {
-  margin: 0;
-  font-size: 16px;
+.page-title {
+  margin: 0 0 10px 8px;
+  font-size: 15px;
   color: #333;
 }
 
-.close {
+.nav-item {
   border: none;
   background: none;
-  font-size: 14px;
-  color: #999;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #555;
   cursor: pointer;
 }
 
-.group {
-  margin-top: 12px;
+.nav-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.nav-item.active {
+  background: rgba(79, 124, 255, 0.12);
+  color: #4f7cff;
+  font-weight: 600;
+}
+
+.content {
+  grid-row: 1;
+  padding: 18px 22px;
+  overflow-y: auto;
 }
 
 h3 {
-  margin: 0 0 8px;
-  font-size: 12px;
-  color: #888;
-  font-weight: 600;
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #333;
 }
 
 .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 0;
+  padding: 8px 0;
   font-size: 13px;
   color: #444;
+  max-width: 420px;
 }
 
 .row input[type="range"] {
-  width: 140px;
+  width: 180px;
   accent-color: #4f7cff;
 }
 
 .row input[type="number"] {
-  width: 60px;
+  width: 64px;
   border: 1px solid rgba(0, 0, 0, 0.15);
   border-radius: 6px;
   padding: 4px 6px;
 }
 
-footer {
-  margin-top: 16px;
-  text-align: right;
+.hint {
+  font-size: 12px;
+  color: #999;
+  margin: 6px 0 0;
+}
+
+.debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .btn {
-  border: none;
+  border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 8px;
-  padding: 8px 16px;
+  padding: 7px 14px;
   font-size: 13px;
+  background: #fff;
+  color: #333;
   cursor: pointer;
+}
+
+.btn:hover {
+  background: #f2f4f7;
 }
 
 .btn.primary {
   background: #4f7cff;
+  border-color: #4f7cff;
   color: #fff;
+}
+
+.result {
+  font-size: 12px;
+  color: #2e7d32;
+  margin: 4px 0;
+}
+
+.db-info {
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #555;
+  margin: 8px 0;
+  font-family: Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+.log {
+  margin-top: 10px;
+  border-top: 1px dashed rgba(0, 0, 0, 0.12);
+  padding-top: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.log-line {
+  font-size: 12px;
+  color: #777;
+  font-family: Consolas, monospace;
+  padding: 2px 0;
+}
+
+.about-line {
+  font-size: 13px;
+  color: #555;
+  margin: 6px 0;
+}
+
+.foot {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 18px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
 }
 </style>
