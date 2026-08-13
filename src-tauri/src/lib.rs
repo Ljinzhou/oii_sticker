@@ -360,15 +360,17 @@ fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     Ok(())
 }
 
-/// 应用便签窗口状态：display 模式 → 禁止 resize（低透明收起）；
-/// 其他模式 → 可 resize。
-/// display 额外用 min/max size 锁死当前尺寸（双保险，防边缘拖拽改大小）。
+/// 应用便签窗口状态：display 模式 → 点击穿透 + 禁止 resize（锁尺寸）；
+/// 其他模式 → 正常交互 + 可 resize。
+/// 穿透状态下由全局鼠标钩子（platform::mouse_hook）检测右键双击唤醒。
 #[tauri::command]
 fn apply_window_state_cmd(
     app: tauri::AppHandle,
     id: i64,
     is_display: bool,
 ) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    state.set_display_window(id, is_display);
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         if is_display {
             let size = win.outer_size().map_err(|e| format!("读取尺寸失败: {e}"))?;
@@ -378,6 +380,9 @@ fn apply_window_state_cmd(
                 .map_err(|e| format!("设置最大尺寸失败: {e}"))?;
             win.set_resizable(false)
                 .map_err(|e| format!("设置 resize 失败: {e}"))?;
+            // 全穿透：窗口不拦截任何鼠标事件（含左键选中文字），右键双击由钩子唤醒
+            win.set_ignore_cursor_events(true)
+                .map_err(|e| format!("设置点击穿透失败: {e}"))?;
         } else {
             win.set_min_size(None::<tauri::Size>)
                 .map_err(|e| format!("清除最小尺寸失败: {e}"))?;
@@ -385,10 +390,9 @@ fn apply_window_state_cmd(
                 .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
             win.set_resizable(true)
                 .map_err(|e| format!("设置 resize 失败: {e}"))?;
+            win.set_ignore_cursor_events(false)
+                .map_err(|e| format!("取消穿透失败: {e}"))?;
         }
-        // 确保不处于穿透状态，保证右键双击唤醒可用
-        win.set_ignore_cursor_events(false)
-            .map_err(|e| format!("取消穿透失败: {e}"))?;
         tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display}");
     }
     Ok(())
@@ -404,6 +408,28 @@ fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         let _ = win.show();
         let _ = win.set_focus();
         tracing::info!("[cmd] wake_sticker id={id}");
+    }
+    Ok(())
+}
+
+/// 列出当前已打开（有窗口）的便签 id。
+#[tauri::command]
+fn list_open_sticker_ids_cmd(app: tauri::AppHandle) -> Vec<i64> {
+    app.webview_windows()
+        .keys()
+        .filter_map(|l| {
+            l.strip_prefix("sticker-")
+                .and_then(|s| s.parse::<i64>().ok())
+        })
+        .collect()
+}
+
+/// 隐藏便签窗口（数据保留，主控台显示"显示"按钮）。
+#[tauri::command]
+fn hide_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
+        win.hide().map_err(|e| format!("隐藏窗口失败: {e}"))?;
+        tracing::info!("[cmd] hide_sticker id={id}");
     }
     Ok(())
 }
@@ -472,6 +498,9 @@ pub fn run() {
             // 系统托盘（新建便签/打开主控台/系统设置/退出）
             platform::tray::install(&handle, dispatch_tray)?;
 
+            // 全局鼠标钩子：display 全穿透 + 右键双击唤醒
+            platform::mouse_hook::install(&handle)?;
+
             // 提醒调度器（10s 周期）
             reminder::scheduler::spawn(handle.clone(), state.clone());
 
@@ -528,6 +557,8 @@ pub fn run() {
             main_close_cmd,
             apply_window_state_cmd,
             wake_sticker_cmd,
+            list_open_sticker_ids_cmd,
+            hide_sticker_cmd,
             slash_query_cmd
         ])
         .run(tauri::generate_context!())

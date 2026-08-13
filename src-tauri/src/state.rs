@@ -5,6 +5,7 @@
 //! 数据库为单连接 `Arc<Mutex<Connection>>`，耗时操作应经
 //! [`AppState::with_conn_async`] 派发到 `spawn_blocking`，避免阻塞 UI。
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use anyhow::Result;
@@ -17,6 +18,8 @@ pub struct AppState {
     conn: Arc<Mutex<Connection>>,
     config: Arc<RwLock<SystemConfig>>,
     db_path: Arc<String>,
+    /// 当前处于 display（展示/穿透）模式的便签 id 集合（鼠标钩子唤醒用）。
+    display_windows: Arc<Mutex<HashSet<i64>>>,
 }
 
 impl AppState {
@@ -25,7 +28,32 @@ impl AppState {
             conn: Arc::new(Mutex::new(conn)),
             config: Arc::new(RwLock::new(config)),
             db_path: Arc::new(db_path),
+            display_windows: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// display 模式窗口集合（只读拷贝）。
+    pub fn display_windows(&self) -> HashSet<i64> {
+        self.display_windows
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    /// 标记/取消标记窗口处于 display 模式。
+    pub fn set_display_window(&self, id: i64, is_display: bool) {
+        if let Ok(mut g) = self.display_windows.lock() {
+            if is_display {
+                g.insert(id);
+            } else {
+                g.remove(&id);
+            }
+        }
+    }
+
+    /// 移除 display 标记（钩子唤醒时调用）。
+    pub fn remove_display_window(&self, id: i64) {
+        self.set_display_window(id, false);
     }
 
     /// 当前数据库文件路径（供健康检查/诊断用）。
