@@ -142,6 +142,17 @@ onMounted(async () => {
             <option value="quit">退出程序</option>
           </select>
         </label>
+        <label class="row">
+          <span>交互模式自动收起（秒）</span>
+          <input
+            type="number"
+            min="1"
+            max="60"
+            :value="settings.get('auto_collapse_secs', '5')"
+            @change="(e) => settings.set('auto_collapse_secs', (e.target as HTMLInputElement).value)"
+          />
+        </label>
+        <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
         <p class="hint">点击主控台右上角 ✕ 时的行为（隐藏后可从托盘图标恢复）。</p>
       </div>
 
@@ -161,16 +172,6 @@ onMounted(async () => {
         <label class="row">
           <span>背景颜色</span>
           <input type="color" :value="settings.bgColor" @change="(e) => settings.set('default_sticker_bg_color', (e.target as HTMLInputElement).value)" />
-        </label>
-        <label class="row">
-          <span>标题字号</span>
-          <input
-            type="number"
-            min="10"
-            max="32"
-            :value="settings.titleFontSize"
-            @change="(e) => settings.set('default_sticker_title_font_size', (e.target as HTMLInputElement).value)"
-          />
         </label>
         <label class="row">
           <span>正文字号</span>

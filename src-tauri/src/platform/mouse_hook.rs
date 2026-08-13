@@ -47,12 +47,26 @@ fn now_ms() -> i64 {
 fn try_wake(app: &AppHandle, pt: POINT) {
     let state = app.state::<AppState>();
     let display_ids: Vec<i64> = state.display_windows().iter().copied().collect();
+    tracing::debug!(
+        "[hook] try_wake: display_ids={:?} cursor=({},{})",
+        display_ids,
+        pt.x,
+        pt.y
+    );
     for id in display_ids {
         let Some(win) = app.get_webview_window(&format!("sticker-{id}")) else {
+            tracing::debug!("[hook] try_wake: sticker-{id} 窗口不存在");
             continue;
         };
         let Ok(pos) = win.outer_position() else { continue };
         let size = win.outer_size().unwrap_or_default();
+        tracing::debug!(
+            "[hook] try_wake: sticker-{id} pos=({},{}) size=({},{})",
+            pos.x,
+            pos.y,
+            size.width,
+            size.height
+        );
         let inside = pt.x >= pos.x
             && pt.x <= pos.x + size.width as i32
             && pt.y >= pos.y
