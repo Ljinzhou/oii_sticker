@@ -40,26 +40,39 @@ async function load() {
   sticker.value = (await invoke<Sticker | null>("get_sticker_cmd", { id: stickerId })) ?? null;
   if (sticker.value) {
     mode.value = (sticker.value.display_mode as StickerMode) || "display";
+    // 先应用窗口状态（display 穿透+锁尺寸），不依赖后续加载成功
+    try {
+      await invoke("apply_window_state_cmd", { id: stickerId, is_display: mode.value === "display" });
+    } catch (e) {
+      console.error("[ui] 应用窗口状态失败：", e);
+    }
     await prefs.load(stickerId);
-    // 应用窗口状态（display 禁 resize 等）——修复启动后仍可拖拽改尺寸的问题
-    await invoke("apply_window_state_cmd", { id: stickerId, is_display: mode.value === "display" });
     resetCollapseTimer();
   }
 }
 
-/** 应用模式：持久化 + 窗口状态（display 锁尺寸）+ 模式切换通知。 */
+/** 应用模式：窗口状态优先（display 穿透+锁尺寸），再持久化，再通知。 */
 async function applyMode(next: StickerMode) {
   const prev = mode.value;
   mode.value = next;
-  if (sticker.value) {
-    await invoke("update_sticker_cmd", {
-      id: stickerId,
-      patch: { display_mode: next },
-    });
+  // 1) 窗口状态（独立执行，失败不阻断后续）
+  try {
+    await invoke("apply_window_state_cmd", { id: stickerId, is_display: next === "display" });
+  } catch (e) {
+    console.error("[ui] 应用窗口状态失败：", e);
   }
-  // display：锁尺寸；interact/edit：可 resize
-  await invoke("apply_window_state_cmd", { id: stickerId, is_display: next === "display" });
-  // 模式切换系统通知（进入展示/交互模式）
+  // 2) 持久化模式
+  if (sticker.value) {
+    try {
+      await invoke("update_sticker_cmd", {
+        id: stickerId,
+        patch: { display_mode: next },
+      });
+    } catch (e) {
+      console.error("[ui] 持久化模式失败：", e);
+    }
+  }
+  // 3) 模式切换系统通知
   if (prev !== next && sticker.value) {
     const title = sticker.value.title || `便签 #${stickerId}`;
     const body = next === "display"
