@@ -1,6 +1,7 @@
 //! 应用状态：内存缓存 + 数据库连接调度。
 //!
-//! `AppState` 由 Tauri `app.manage()` 托管，命令通过 `tauri::State` 访问。
+//! `AppState` 由 Tauri `app.manage()` 托管，命令通过 `tauri::State` 访问；
+//! 内部均为 `Arc`，可 `clone()` 后传入后台任务（调度器等）。
 //! 数据库为单连接 `Arc<Mutex<Connection>>`，耗时操作应经
 //! [`AppState::with_conn_async`] 派发到 `spawn_blocking`，避免阻塞 UI。
 
@@ -11,18 +12,19 @@ use rusqlite::Connection;
 
 use crate::models::SystemConfig;
 
+#[derive(Clone)]
 pub struct AppState {
     conn: Arc<Mutex<Connection>>,
-    config: RwLock<SystemConfig>,
-    db_path: String,
+    config: Arc<RwLock<SystemConfig>>,
+    db_path: Arc<String>,
 }
 
 impl AppState {
     pub fn new(conn: Connection, config: SystemConfig, db_path: String) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            config: RwLock::new(config),
-            db_path,
+            config: Arc::new(RwLock::new(config)),
+            db_path: Arc::new(db_path),
         }
     }
 

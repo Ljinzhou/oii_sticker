@@ -2493,6 +2493,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-notification",
  "time",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
