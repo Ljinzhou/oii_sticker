@@ -15,11 +15,14 @@ md.renderer.rules.list_item_open = function (tokens, idx, options, env, self) {
     ? defaultListItemOpen(tokens, idx, options, env, self)
     : self.renderToken(tokens, idx, options);
 
-  const inline = tokens[idx + 1];
-  if (!inline || inline.type !== "inline" || !inline.children?.length) {
+  // 向后找 inline token（list_item 内可能夹 paragraph_open 等）
+  const inline = tokens
+    .slice(idx + 1)
+    .find((t) => t.type === "inline" && t.children?.length);
+  if (!inline) {
     return html;
   }
-  const first = inline.children[0];
+  const first = inline.children![0];
   if (first.type !== "text") {
     return html;
   }
