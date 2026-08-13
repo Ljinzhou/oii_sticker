@@ -412,14 +412,17 @@ fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// 列出当前已打开（有窗口）的便签 id。
+/// 列出当前**可见**的便签窗口 id（隐藏窗口不计入"打开"）。
 #[tauri::command]
 fn list_open_sticker_ids_cmd(app: tauri::AppHandle) -> Vec<i64> {
     app.webview_windows()
-        .keys()
-        .filter_map(|l| {
-            l.strip_prefix("sticker-")
-                .and_then(|s| s.parse::<i64>().ok())
+        .iter()
+        .filter_map(|(label, win)| {
+            let id = label
+                .strip_prefix("sticker-")
+                .and_then(|s| s.parse::<i64>().ok())?;
+            win.is_visible().ok().filter(|v| *v)?;
+            Some(id)
         })
         .collect()
 }
