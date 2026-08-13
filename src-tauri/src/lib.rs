@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use serde::Serialize;
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 mod commands;
 mod db;
@@ -31,7 +31,7 @@ struct DbHealth {
 }
 
 #[tauri::command]
-fn db_health(state: tauri::State<'_, AppState>) -> Result<DbHealth, String> {
+fn db_health(state: State<'_, AppState>) -> Result<DbHealth, String> {
     state
         .with_conn(|conn| {
             let user_version: u32 = conn
@@ -57,8 +57,7 @@ fn db_health(state: tauri::State<'_, AppState>) -> Result<DbHealth, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏）。
-/// 返回窗口 label（形如 `sticker-<id>`）。
+/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏），label = `sticker-<id>`。
 fn create_sticker_win(
     app: &tauri::AppHandle,
     id: i64,
@@ -104,7 +103,7 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
                 opacity: 0.9,
                 ..Default::default()
             };
-            match state.with_conn(|c| commands::create_sticker(c, &new)) {
+            match state.with_conn(|c| create_sticker(c, &new)) {
                 Ok(id) => {
                     let _ = create_sticker_win(app, id, &new.title, 120, 120, 400, 500);
                     events::emit_push_update(app, id);
@@ -122,6 +121,213 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
             app.exit(0);
         }
     }
+}
+
+// ═══════════════════ 业务命令层（前端 invoke 契约） ═══════════════════
+
+#[tauri::command]
+fn list_stickers_cmd(state: State<'_, AppState>) -> Result<Vec<models::Sticker>, String> {
+    state
+        .with_conn(commands::list_stickers)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_sticker_cmd(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<models::Sticker>, String> {
+    state
+        .with_conn(|c| commands::get_sticker(c, id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_sticker_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    new: NewSticker,
+) -> Result<i64, String> {
+    let id = state
+        .with_conn(|c| commands::create_sticker(c, &new))
+        .map_err(|e| e.to_string())?;
+    create_sticker_win(
+        &app,
+        id,
+        &new.title,
+        new.pos_x,
+        new.pos_y,
+        new.width,
+        new.height,
+    )
+    .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, id);
+    Ok(id)
+}
+
+#[tauri::command]
+fn update_sticker_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    patch: db::sticker_repo::StickerPatch,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::update_sticker(c, id, &patch))
+        .map_err(|e| e.to_string())?;
+    // 标题/尺寸变化同步到窗口
+    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
+        if let Some(title) = &patch.title {
+            let _ = win.set_title(title);
+        }
+    }
+    events::emit_push_update(&app, id);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_sticker_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::delete_sticker(c, id))
+        .map_err(|e| e.to_string())?;
+    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
+        let _ = win.close();
+    }
+    events::emit_push_update(&app, id);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_reminder_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    attrs: models::StickerAttrs,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::set_reminder(c, &attrs))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, attrs.sticker_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_reminder_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::clear_reminder(c, id))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, id);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_reminder_cmd(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<Option<models::StickerAttrs>, String> {
+    state
+        .with_conn(|c| commands::get_reminder(c, id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_config_cmd(state: State<'_, AppState>) -> Result<models::SystemConfig, String> {
+    state
+        .with_conn(commands::get_config)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_config_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::set_config(c, &key, &value))
+        .map_err(|e| e.to_string())?;
+    let _ = state.refresh_config();
+    events::emit_to_label(&app, "main", events::PREFS_UPDATED, ());
+    Ok(())
+}
+
+#[tauri::command]
+fn update_sticker_prefs_cmd(
+    state: State<'_, AppState>,
+    prefs: models::StickerPrefs,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::update_sticker_prefs(c, &prefs))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reset_sticker_prefs_cmd(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::reset_sticker_prefs(c, id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn effective_prefs_cmd(
+    state: State<'_, AppState>,
+    id: i64,
+) -> Result<models::EffectivePrefs, String> {
+    let config = state.config().clone();
+    state
+        .with_conn(|c| commands::effective_prefs(c, &config, id))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_todo_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    line: usize,
+) -> Result<bool, String> {
+    let changed = state
+        .with_conn(|c| commands::toggle_todo_in_sticker(c, id, line))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        events::emit_push_update(&app, id);
+    }
+    Ok(changed)
+}
+
+/// 斜杠命令查询结果（前端浮层展示 + 插入模板）。
+#[derive(Serialize)]
+struct SlashDto {
+    id: String,
+    name: String,
+    category: String,
+    hint: String,
+    template: String,
+}
+
+#[tauri::command]
+fn slash_query_cmd(query: String) -> Vec<SlashDto> {
+    slash::matcher::filter(&slash::all_commands(), &query)
+        .into_iter()
+        .filter_map(|c| {
+            let template = (c.insert)(&query)?;
+            Some(SlashDto {
+                id: c.id.to_string(),
+                name: c.name.to_string(),
+                category: c.category.to_string(),
+                hint: c.hint.to_string(),
+                template,
+            })
+        })
+        .collect()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -162,7 +368,9 @@ pub fn run() {
             // 启动恢复：为数据库中已有便签重建窗口
             if let Ok(stickers) = state.with_conn(commands::list_stickers) {
                 for s in stickers {
-                    let _ = create_sticker_win(&handle, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height);
+                    let _ = create_sticker_win(
+                        &handle, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
+                    );
                 }
             }
 
@@ -170,51 +378,22 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             db_health,
-            create_sticker_window,
-            list_sticker_windows
+            list_stickers_cmd,
+            get_sticker_cmd,
+            create_sticker_cmd,
+            update_sticker_cmd,
+            delete_sticker_cmd,
+            set_reminder_cmd,
+            clear_reminder_cmd,
+            get_reminder_cmd,
+            get_config_cmd,
+            set_config_cmd,
+            update_sticker_prefs_cmd,
+            reset_sticker_prefs_cmd,
+            effective_prefs_cmd,
+            toggle_todo_cmd,
+            slash_query_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏）。
-/// 返回窗口 label（形如 `sticker-<n>`，n 自动递增避免冲突）。
-#[tauri::command]
-fn create_sticker_window(
-    app: tauri::AppHandle,
-    title: String,
-    x: f64,
-    y: f64,
-) -> Result<String, String> {
-    let mut n = 1;
-    let label = loop {
-        let candidate = format!("sticker-{n}");
-        if app.get_webview_window(&candidate).is_none() {
-            break candidate;
-        }
-        n += 1;
-    };
-
-    WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
-        .title(title)
-        .inner_size(320.0, 240.0)
-        .position(x, y)
-        .transparent(true)
-        .decorations(false)
-        .skip_taskbar(true)
-        .resizable(true)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    Ok(label)
-}
-
-/// 列出当前所有便签窗口的 label。
-#[tauri::command]
-fn list_sticker_windows(app: tauri::AppHandle) -> Vec<String> {
-    app.webview_windows()
-        .keys()
-        .filter(|l| l.starts_with("sticker-"))
-        .cloned()
-        .collect()
 }
