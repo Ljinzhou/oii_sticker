@@ -77,7 +77,7 @@ fn try_wake(app: &AppHandle, pt: POINT) {
                 },
             )
         });
-        let _ = app.emit_to(format!("sticker-{id}"), "sticky://wake", ());
+        let _ = app.emit_to(format!("sticker-{id}"), "sticky://wake", id);
         tracing::info!("[hook] 中键+左键唤醒便签 #{id}");
         return;
     }
