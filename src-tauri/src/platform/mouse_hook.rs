@@ -1,10 +1,12 @@
-//! 全局低级鼠标钩子（WH_MOUSE_LL）：实现"display 全穿透 + 右键双击唤醒"。
+//! 全局低级鼠标钩子（WH_MOUSE_LL）：实现"display 全穿透 + 中键+左键唤醒"。
 //!
-//! 背景：`set_ignore_cursor_events(true)` 后窗口收不到任何鼠标事件，
-//! 右键双击也无法触发。为满足"展示模式全穿透，右键双击除外"的需求，
+//! 背景：`set_ignore_cursor_events(true)` 后窗口收不到任何鼠标事件。
+//! 唤醒协议（用户定义）：用户任意位置按下一次**鼠标中键**（武装），
+//! 随后**左键点击**任意展示模式便签 → 该便签取消穿透并进入交互模式。
+//!
 //! 在**主线程**安装 WH_MOUSE_LL 钩子（tao 事件循环会派发钩子消息），
-//! 在回调中检测：光标位于某个 display 模式便签窗口内 + 右键双击 →
-//! 取消穿透并切换 interact（经 `sticky://wake` 事件通知前端）。
+//! 回调中：中键按下 → 记录武装时间（3 秒有效）；左键按下且已武装 →
+//! 命中检测并唤醒。
 //!
 //! 注：这是用户明确批准引入的 windows-sys 直调（唯一无钩子替代方案）。
 
@@ -15,20 +17,19 @@ use tauri::{AppHandle, Emitter, Manager};
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, POINT, WPARAM};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, MSLLHOOKSTRUCT, WH_MOUSE_LL,
-    WM_RBUTTONDOWN,
+    WM_LBUTTONDOWN, WM_MBUTTONDOWN,
 };
 
 use crate::db::sticker_repo::StickerPatch;
 use crate::state::AppState;
 
-/// 右键双击判定参数。
-const DBL_CLICK_MS: i64 = 350;
-const DBL_CLICK_DIST: i64 = 10;
+/// 中键武装后左键唤醒的有效期（毫秒）。
+const ARM_TIMEOUT_MS: i64 = 3000;
 
 struct HookInner {
     app: AppHandle,
-    /// 上次右键按下时间与位置（双击检测）。
-    last_down: Option<(i64, POINT)>,
+    /// 中键按下时刻（武装）；None = 未武装。
+    armed_at: Option<i64>,
 }
 
 static STATE: Mutex<Option<HookInner>> = Mutex::new(None);
@@ -40,12 +41,6 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-fn dist(a: POINT, b: POINT) -> i64 {
-    let dx = (a.x - b.x) as i64;
-    let dy = (a.y - b.y) as i64;
-    (dx * dx + dy * dy).isqrt()
 }
 
 /// 命中检测：光标是否落在某个 display 模式便签窗口内；命中则唤醒。
@@ -83,26 +78,35 @@ fn try_wake(app: &AppHandle, pt: POINT) {
             )
         });
         let _ = app.emit_to(format!("sticker-{id}"), "sticky://wake", ());
-        tracing::info!("[hook] 右键双击唤醒便签 #{id}");
+        tracing::info!("[hook] 中键+左键唤醒便签 #{id}");
         return;
     }
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code >= 0 && wparam == WM_RBUTTONDOWN as usize {
+    if code >= 0 {
         let info = &*(lparam as *const MSLLHOOKSTRUCT);
+        let now = now_ms();
         let mut state = STATE.lock().unwrap();
         if let Some(inner) = state.as_mut() {
-            let now = now_ms();
-            let is_dbl = inner
-                .last_down
-                .map(|(t, p)| now - t < DBL_CLICK_MS && dist(p, info.pt) < DBL_CLICK_DIST)
-                .unwrap_or(false);
-            if is_dbl {
-                inner.last_down = None;
-                try_wake(&inner.app, info.pt);
-            } else {
-                inner.last_down = Some((now, info.pt));
+            match wparam as u32 {
+                // 中键按下：武装（3 秒内左键点击便签即唤醒）
+                WM_MBUTTONDOWN => {
+                    inner.armed_at = Some(now);
+                    tracing::debug!("[hook] 中键按下，武装唤醒（3 秒内左键点击展示便签）");
+                }
+                // 左键按下：若已武装（未超时）且命中展示便签 → 唤醒
+                WM_LBUTTONDOWN => {
+                    let armed = inner
+                        .armed_at
+                        .map(|t| now - t < ARM_TIMEOUT_MS)
+                        .unwrap_or(false);
+                    inner.armed_at = None; // 一次武装对应一次左键
+                    if armed {
+                        try_wake(&inner.app, info.pt);
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -113,7 +117,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 pub fn install(app: &AppHandle) -> Result<(), String> {
     *STATE.lock().unwrap() = Some(HookInner {
         app: app.clone(),
-        last_down: None,
+        armed_at: None,
     });
     // 钩子回调需要目标线程有消息循环：Tauri 主线程的 tao 事件循环满足。
     let hook = unsafe {
