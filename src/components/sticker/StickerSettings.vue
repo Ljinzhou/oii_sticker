@@ -12,7 +12,6 @@ const prefs = usePrefsStore();
 const opacity = ref(85);
 const bgColor = ref("#FFF4D6");
 const textColor = ref("#222222");
-const titleFontSize = ref(14);
 const bodyFontSize = ref(13);
 const alwaysOnTop = ref(false);
 
@@ -30,7 +29,6 @@ async function load() {
     opacity.value = Math.round(e.opacity * 100);
     bgColor.value = e.bg_color;
     textColor.value = e.text_color;
-    titleFontSize.value = e.title_font_size;
     bodyFontSize.value = e.body_font_size;
   }
   try {
@@ -54,7 +52,6 @@ function savePrefsSoon() {
       opacity: Number(opacity.value) / 100,
       bg_color: bgColor.value,
       text_color: textColor.value,
-      title_font_size: titleFontSize.value,
       body_font_size: bodyFontSize.value,
     });
   }, 150);
@@ -110,10 +107,6 @@ onMounted(load);
         <label class="row">
           <span>文字颜色</span>
           <input v-model="textColor" type="color" @input="savePrefsSoon" />
-        </label>
-        <label class="row">
-          <span>标题字号</span>
-          <input v-model.number="titleFontSize" type="number" min="10" max="32" @change="savePrefsSoon" />
         </label>
         <label class="row">
           <span>正文字号</span>

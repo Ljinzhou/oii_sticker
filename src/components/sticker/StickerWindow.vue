@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke, listen } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
+import { useSettingsStore } from "../../stores/settings";
 import { hexToRgba } from "../../utils/markdown";
 import type { Sticker, StickerMode } from "../../types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -11,6 +12,7 @@ import StickerEditor from "./StickerEditor.vue";
 import StickerSettings from "./StickerSettings.vue";
 
 const prefs = usePrefsStore();
+const settings = useSettingsStore();
 
 const label = getCurrentWindow().label;
 const stickerId = Number(label.replace("sticker-", ""));
@@ -21,6 +23,9 @@ const showSettings = ref(false);
 const alertActive = ref(false);
 const unlisteners: UnlistenFn[] = [];
 let collapseTimer: number | undefined;
+/** 模式切换提示（应用内 toast，2 秒自动消失，替代系统通知）。 */
+const modeToast = ref("");
+let toastTimer: number | undefined;
 
 const cardStyle = computed(() => {
   const bg = prefs.effective?.bg_color ?? sticker.value?.bg_color ?? "#FFF4D6";
@@ -73,27 +78,41 @@ async function applyMode(next: StickerMode) {
       console.error("[ui] 持久化模式失败：", e);
     }
   }
-  // 3) 模式切换系统通知
+  // 3) 模式切换提示：应用内 toast（2 秒），不再弹系统通知
   if (prev !== next && sticker.value) {
     const title = sticker.value.title || `便签 #${stickerId}`;
-    const body = next === "display"
+    modeToast.value = next === "display"
       ? `${title} 进入展示模式`
       : next === "interact"
         ? `${title} 进入交互模式`
         : `${title} 进入编辑模式`;
-    invoke("debug_notify_cmd", { title, body });
+    if (toastTimer) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      modeToast.value = "";
+    }, 2000);
   }
   resetCollapseTimer();
 }
 
-/** interact 模式 5s 无操作自动收起回 display（编辑态不收起）。 */
+/** interact 模式无操作自动收起回 display；编辑态或设置打开时不收起。
+ *  收起秒数可在系统设置修改（auto_collapse_secs，默认 5）。 */
 function resetCollapseTimer() {
   if (collapseTimer) window.clearTimeout(collapseTimer);
-  if (mode.value !== "interact") return;
+  if (mode.value !== "interact" || showSettings.value) return;
+  const secs = settings.autoCollapseSecs;
   collapseTimer = window.setTimeout(() => {
-    if (mode.value === "interact") applyMode("display");
-  }, 5000);
+    if (mode.value === "interact" && !showSettings.value) applyMode("display");
+  }, secs * 1000);
 }
+
+// 设置面板打开/关闭：打开时暂停自动收起，关闭时重新计时
+watch(showSettings, (open) => {
+  if (open) {
+    if (collapseTimer) window.clearTimeout(collapseTimer);
+  } else {
+    resetCollapseTimer();
+  }
+});
 
 function onInteract() {
   resetCollapseTimer();
@@ -199,6 +218,11 @@ onBeforeUnmount(() => {
     </div>
 
     <StickerSettings v-if="showSettings" :sticker-id="stickerId" @close="showSettings = false" />
+
+    <!-- 模式切换提示（2 秒自动消失） -->
+    <transition name="toast">
+      <div v-if="modeToast" class="mode-toast">{{ modeToast }}</div>
+    </transition>
   </div>
 </template>
 
@@ -273,5 +297,33 @@ onBeforeUnmount(() => {
 .ov-btn.close:hover {
   background: #ffe3e3;
   color: #d33;
+}
+
+/* ── 模式切换提示 toast（2 秒） ── */
+.mode-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  background: rgba(40, 40, 40, 0.82);
+  color: #fff;
+  font-size: 12.5px;
+  padding: 7px 16px;
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 40;
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(8px);
 }
 </style>
