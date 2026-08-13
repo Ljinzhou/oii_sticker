@@ -129,6 +129,7 @@ onBeforeUnmount(() => {
     <StickerHeader
       :mode="mode"
       :title="sticker?.title ?? ''"
+      :bg-style="cardStyle.background"
       @enter-edit="onEnterEdit"
       @toggle-settings="showSettings = !showSettings"
       @close="onClosed"
