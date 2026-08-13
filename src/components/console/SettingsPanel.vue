@@ -12,6 +12,13 @@ type MenuKey = "general" | "defaults" | "about" | "debug";
 const activeMenu = ref<MenuKey>("general");
 const autoStart = ref(false);
 const closeBehavior = ref("hide");
+const debugMode = ref(true);
+
+async function toggleDebugMode() {
+  debugMode.value = !debugMode.value;
+  await settings.set("debug_mode", debugMode.value ? "1" : "0");
+  log(`调试模式：${debugMode.value ? "开启（详细日志）" : "关闭"}`);
+}
 
 async function setCloseBehavior(v: string) {
   closeBehavior.value = v;
@@ -90,6 +97,7 @@ onMounted(async () => {
     autoStart.value = false;
   }
   closeBehavior.value = settings.get("main_close_behavior", "hide");
+  debugMode.value = settings.get("debug_mode", "1") === "1";
 });
 </script>
 
@@ -179,6 +187,11 @@ onMounted(async () => {
       <!-- Debug -->
       <div v-else-if="activeMenu === 'debug'">
         <h3>Debug 工具</h3>
+        <label class="row">
+          <span>调试模式（详细日志）</span>
+          <input type="checkbox" :checked="debugMode" @change="toggleDebugMode" />
+        </label>
+        <p class="hint">开启后输出详细的操作/命令/事件日志（控制台）。</p>
         <div class="debug-actions">
           <button class="btn" @click="sendTestNotify">🔔 发送测试通知</button>
           <button class="btn" @click="checkDbHealth">🗄 数据库健康检查</button>

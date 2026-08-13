@@ -1,26 +1,37 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "../../composables/useTauri";
-import { useSettingsStore } from "../../stores/settings";
 import SlashMenu from "../slash/SlashMenu.vue";
 import type { SlashItem } from "../../types";
 
 const props = defineProps<{
   content: string;
-  title: string;
   stickerId: number;
 }>();
 
-const emit = defineEmits<{ saved: []; cancelled: [] }>();
-const settings = useSettingsStore();
+const emit = defineEmits<{
+  saved: [];
+  cancelled: [];
+  toggleSettings: [];
+  closed: [];
+}>();
 
-const title = ref(props.title);
 const content = ref(props.content);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const slashMenu = ref(false);
 const slashItems = ref<SlashItem[]>([]);
 const slashQuery = ref("");
 const slashSelected = ref(0);
+
+/** 从 markdown 第一行提取标题（`# xxx` → xxx）。 */
+function extractTitle(text: string): string {
+  const first = text.split("\n").find((l) => l.trim().length > 0) ?? "";
+  const trimmed = first.trim();
+  if (trimmed.startsWith("# ")) {
+    return trimmed.slice(2).trim();
+  }
+  return trimmed.slice(0, 30);
+}
 
 async function querySlash(q: string) {
   if (q.startsWith("/")) {
@@ -36,9 +47,7 @@ async function querySlash(q: string) {
 function onInput() {
   const el = textarea.value;
   if (!el) return;
-  const caret = el.selectionStart;
-  const before = content.value.slice(0, caret);
-  querySlash(before);
+  querySlash(content.value.slice(0, el.selectionStart));
 }
 
 function applySlash(item: SlashItem) {
@@ -51,7 +60,6 @@ function applySlash(item: SlashItem) {
   const after = content.value.slice(caret);
   content.value = prefix + item.template + after;
   slashMenu.value = false;
-  // 光标移到模板末尾
   requestAnimationFrame(() => {
     const pos = (prefix + item.template).length;
     el.focus();
@@ -62,7 +70,7 @@ function applySlash(item: SlashItem) {
 async function save() {
   await invoke("update_sticker_cmd", {
     id: props.stickerId,
-    patch: { title: title.value, content: content.value },
+    patch: { title: extractTitle(content.value), content: content.value },
   });
   emit("saved");
 }
@@ -85,10 +93,7 @@ function onKeydown(e: KeyboardEvent) {
     slashMenu.value = false;
     return;
   }
-  // E 键不在此处理（由父组件/系统快捷键）
   if (e.key === "Tab") {
-    // 交给浏览器默认（编辑器内 Tab 缩进由 Rust 纯函数提供：
-    // 简化版——直接插入两个空格）
     e.preventDefault();
     const el = textarea.value;
     if (!el) return;
@@ -101,19 +106,17 @@ function onKeydown(e: KeyboardEvent) {
 }
 
 onMounted(() => {
-  settings.refresh();
   textarea.value?.focus();
 });
 </script>
 
 <template>
   <div class="editor">
-    <input v-model="title" class="title-input" placeholder="标题" />
     <textarea
       ref="textarea"
       v-model="content"
       class="content-input"
-      placeholder="支持 Markdown：/ 唤起命令菜单"
+      placeholder="第一行输入 # 标题，/ 唤起命令菜单"
       @input="onInput"
       @keydown="onKeydown"
       @click="onInput"
@@ -121,6 +124,8 @@ onMounted(() => {
     <div class="bar">
       <button class="btn primary" @click="save">保存</button>
       <button class="btn" @click="emit('cancelled')">取消</button>
+      <button class="btn" title="设置" @click="emit('toggleSettings')">⚙</button>
+      <button class="btn close" title="关闭窗口" @click="emit('closed')">✕</button>
     </div>
     <SlashMenu
       v-if="slashMenu"
@@ -141,25 +146,10 @@ onMounted(() => {
   position: relative;
 }
 
-.title-input {
-  border: 1px solid rgba(0, 0, 0, 0.12);
-  border-radius: 8px;
-  padding: 8px 10px;
-  font-size: 15px;
-  font-weight: 600;
-  color: #333;
-  outline: none;
-  background: rgba(255, 255, 255, 0.6);
-}
-
-.title-input:focus {
-  border-color: #4f7cff;
-}
-
 .content-input {
   flex: 1;
-  min-height: 180px;
-  border: 1px solid rgba(0, 0, 0, 0.12);
+  min-height: 200px;
+  border: none;
   border-radius: 8px;
   padding: 10px;
   font-size: 13px;
@@ -168,11 +158,11 @@ onMounted(() => {
   color: #333;
   resize: none;
   outline: none;
-  background: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.55);
 }
 
 .content-input:focus {
-  border-color: #4f7cff;
+  box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.4);
 }
 
 .bar {
@@ -191,9 +181,18 @@ onMounted(() => {
   cursor: pointer;
 }
 
+.btn:hover {
+  background: #f2f4f7;
+}
+
 .btn.primary {
   background: #4f7cff;
   border-color: #4f7cff;
   color: #fff;
+}
+
+.btn.close:hover {
+  background: #ffe3e3;
+  color: #d33;
 }
 </style>

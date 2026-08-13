@@ -8,3 +8,26 @@ body,
   overflow: hidden;
   font-family: system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
 }
+
+/* ── 自定义滚动条（细、半透明、圆角，与整体设计一致） ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

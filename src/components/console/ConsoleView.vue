@@ -27,7 +27,11 @@ const newSticker = (): NewSticker => ({
 });
 
 async function createSticker() {
-  await notes.create(newSticker());
+  try {
+    await notes.create(newSticker());
+  } catch (e) {
+    console.error("[ui] 新建便签失败：", e);
+  }
 }
 
 async function removeSticker(s: Sticker) {

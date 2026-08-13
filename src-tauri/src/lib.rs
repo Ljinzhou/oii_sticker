@@ -128,9 +128,11 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
 
 #[tauri::command]
 fn list_stickers_cmd(state: State<'_, AppState>) -> Result<Vec<models::Sticker>, String> {
-    state
+    let result = state
         .with_conn(commands::list_stickers)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    tracing::debug!("[cmd] list_stickers_cmd → {:?}", result.as_ref().map(|v| v.len()));
+    result
 }
 
 #[tauri::command]
@@ -144,24 +146,33 @@ fn get_sticker_cmd(
 }
 
 #[tauri::command]
-fn create_sticker_cmd(
+async fn create_sticker_cmd(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     new: NewSticker,
 ) -> Result<i64, String> {
-    let id = state
-        .with_conn(|c| commands::create_sticker(c, &new))
-        .map_err(|e| e.to_string())?;
-    create_sticker_win(
-        &app,
-        id,
-        &new.title,
-        new.pos_x,
-        new.pos_y,
-        new.width,
-        new.height,
-    )
+    let state2 = state.inner().clone();
+    let new_for_db = new.clone();
+    let id = tauri::async_runtime::spawn_blocking(move || {
+        state2.with_conn(|c| commands::create_sticker(c, &new_for_db))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking 失败: {e}"))?
     .map_err(|e| e.to_string())?;
+
+    // 窗口创建投递到主线程异步执行（避免在 IPC/async 线程同步建窗阻塞事件循环）
+    let app2 = app.clone();
+    let title = new.title.clone();
+    let (x, y, w, h) = (new.pos_x, new.pos_y, new.width, new.height);
+    app.run_on_main_thread(move || {
+        let win = create_sticker_win(&app2, id, &title, x, y, w, h);
+        tracing::info!(
+            "[cmd] create_sticker_cmd id={id} title={title} pos=({x},{y}) win_ok={}",
+            win.is_ok()
+        );
+    })
+    .map_err(|e| format!("投递主线程失败: {e}"))?;
+
     events::emit_push_update(&app, id);
     Ok(id)
 }
@@ -331,12 +342,19 @@ fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
     let behavior = state
         .with_conn(|c| commands::get_config(c))
         .map(|cfg| cfg.get_or("main_close_behavior", "hide"))
-        .unwrap_or_else(|_| "hide".to_string());
+        .unwrap_or_else(|e| {
+            tracing::warn!("[cmd] main_close_cmd 读取配置失败：{e}");
+            "hide".to_string()
+        });
+    tracing::info!("[cmd] main_close_cmd behavior={behavior}");
     if behavior == "quit" {
         app.exit(0);
     } else {
         if let Some(win) = app.get_webview_window("main") {
-            let _ = win.hide();
+            let hidden = win.hide();
+            tracing::info!("[cmd] main_close_cmd 隐藏主控台：{hidden:?}");
+        } else {
+            tracing::warn!("[cmd] main_close_cmd 未找到主控台窗口");
         }
     }
     Ok(())
@@ -367,11 +385,12 @@ fn slash_query_cmd(query: String) -> Vec<SlashDto> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 初始化 tracing 日志（stdout）
+    // 初始化 tracing 日志：默认 debug 级别（调试模式默认开启，输出详细
+    // 操作/事件日志）；可用 RUST_LOG 环境变量覆盖。
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
         )
         .try_init();
 
