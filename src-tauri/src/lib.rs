@@ -57,7 +57,7 @@ fn db_health(state: State<'_, AppState>) -> Result<DbHealth, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏），label = `sticker-<id>`。
+/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏、不可最大化），label = `sticker-<id>`。
 fn create_sticker_win(
     app: &tauri::AppHandle,
     id: i64,
@@ -75,6 +75,7 @@ fn create_sticker_win(
         .transparent(true)
         .decorations(false)
         .skip_taskbar(true)
+        .maximizable(false) // 禁用最大化（双击标题栏不触发）
         .resizable(true)
         .build()
 }
@@ -314,6 +315,12 @@ struct SlashDto {
 }
 
 #[tauri::command]
+fn debug_notify_cmd(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
+    crate::platform::notify::send(&app, &title, &body);
+    Ok(())
+}
+
+#[tauri::command]
 fn slash_query_cmd(query: String) -> Vec<SlashDto> {
     slash::matcher::filter(&slash::all_commands(), &query)
         .into_iter()
@@ -373,8 +380,30 @@ pub fn run() {
             // 提醒调度器（10s 周期）
             reminder::scheduler::spawn(handle.clone(), state.clone());
 
-            // 启动恢复：为数据库中已有便签重建窗口
-            if let Ok(stickers) = state.with_conn(commands::list_stickers) {
+            // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签
+            let stickers = state
+                .with_conn(commands::list_stickers)
+                .unwrap_or_default();
+            if stickers.is_empty() {
+                // 首次运行：创建一条默认便签，便于查看效果
+                let default = NewSticker {
+                    title: "欢迎使用 oii_sticker".into(),
+                    content: "# 欢迎使用 oii_sticker\n\n这是一张默认便签，可以：\n\n- 点击右上角 ✎ 进入编辑\n- 双击便签从收起状态唤醒\n- 点击 ⚙ 调整颜色与透明度\n\n## 任务清单\n\n- [ ] 试试勾选这个待办\n- [x] 已完成示例\n\n> 背景半透明、文字不透明。".into(),
+                    pos_x: 200,
+                    pos_y: 140,
+                    width: 400,
+                    height: 500,
+                    opacity: 0.9,
+                    bg_color: Some("#FFF4D6".into()),
+                    ..Default::default()
+                };
+                if let Ok(id) = state.with_conn(|c| create_sticker(c, &default)) {
+                    let _ = create_sticker_win(
+                        &handle, id, &default.title, default.pos_x, default.pos_y,
+                        default.width, default.height,
+                    );
+                }
+            } else {
                 for s in stickers {
                     let _ = create_sticker_win(
                         &handle, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
@@ -400,6 +429,7 @@ pub fn run() {
             reset_sticker_prefs_cmd,
             effective_prefs_cmd,
             toggle_todo_cmd,
+            debug_notify_cmd,
             slash_query_cmd
         ])
         .run(tauri::generate_context!())
