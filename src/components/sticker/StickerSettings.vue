@@ -8,7 +8,7 @@ const props = defineProps<{ stickerId: number }>();
 const emit = defineEmits<{ close: [] }>();
 const prefs = usePrefsStore();
 
-// 偏好
+// 偏好（即时生效，无保存按钮）
 const opacity = ref(85);
 const bgColor = ref("#FFF4D6");
 const textColor = ref("#222222");
@@ -16,10 +16,12 @@ const titleFontSize = ref(14);
 const bodyFontSize = ref(13);
 const alwaysOnTop = ref(false);
 
-// 提醒
+// 提醒（变更即写库）
 const remindAt = ref("");
 const remindRule = ref("");
 const isRecurring = ref(false);
+
+let debounceTimer: number | undefined;
 
 async function load() {
   await prefs.load(props.stickerId);
@@ -31,7 +33,6 @@ async function load() {
     titleFontSize.value = e.title_font_size;
     bodyFontSize.value = e.body_font_size;
   }
-  // 读取当前提醒
   try {
     const attrs = await invoke<StickerAttrs | null>("get_reminder_cmd", { id: props.stickerId });
     if (attrs) {
@@ -42,21 +43,30 @@ async function load() {
   } catch {
     /* 忽略 */
   }
+  alwaysOnTop.value = (await invoke<{ always_on_top: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.always_on_top ?? false;
 }
 
-async function savePrefs() {
-  await prefs.save(props.stickerId, {
-    opacity: Number(opacity.value) / 100,
-    bg_color: bgColor.value,
-    text_color: textColor.value,
-    title_font_size: titleFontSize.value,
-    body_font_size: bodyFontSize.value,
-  });
+/** 防抖保存偏好（滑块拖动实时生效）。 */
+function savePrefsSoon() {
+  if (debounceTimer) window.clearTimeout(debounceTimer);
+  debounceTimer = window.setTimeout(() => {
+    prefs.save(props.stickerId, {
+      opacity: Number(opacity.value) / 100,
+      bg_color: bgColor.value,
+      text_color: textColor.value,
+      title_font_size: titleFontSize.value,
+      body_font_size: bodyFontSize.value,
+    });
+  }, 150);
 }
 
-async function saveReminder() {
+function saveAlwaysOnTop(v: boolean) {
+  invoke("update_sticker_cmd", { id: props.stickerId, patch: { always_on_top: v } });
+}
+
+function saveReminder() {
   if (remindAt.value) {
-    await invoke("set_reminder_cmd", {
+    invoke("set_reminder_cmd", {
       attrs: {
         sticker_id: props.stickerId,
         due_date: null,
@@ -66,23 +76,13 @@ async function saveReminder() {
       },
     });
   } else {
-    await invoke("clear_reminder_cmd", { id: props.stickerId });
+    invoke("clear_reminder_cmd", { id: props.stickerId });
   }
 }
 
 async function resetPrefs() {
   await prefs.reset(props.stickerId);
   await load();
-}
-
-async function saveAll() {
-  await savePrefs();
-  await saveReminder();
-  await invoke("update_sticker_cmd", {
-    id: props.stickerId,
-    patch: { always_on_top: alwaysOnTop.value },
-  });
-  emit("close");
 }
 
 onMounted(load);
@@ -97,44 +97,44 @@ onMounted(load);
       </header>
 
       <section class="group">
-        <h3>外观</h3>
+        <h3>外观（修改即时生效）</h3>
         <label class="row">
           <span>背景透明度</span>
-          <input v-model.number="opacity" type="range" min="15" max="100" />
+          <input v-model.number="opacity" type="range" min="15" max="100" @input="savePrefsSoon" />
           <span class="val">{{ opacity }}%</span>
         </label>
         <label class="row">
           <span>背景颜色</span>
-          <input v-model="bgColor" type="color" />
+          <input v-model="bgColor" type="color" @input="savePrefsSoon" />
         </label>
         <label class="row">
           <span>文字颜色</span>
-          <input v-model="textColor" type="color" />
+          <input v-model="textColor" type="color" @input="savePrefsSoon" />
         </label>
         <label class="row">
           <span>标题字号</span>
-          <input v-model.number="titleFontSize" type="number" min="10" max="32" />
+          <input v-model.number="titleFontSize" type="number" min="10" max="32" @change="savePrefsSoon" />
         </label>
         <label class="row">
           <span>正文字号</span>
-          <input v-model.number="bodyFontSize" type="number" min="9" max="28" />
+          <input v-model.number="bodyFontSize" type="number" min="9" max="28" @change="savePrefsSoon" />
         </label>
         <label class="row">
           <span>窗口置顶</span>
-          <input v-model="alwaysOnTop" type="checkbox" />
+          <input v-model="alwaysOnTop" type="checkbox" @change="saveAlwaysOnTop(alwaysOnTop)" />
         </label>
-        <button class="link" @click="resetPrefs">恢复默认偏好</button>
+        <button class="link" @click="resetPrefs">↺ 恢复默认偏好</button>
       </section>
 
       <section class="group">
-        <h3>提醒</h3>
+        <h3>提醒（修改即保存）</h3>
         <label class="row">
           <span>提醒时间</span>
-          <input v-model="remindAt" type="datetime-local" step="60" />
+          <input v-model="remindAt" type="datetime-local" step="60" @change="saveReminder" />
         </label>
         <label class="row">
           <span>重复规则</span>
-          <select v-model="remindRule">
+          <select v-model="remindRule" @change="saveReminder">
             <option value="">不重复</option>
             <option value="daily">每天</option>
             <option value="weekly">每周（周一）</option>
@@ -145,12 +145,11 @@ onMounted(load);
         </label>
         <label class="row">
           <span>循环提醒</span>
-          <input v-model="isRecurring" type="checkbox" />
+          <input v-model="isRecurring" type="checkbox" @change="saveReminder" />
         </label>
       </section>
 
       <footer>
-        <button class="btn primary" @click="saveAll">保存</button>
         <button class="btn" @click="emit('close')">取消</button>
       </footer>
     </div>
@@ -165,7 +164,7 @@ onMounted(load);
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 14px;
+  border-radius: 0;
   z-index: 20;
 }
 
@@ -254,7 +253,7 @@ h3 {
   color: #4f7cff;
   font-size: 12px;
   cursor: pointer;
-  padding: 4px 0;
+  padding: 6px 0;
 }
 
 footer {
@@ -272,11 +271,5 @@ footer {
   background: #fff;
   color: #333;
   cursor: pointer;
-}
-
-.btn.primary {
-  background: #4f7cff;
-  border-color: #4f7cff;
-  color: #fff;
 }
 </style>

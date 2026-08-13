@@ -11,6 +11,13 @@ const notes = useNotesStore();
 type MenuKey = "general" | "defaults" | "about" | "debug";
 const activeMenu = ref<MenuKey>("general");
 const autoStart = ref(false);
+const closeBehavior = ref("hide");
+
+async function setCloseBehavior(v: string) {
+  closeBehavior.value = v;
+  await settings.set("main_close_behavior", v);
+  log(`关闭主控台行为：${v === "quit" ? "退出程序" : "隐藏到托盘"}`);
+}
 
 // Debug 状态
 const notifyResult = ref("");
@@ -82,6 +89,7 @@ onMounted(async () => {
   } catch {
     autoStart.value = false;
   }
+  closeBehavior.value = settings.get("main_close_behavior", "hide");
 });
 </script>
 
@@ -119,7 +127,14 @@ onMounted(async () => {
           <span>开机自启</span>
           <input type="checkbox" :checked="autoStart" @change="toggleAutoStart" />
         </label>
-        <p class="hint">开机自动启动 oii_sticker（Windows 注册表 / macOS LaunchAgent）。</p>
+        <label class="row">
+          <span>关闭主控台时</span>
+          <select :value="closeBehavior" @change="(e) => setCloseBehavior((e.target as HTMLSelectElement).value)">
+            <option value="hide">隐藏到系统托盘</option>
+            <option value="quit">退出程序</option>
+          </select>
+        </label>
+        <p class="hint">点击主控台右上角 ✕ 时的行为（隐藏后可从托盘图标恢复）。</p>
       </div>
 
       <!-- 便签默认 -->
@@ -270,6 +285,13 @@ h3 {
 .row input[type="range"] {
   width: 180px;
   accent-color: #4f7cff;
+}
+
+.row select {
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
 }
 
 .row input[type="number"] {

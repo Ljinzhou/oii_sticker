@@ -3,7 +3,7 @@ import { ref, onMounted, onBeforeUnmount } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useNotesStore } from "../../stores/notes";
 import { useSettingsStore } from "../../stores/settings";
-import { listen } from "../../composables/useTauri";
+import { invoke, listen } from "../../composables/useTauri";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { NewSticker, Sticker } from "../../types";
 import SettingsPanel from "./SettingsPanel.vue";
@@ -49,7 +49,8 @@ function minimizeWindow() {
 }
 
 function closeWindow() {
-  getCurrentWindow().close();
+  // 按设置行为关闭：隐藏到托盘或退出程序（Rust 侧处理，无前端权限问题）
+  invoke("main_close_cmd");
 }
 
 onMounted(async () => {

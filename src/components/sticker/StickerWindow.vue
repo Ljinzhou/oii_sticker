@@ -27,8 +27,11 @@ let collapseTimer: number | undefined;
 
 const cardStyle = computed(() => {
   const bg = prefs.effective?.bg_color ?? sticker.value?.bg_color ?? "#FFF4D6";
+  // 背景半透明、文字不透明：按模式调整背景 alpha（display 收起最淡，
+  // edit 稍实，interact 居中）；文字颜色恒不透明。
+  const alpha = mode.value === "display" ? 0.35 : mode.value === "edit" ? 0.95 : 0.9;
   return {
-    background: hexToRgba(bg, 1),
+    background: hexToRgba(bg, alpha),
     color: prefs.effective?.text_color ?? "#222222",
   };
 });
@@ -53,8 +56,8 @@ async function applyMode(next: StickerMode) {
       patch: { display_mode: next },
     });
   }
-  // display=低透明收起（CSS opacity 淡化整窗，含文字，符合"收起"语义）；
-  // interact/edit 恢复正常
+  // display=低透明收起：背景 alpha 由 cardStyle 控制（文字始终不透明）；
+  // interact 5s 无操作自动收起；edit 不自动收起
   resetCollapseTimer();
 }
 
@@ -169,7 +172,6 @@ onBeforeUnmount(() => {
 }
 
 .sticker.display {
-  opacity: 0.4;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
 

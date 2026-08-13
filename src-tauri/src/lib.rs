@@ -176,10 +176,13 @@ fn update_sticker_cmd(
     state
         .with_conn(|c| commands::update_sticker(c, id, &patch))
         .map_err(|e| e.to_string())?;
-    // 标题/尺寸变化同步到窗口
+    // 标题/置顶/尺寸变化同步到窗口
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         if let Some(title) = &patch.title {
             let _ = win.set_title(title);
+        }
+        if let Some(on_top) = patch.always_on_top {
+            let _ = win.set_always_on_top(on_top);
         }
     }
     events::emit_push_update(&app, id);
@@ -282,10 +285,17 @@ fn effective_prefs_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<models::EffectivePrefs, String> {
+    // 锁顺序：先 conn 锁（读 prefs + sticker 背景色），再 config 读锁合并；
+    // 与 refresh_config 的 conn→config 写锁顺序一致，避免死锁环。
+    let (prefs, sticker_bg) = state
+        .with_conn(|c| {
+            let prefs = crate::db::prefs_repo::get(c, id)?.unwrap_or_default();
+            let bg = crate::db::sticker_repo::get(c, id)?.and_then(|s| s.bg_color);
+            Ok((prefs, bg))
+        })
+        .map_err(|e| e.to_string())?;
     let config = state.config().clone();
-    state
-        .with_conn(|c| commands::effective_prefs(c, &config, id))
-        .map_err(|e| e.to_string())
+    Ok(config.effective(&prefs, sticker_bg.as_deref()))
 }
 
 #[tauri::command]
@@ -312,6 +322,24 @@ struct SlashDto {
     category: String,
     hint: String,
     template: String,
+}
+
+/// 关闭主控台：按 system_config `main_close_behavior` 决定行为
+/// （"hide" 隐藏到托盘 / "quit" 退出程序，默认 hide）。
+#[tauri::command]
+fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let behavior = state
+        .with_conn(|c| commands::get_config(c))
+        .map(|cfg| cfg.get_or("main_close_behavior", "hide"))
+        .unwrap_or_else(|_| "hide".to_string());
+    if behavior == "quit" {
+        app.exit(0);
+    } else {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -430,6 +458,7 @@ pub fn run() {
             effective_prefs_cmd,
             toggle_todo_cmd,
             debug_notify_cmd,
+            main_close_cmd,
             slash_query_cmd
         ])
         .run(tauri::generate_context!())
