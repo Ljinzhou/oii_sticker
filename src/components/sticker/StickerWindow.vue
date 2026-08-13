@@ -41,8 +41,9 @@ async function load() {
   if (sticker.value) {
     mode.value = (sticker.value.display_mode as StickerMode) || "display";
     // 先应用窗口状态（display 穿透+锁尺寸），不依赖后续加载成功
+    // 注意：Tauri 2 invoke 参数为 camelCase（Rust is_display → JS isDisplay）
     try {
-      await invoke("apply_window_state_cmd", { id: stickerId, is_display: mode.value === "display" });
+      await invoke("apply_window_state_cmd", { id: stickerId, isDisplay: mode.value === "display" });
     } catch (e) {
       console.error("[ui] 应用窗口状态失败：", e);
     }
@@ -55,9 +56,9 @@ async function load() {
 async function applyMode(next: StickerMode) {
   const prev = mode.value;
   mode.value = next;
-  // 1) 窗口状态（独立执行，失败不阻断后续）
+  // 1) 窗口状态（独立执行，失败不阻断后续）；参数为 camelCase
   try {
-    await invoke("apply_window_state_cmd", { id: stickerId, is_display: next === "display" });
+    await invoke("apply_window_state_cmd", { id: stickerId, isDisplay: next === "display" });
   } catch (e) {
     console.error("[ui] 应用窗口状态失败：", e);
   }

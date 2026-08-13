@@ -128,7 +128,7 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
         return Err("安装 WH_MOUSE_LL 钩子失败".into());
     }
     *HOOK.lock().unwrap() = Some(hook as usize);
-    tracing::info!("[hook] 全局鼠标钩子已安装（右键双击唤醒穿透便签）");
+    tracing::info!("[hook] 全局鼠标钩子已安装（中键武装+左键点击唤醒穿透便签）");
     Ok(())
 }
 
