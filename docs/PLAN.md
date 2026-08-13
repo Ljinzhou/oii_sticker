@@ -11,8 +11,8 @@
 | 阶段 | 独立 plan | 状态 |
 |---|---|---|
 | 阶段 0 — 前期准备（脚手架） | [`docs/plan/phase-0.md`](plan/phase-0.md) | ✅ 已完成（2026-08-13） |
-| 验证 Demo — 多窗口背景半透明 | [`docs/plan/phase-demo.md`](plan/phase-demo.md) | ⏳ 未开始（**下一步**） |
-| 阶段 1 — 数据层（models + db） | [`docs/plan/phase-1.md`](plan/phase-1.md) | ⏳ 未开始 |
+| 验证 Demo — 多窗口背景半透明 | [`docs/plan/phase-demo.md`](plan/phase-demo.md) | ✅ 已完成（2026-08-13，视觉验证通过） |
+| 阶段 1 — 数据层（models + db） | [`docs/plan/phase-1.md`](plan/phase-1.md) | ⏳ 未开始（**下一步**） |
 | 阶段 2 — 核心逻辑（datetime / slash / editing / commands） | [`docs/plan/phase-2.md`](plan/phase-2.md) | ⏳ 未开始 |
 | 阶段 3 — 平台集成（tray / notify / autostart / window_style） | [`docs/plan/phase-3.md`](plan/phase-3.md) | ⏳ 未开始 |
 | 阶段 4 — 提醒调度（reminder/scheduler） | [`docs/plan/phase-4.md`](plan/phase-4.md) | ⏳ 未开始 |
