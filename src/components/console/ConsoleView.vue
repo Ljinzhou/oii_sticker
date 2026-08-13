@@ -38,6 +38,11 @@ async function removeSticker(s: Sticker) {
   await notes.remove(s.id);
 }
 
+/** 唤醒便签窗口（display 穿透状态下取消穿透并置前）。 */
+function wakeSticker(id: number) {
+  invoke("wake_sticker_cmd", { id });
+}
+
 function preview(sticker: Sticker): string {
   const text = sticker.content.replace(/[#>*`\[\]]/g, "").trim();
   return text.length > 40 ? text.slice(0, 40) + "…" : text;
@@ -94,7 +99,8 @@ onBeforeUnmount(() => {
           <div class="card-head">
             <span class="card-title">{{ s.title || "（无标题）" }}</span>
             <span class="mode-badge">{{ reminderText(s) }}</span>
-            <button class="btn small danger" title="删除便签（保留数据？否——直接删除）" @click="removeSticker(s)">✕</button>
+            <button class="btn small" title="唤醒/显示便签窗口" @click="wakeSticker(s.id)">👁</button>
+            <button class="btn small danger" title="删除便签（数据一并删除）" @click="removeSticker(s)">✕</button>
           </div>
           <div class="card-preview">{{ preview(s) }}</div>
           <div class="card-foot">
