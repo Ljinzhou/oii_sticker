@@ -41,6 +41,8 @@ async function load() {
   if (sticker.value) {
     mode.value = (sticker.value.display_mode as StickerMode) || "display";
     await prefs.load(stickerId);
+    // 应用窗口状态（display 禁 resize 等）——修复启动后仍可拖拽改尺寸的问题
+    await invoke("apply_window_state_cmd", { id: stickerId, is_display: mode.value === "display" });
     resetCollapseTimer();
   }
 }
@@ -72,12 +74,25 @@ function onInteract() {
   resetCollapseTimer();
 }
 
-/** 双击：display→interact 唤醒；interact→edit 编辑。 */
+/** 双击：interact→edit 编辑（display 用右键双击唤醒，见 onContextMenu）。 */
 function onDblClick() {
-  if (mode.value === "display") {
-    applyMode("interact");
-  } else if (mode.value === "interact") {
+  if (mode.value === "interact") {
     applyMode("edit");
+  }
+}
+
+let lastContextTime = 0;
+
+/** 右键双击：display 模式下唤醒进入 interact（按设计手册）。 */
+function onContextMenu(e: MouseEvent) {
+  e.preventDefault();
+  if (mode.value !== "display") return;
+  const now = Date.now();
+  if (now - lastContextTime < 400) {
+    applyMode("interact");
+    lastContextTime = 0;
+  } else {
+    lastContextTime = now;
   }
 }
 
@@ -126,6 +141,7 @@ onBeforeUnmount(() => {
     :class="{ display: mode === 'display', alert: alertActive }"
     tabindex="0"
     @dblclick="onDblClick"
+    @contextmenu.prevent="onContextMenu"
     @click="onInteract"
     @mousemove="onInteract"
     @keydown="onKeydown"
@@ -206,7 +222,7 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: grab;
   z-index: 15;
-  opacity: 0.25;
+  opacity: 0.5;
   transition: opacity 0.15s;
 }
 
