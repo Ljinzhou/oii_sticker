@@ -36,6 +36,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ("default_sticker_auto_scroll_speed", "30", "新便签默认自动滚动速度（px/s）"),
         // v4：窗口置顶默认参数。
         ("default_sticker_always_on_top", "1", "新便签默认是否置顶（0 否，1 是）"),
+        // v6：调试模式（默认开启，输出详细日志）。
+        ("debug_mode", "1", "调试模式（0 关闭，1 开启详细操作/事件日志）"),
     ];
 
     let mut stmt = conn

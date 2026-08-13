@@ -14,11 +14,13 @@ pub const OPEN_SETTINGS: &str = "sticky://open-settings";
 
 /// 向指定窗口 label 发事件。
 pub fn emit_to_label(app: &AppHandle, label: &str, event: &str, payload: impl Serialize + Clone) {
+    tracing::debug!("[event] emit_to label={label} event={event}");
     let _ = app.emit_to(label, event, payload);
 }
 
 /// 提醒触发/结束状态信号（按便签窗口 label）。
 pub fn emit_alert_active(app: &AppHandle, sticker_id: i64, active: bool) {
+    tracing::debug!("[event] alert_active sticker={sticker_id} active={active}");
     let _ = app.emit_to(
         format!("sticker-{sticker_id}"),
         ALERT_ACTIVE,
@@ -28,5 +30,6 @@ pub fn emit_alert_active(app: &AppHandle, sticker_id: i64, active: bool) {
 
 /// 便签内容变更推送（主控台与便签窗口都收到）。
 pub fn emit_push_update(app: &AppHandle, sticker_id: i64) {
+    tracing::debug!("[event] push_update sticker={sticker_id}");
     let _ = app.emit(PUSH_UPDATE, sticker_id);
 }

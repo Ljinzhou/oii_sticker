@@ -2,17 +2,14 @@
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke, listen } from "../../composables/useTauri";
-import { useNotesStore } from "../../stores/notes";
 import { usePrefsStore } from "../../stores/prefs";
 import { hexToRgba } from "../../utils/markdown";
 import type { Sticker, StickerMode } from "../../types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import StickerHeader from "./StickerHeader.vue";
 import StickerViewer from "./StickerViewer.vue";
 import StickerEditor from "./StickerEditor.vue";
 import StickerSettings from "./StickerSettings.vue";
 
-const notes = useNotesStore();
 const prefs = usePrefsStore();
 
 const label = getCurrentWindow().label;
@@ -27,9 +24,10 @@ let collapseTimer: number | undefined;
 
 const cardStyle = computed(() => {
   const bg = prefs.effective?.bg_color ?? sticker.value?.bg_color ?? "#FFF4D6";
-  // 背景半透明、文字不透明：按模式调整背景 alpha（display 收起最淡，
-  // edit 稍实，interact 居中）；文字颜色恒不透明。
-  const alpha = mode.value === "display" ? 0.35 : mode.value === "edit" ? 0.95 : 0.9;
+  // 背景半透明、文字不透明：alpha 来自用户设置的 opacity（立即生效），
+  // display 收起模式在此基础上再减淡；文字颜色恒不透明。
+  const base = prefs.effective?.opacity ?? 0.9;
+  const alpha = mode.value === "display" ? base * 0.4 : base;
   return {
     background: hexToRgba(bg, alpha),
     color: prefs.effective?.text_color ?? "#222222",
@@ -43,11 +41,11 @@ async function load() {
   if (sticker.value) {
     mode.value = (sticker.value.display_mode as StickerMode) || "display";
     await prefs.load(stickerId);
-    applyMode(mode.value);
+    resetCollapseTimer();
   }
 }
 
-/** 应用模式：持久化 + 窗口透明度 + 自动收起计时。 */
+/** 应用模式：持久化 + 自动收起计时（背景透明度由 cardStyle 控制）。 */
 async function applyMode(next: StickerMode) {
   mode.value = next;
   if (sticker.value) {
@@ -56,8 +54,6 @@ async function applyMode(next: StickerMode) {
       patch: { display_mode: next },
     });
   }
-  // display=低透明收起：背景 alpha 由 cardStyle 控制（文字始终不透明）；
-  // interact 5s 无操作自动收起；edit 不自动收起
   resetCollapseTimer();
 }
 
@@ -74,13 +70,21 @@ function onInteract() {
   resetCollapseTimer();
 }
 
-function onDoubleClickWake() {
-  if (mode.value === "display") applyMode("interact");
+/** 双击：display→interact 唤醒；interact→edit 编辑。 */
+function onDblClick() {
+  if (mode.value === "display") {
+    applyMode("interact");
+  } else if (mode.value === "interact") {
+    applyMode("edit");
+  }
 }
 
-function onEnterEdit() {
-  if (collapseTimer) window.clearTimeout(collapseTimer);
-  applyMode("edit");
+/** E 键进入编辑（非编辑态）。 */
+function onKeydown(e: KeyboardEvent) {
+  if (mode.value !== "edit" && (e.key === "e" || e.key === "E")) {
+    applyMode("edit");
+  }
+  onInteract();
 }
 
 async function onSaved() {
@@ -89,20 +93,17 @@ async function onSaved() {
 }
 
 async function onClosed() {
-  await notes.remove(stickerId);
-  const win = getCurrentWindow();
-  await win.close();
+  // 只关闭窗口，不删除数据（主控台保留该便签）
+  await getCurrentWindow().close();
 }
 
 onMounted(async () => {
   await load();
-  // 提醒触发状态信号（无动画，仅提示）
   unlisteners.push(
     await listen<boolean>("sticky://alert-active", (active) => {
       alertActive.value = active;
     }),
   );
-  // 内容变更推送 → 重新加载
   unlisteners.push(
     await listen<number>("sticky://push-update", (id) => {
       if (id === stickerId) load();
@@ -121,20 +122,12 @@ onBeforeUnmount(() => {
     class="sticker"
     :style="cardStyle"
     :class="{ display: mode === 'display', alert: alertActive }"
-    @dblclick="onDoubleClickWake"
+    tabindex="0"
+    @dblclick="onDblClick"
     @click="onInteract"
-    @keydown="onInteract"
     @mousemove="onInteract"
+    @keydown="onKeydown"
   >
-    <StickerHeader
-      :mode="mode"
-      :title="sticker?.title ?? ''"
-      :bg-style="cardStyle.background"
-      @enter-edit="onEnterEdit"
-      @toggle-settings="showSettings = !showSettings"
-      @close="onClosed"
-    />
-
     <div class="body" :style="{ fontSize: bodyFontSize + 'px' }">
       <StickerViewer
         v-if="mode === 'display' || mode === 'interact'"
@@ -146,18 +139,15 @@ onBeforeUnmount(() => {
       <StickerEditor
         v-else-if="mode === 'edit'"
         :content="sticker?.content ?? ''"
-        :title="sticker?.title ?? ''"
         :sticker-id="stickerId"
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
+        @toggle-settings="showSettings = !showSettings"
+        @closed="onClosed"
       />
     </div>
 
-    <StickerSettings
-      v-if="showSettings"
-      :sticker-id="stickerId"
-      @close="showSettings = false"
-    />
+    <StickerSettings v-if="showSettings" :sticker-id="stickerId" @close="showSettings = false" />
   </div>
 </template>
 
@@ -170,6 +160,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
   transition: box-shadow 0.2s;
+  outline: none;
 }
 
 .sticker.display {
@@ -183,6 +174,6 @@ onBeforeUnmount(() => {
 .body {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 16px;
+  padding: 14px 16px;
 }
 </style>
