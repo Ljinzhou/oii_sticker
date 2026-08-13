@@ -47,8 +47,9 @@ async function load() {
   }
 }
 
-/** 应用模式：持久化 + 窗口状态（display=穿透+禁resize）+ 自动收起计时。 */
+/** 应用模式：持久化 + 窗口状态（display 锁尺寸）+ 模式切换通知。 */
 async function applyMode(next: StickerMode) {
+  const prev = mode.value;
   mode.value = next;
   if (sticker.value) {
     await invoke("update_sticker_cmd", {
@@ -56,8 +57,18 @@ async function applyMode(next: StickerMode) {
       patch: { display_mode: next },
     });
   }
-  // display：点击穿透 + 禁止 resize；interact/edit：正常交互
-  await invoke("apply_window_state_cmd", { id: stickerId, display: next === "display" });
+  // display：锁尺寸；interact/edit：可 resize
+  await invoke("apply_window_state_cmd", { id: stickerId, is_display: next === "display" });
+  // 模式切换系统通知（进入展示/交互模式）
+  if (prev !== next && sticker.value) {
+    const title = sticker.value.title || `便签 #${stickerId}`;
+    const body = next === "display"
+      ? `${title} 进入展示模式`
+      : next === "interact"
+        ? `${title} 进入交互模式`
+        : `${title} 进入编辑模式`;
+    invoke("debug_notify_cmd", { title, body });
+  }
   resetCollapseTimer();
 }
 
@@ -146,13 +157,15 @@ onBeforeUnmount(() => {
     @mousemove="onInteract"
     @keydown="onKeydown"
   >
-    <!-- 透明顶部蒙版：interact 模式显示三功能按钮 + 拖动窗口（无背景色） -->
+    <!-- 透明顶部蒙版：interact 模式覆盖在内容上方（不占布局空间），
+         显示四功能按钮 + 可拖动窗口（无背景色） -->
     <div
       v-if="mode === 'interact'"
       class="overlay"
       data-tauri-drag-region
       @mousemove.stop="onInteract"
     >
+      <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
       <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
       <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
       <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
@@ -222,8 +235,7 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: grab;
   z-index: 15;
-  opacity: 0.5;
-  transition: opacity 0.15s;
+  opacity: 1;
 }
 
 .overlay:hover {
