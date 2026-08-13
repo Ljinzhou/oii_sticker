@@ -362,7 +362,7 @@ fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
 
 /// 应用便签窗口状态：display 模式 → 禁止 resize（低透明收起）；
 /// 其他模式 → 可 resize。
-/// 注意：display 不做点击穿透（穿透会收不到"右键双击唤醒"，与设计手册冲突）。
+/// display 额外用 min/max size 锁死当前尺寸（双保险，防边缘拖拽改大小）。
 #[tauri::command]
 fn apply_window_state_cmd(
     app: tauri::AppHandle,
@@ -370,8 +370,22 @@ fn apply_window_state_cmd(
     is_display: bool,
 ) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
-        win.set_resizable(!is_display)
-            .map_err(|e| format!("设置 resize 失败: {e}"))?;
+        if is_display {
+            let size = win.outer_size().map_err(|e| format!("读取尺寸失败: {e}"))?;
+            win.set_min_size(Some(size))
+                .map_err(|e| format!("设置最小尺寸失败: {e}"))?;
+            win.set_max_size(Some(size))
+                .map_err(|e| format!("设置最大尺寸失败: {e}"))?;
+            win.set_resizable(false)
+                .map_err(|e| format!("设置 resize 失败: {e}"))?;
+        } else {
+            win.set_min_size(None::<tauri::Size>)
+                .map_err(|e| format!("清除最小尺寸失败: {e}"))?;
+            win.set_max_size(None::<tauri::Size>)
+                .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
+            win.set_resizable(true)
+                .map_err(|e| format!("设置 resize 失败: {e}"))?;
+        }
         // 确保不处于穿透状态，保证右键双击唤醒可用
         win.set_ignore_cursor_events(false)
             .map_err(|e| format!("取消穿透失败: {e}"))?;
