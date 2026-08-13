@@ -85,25 +85,10 @@ function onInteract() {
   resetCollapseTimer();
 }
 
-/** 双击：interact→edit 编辑（display 用右键双击唤醒，见 onContextMenu）。 */
+/** 双击：interact→edit 编辑（display 穿透唤醒由全局鼠标钩子驱动）。 */
 function onDblClick() {
   if (mode.value === "interact") {
     applyMode("edit");
-  }
-}
-
-let lastContextTime = 0;
-
-/** 右键双击：display 模式下唤醒进入 interact（按设计手册）。 */
-function onContextMenu(e: MouseEvent) {
-  e.preventDefault();
-  if (mode.value !== "display") return;
-  const now = Date.now();
-  if (now - lastContextTime < 400) {
-    applyMode("interact");
-    lastContextTime = 0;
-  } else {
-    lastContextTime = now;
   }
 }
 
@@ -137,6 +122,14 @@ onMounted(async () => {
       if (id === stickerId) load();
     }),
   );
+  // 鼠标钩子右键双击唤醒（display 穿透状态）→ 前端切换 interact
+  unlisteners.push(
+    await listen<number>("sticky://wake", (id) => {
+      if (id === stickerId && mode.value === "display") {
+        applyMode("interact");
+      }
+    }),
+  );
 });
 
 onBeforeUnmount(() => {
@@ -152,7 +145,6 @@ onBeforeUnmount(() => {
     :class="{ display: mode === 'display', alert: alertActive }"
     tabindex="0"
     @dblclick="onDblClick"
-    @contextmenu.prevent="onContextMenu"
     @click="onInteract"
     @mousemove="onInteract"
     @keydown="onKeydown"

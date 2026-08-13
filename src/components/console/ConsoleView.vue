@@ -11,6 +11,8 @@ import SettingsPanel from "./SettingsPanel.vue";
 const notes = useNotesStore();
 const settings = useSettingsStore();
 const showSettings = ref(false);
+const openIds = ref<number[]>([]);
+const confirming = ref<Sticker | null>(null);
 const unlisteners: UnlistenFn[] = [];
 
 const newSticker = (): NewSticker => ({
@@ -36,11 +38,25 @@ async function createSticker() {
 
 async function removeSticker(s: Sticker) {
   await notes.remove(s.id);
+  confirming.value = null;
 }
 
-/** 唤醒便签窗口（display 穿透状态下取消穿透并置前）。 */
-function wakeSticker(id: number) {
-  invoke("wake_sticker_cmd", { id });
+/** 隐藏/显示便签窗口切换（数据保留）。 */
+async function toggleSticker(s: Sticker) {
+  if (isOpen(s.id)) {
+    await invoke("hide_sticker_cmd", { id: s.id });
+  } else {
+    await invoke("wake_sticker_cmd", { id: s.id });
+  }
+  await refreshOpenIds();
+}
+
+function isOpen(id: number): boolean {
+  return openIds.value.includes(id);
+}
+
+async function refreshOpenIds() {
+  openIds.value = await invoke<number[]>("list_open_sticker_ids_cmd");
 }
 
 function preview(sticker: Sticker): string {
@@ -65,6 +81,7 @@ function closeWindow() {
 onMounted(async () => {
   notes.refresh();
   settings.refresh();
+  refreshOpenIds();
   // 后端推送 → 刷新列表
   unlisteners.push(await listen("sticky://push-update", () => notes.refresh()));
   unlisteners.push(await listen("sticky://prefs-updated", () => settings.refresh()));
@@ -99,8 +116,10 @@ onBeforeUnmount(() => {
           <div class="card-head">
             <span class="card-title">{{ s.title || "（无标题）" }}</span>
             <span class="mode-badge">{{ reminderText(s) }}</span>
-            <button class="btn small" title="唤醒/显示便签窗口" @click="wakeSticker(s.id)">👁</button>
-            <button class="btn small danger" title="删除便签（数据一并删除）" @click="removeSticker(s)">✕</button>
+            <button class="btn small" :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'" @click="toggleSticker(s)">
+              {{ isOpen(s.id) ? "隐藏" : "显示" }}
+            </button>
+            <button class="btn small danger" title="删除便签" @click="confirming = s">✕</button>
           </div>
           <div class="card-preview">{{ preview(s) }}</div>
           <div class="card-foot">
@@ -112,6 +131,18 @@ onBeforeUnmount(() => {
     </section>
 
     <SettingsPanel v-if="showSettings" @close="showSettings = false" />
+
+    <!-- 删除二次确认 -->
+    <div v-if="confirming" class="confirm-mask" @click.self="confirming = null">
+      <div class="confirm-box">
+        <h3>删除便签</h3>
+        <p>确定要删除「{{ confirming.title || "（无标题）" }}」吗？<br />删除后数据不可恢复。</p>
+        <div class="confirm-actions">
+          <button class="btn" @click="confirming = null">取消</button>
+          <button class="btn danger" @click="removeSticker(confirming)">确认删除</button>
+        </div>
+      </div>
+    </div>
   </main>
 </template>
 
@@ -263,5 +294,53 @@ onBeforeUnmount(() => {
   gap: 12px;
   font-size: 11px;
   color: #aaa;
+}
+
+/* 删除确认弹窗 */
+.confirm-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.confirm-box {
+  width: 300px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+}
+
+.confirm-box h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: #333;
+}
+
+.confirm-box p {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.6;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.btn.danger {
+  background: #e5484d;
+  border-color: #e5484d;
+  color: #fff;
+}
+
+.btn.danger:hover {
+  background: #d33;
 }
 </style>
