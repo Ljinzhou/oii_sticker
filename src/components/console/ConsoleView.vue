@@ -84,8 +84,7 @@ onBeforeUnmount(() => {
     </header>
 
     <section class="list">
-      <p v-if="notes.loading" class="empty">加载中…</p>
-      <p v-else-if="notes.stickers.length === 0" class="empty">暂无便签，点击"新建便签"开始</p>
+      <p v-if="notes.stickers.length === 0" class="empty">暂无便签，点击"新建便签"开始</p>
       <div v-else class="cards">
         <div v-for="s in notes.stickers" :key="s.id" class="card">
           <div class="card-head">

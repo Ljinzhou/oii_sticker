@@ -4,6 +4,8 @@ import type { StickerMode } from "../../types";
 defineProps<{
   mode: StickerMode;
   title: string;
+  /** 与便签主体完全一致的背景（rgba 字符串），实现一张便签纸效果 */
+  bgStyle: string;
 }>();
 
 const emit = defineEmits<{
@@ -14,7 +16,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <div class="header" data-tauri-drag-region>
+  <div class="header" :style="{ background: bgStyle }" data-tauri-drag-region>
     <span class="title" data-tauri-drag-region>{{ title || "便签" }}</span>
     <div class="tools">
       <button class="tool" title="编辑（E）" @click="emit('enterEdit')">✎</button>
@@ -30,8 +32,6 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background: rgba(255, 255, 255, 0.92);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   cursor: grab;
   user-select: none;
 }
@@ -66,11 +66,12 @@ const emit = defineEmits<{
 }
 
 .tool:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 .tool.close:hover {
-  background: #ffe3e3;
-  color: #d33;
+  background: rgba(220, 60, 60, 0.25);
+  color: #c22;
 }
 </style>
+
