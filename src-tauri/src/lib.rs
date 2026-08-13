@@ -532,9 +532,25 @@ pub fn run() {
                 }
             } else {
                 for s in stickers {
-                    let _ = create_sticker_win(
+                    if let Ok(win) = create_sticker_win(
                         &handle, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
-                    );
+                    ) {
+                        // 启动即按持久化模式同步窗口状态（display → 穿透+锁尺寸），
+                        // 不依赖前端加载完成，确保展示模式立即生效。
+                        if s.display_mode == "display" {
+                            if let Ok(size) = win.outer_size() {
+                                let _ = win.set_min_size(Some(size));
+                                let _ = win.set_max_size(Some(size));
+                            }
+                            let _ = win.set_resizable(false);
+                            let _ = win.set_ignore_cursor_events(true);
+                            state.set_display_window(s.id, true);
+                            tracing::info!("[setup] 便签 #{} 以展示模式恢复（穿透+锁尺寸）", s.id);
+                        } else {
+                            let _ = win.set_ignore_cursor_events(false);
+                            state.set_display_window(s.id, false);
+                        }
+                    }
                 }
             }
 
