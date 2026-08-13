@@ -9,7 +9,4 @@ pub mod edit_indent;
 pub mod edit_todo;
 pub mod list;
 
-pub use edit_backspace::handle_backspace_at_cursor;
-pub use edit_enter::handle_enter_at_cursor;
-pub use edit_indent::{handle_shift_tab_at_cursor, handle_tab_at_cursor};
 pub use edit_todo::toggle_todo_in_content;

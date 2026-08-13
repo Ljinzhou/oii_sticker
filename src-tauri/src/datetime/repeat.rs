@@ -72,13 +72,13 @@ pub fn parse_rule(s: &str) -> Option<RepeatRule> {
         }
         "monthly" => {
             let d: u32 = args?.trim().parse().ok()?;
-            (d >= 1 && d <= 31).then_some(RepeatRule::Monthly(d))
+            (1..=31).contains(&d).then_some(RepeatRule::Monthly(d))
         }
         "yearly" => {
             let (m, d) = args?.split_once('-')?;
             let m: u32 = m.trim().parse().ok()?;
             let d: u32 = d.trim().parse().ok()?;
-            (m >= 1 && m <= 12 && d >= 1 && d <= 31).then_some(RepeatRule::Yearly(m, d))
+            ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some(RepeatRule::Yearly(m, d))
         }
         _ => None,
     }

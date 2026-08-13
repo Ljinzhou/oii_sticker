@@ -1,0 +1,44 @@
+import { describe, it, expect } from "vitest";
+import { renderMarkdown, hexToRgba } from "./markdown";
+
+describe("renderMarkdown", () => {
+  it("渲染基础 Markdown（标题/粗体/列表）", () => {
+    const html = renderMarkdown("# 标题\n\n**加粗** 与 `代码`");
+    expect(html).toContain("<h1>标题</h1>");
+    expect(html).toContain("<strong>加粗</strong>");
+    expect(html).toContain("<code>代码</code>");
+  });
+
+  it("任务清单 checkbox 带 data-line 源行号", () => {
+    const content = "- [ ] 任务一\n- [x] 任务二";
+    const html = renderMarkdown(content);
+    // 第 0 行未勾选
+    expect(html).toContain(`data-line="0"`);
+    expect(html).not.toContain(`data-line="0" checked`);
+    // 第 1 行已勾选
+    expect(html).toContain(`data-line="1" checked`);
+  });
+
+  it("普通列表不生成 checkbox", () => {
+    const html = renderMarkdown("- 普通项");
+    expect(html).not.toContain("task-checkbox");
+  });
+
+  it("引用块与有序列表渲染", () => {
+    const html = renderMarkdown("> 引用\n\n1. 第一\n2. 第二");
+    expect(html).toContain("<blockquote>");
+    expect(html).toContain("<ol>");
+    expect(html).toContain("第一");
+  });
+});
+
+describe("hexToRgba", () => {
+  it("转换 hex 为 rgba", () => {
+    expect(hexToRgba("#FF5733", 0.5)).toBe("rgba(255, 87, 51, 0.5)");
+    expect(hexToRgba("FF5733", 1)).toBe("rgba(255, 87, 51, 1)");
+  });
+
+  it("非法输入回退默认色", () => {
+    expect(hexToRgba("bad", 0.5)).toBe("rgba(255, 255, 255, 0.5)");
+  });
+});

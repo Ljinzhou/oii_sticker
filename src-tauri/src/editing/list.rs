@@ -159,7 +159,7 @@ pub(super) fn continuation_marker(t: &str) -> Option<String> {
 
 /// 前 `len` 字节（ASCII 前缀）之后必须紧跟空白或已到行尾。
 pub(super) fn marker_followed_by_ws(t: &str, len: usize) -> bool {
-    t[len..].chars().next().map_or(true, |c| c.is_whitespace())
+    t[len..].chars().next().is_none_or(|c| c.is_whitespace())
 }
 
 /// 当前行右边界：不含行尾换行；若为 CRLF 行尾，`\r` 也一并剔除

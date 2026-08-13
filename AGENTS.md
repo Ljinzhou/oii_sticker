@@ -11,26 +11,37 @@ Tauri 2 + Vue 3 + TypeScript 桌面便签应用（重写自 `oi_sticker`，GPL v
 ```powershell
 pnpm install                  # 安装前端依赖
 pnpm tauri dev                # 开发运行（Rust 编译 + Vite dev）
+pnpm test                     # vitest 前端测试（9 用例）
 pnpm build                    # vue-tsc 类型检查 + vite build
-pnpm test                     # vitest 前端测试（配置后）
+pnpm tauri build --no-bundle  # 打包冒烟（release 编译）
 cd src-tauri
 cargo check                   # Rust 快速检查
-cargo test                    # Rust 单测
-cargo clippy                  # Rust lint
+cargo test                    # Rust 单测（99）
+cargo clippy                  # Rust lint（0 警告）
 ```
 
 ## 目录结构
 
 ```
-docs/PLAN.md                  总览 + 执行进度追踪
+docs/PLAN.md                  总览 + 执行进度追踪（阶段 0-6 已完成，7 进行中）
 docs/plan/phase-*.md          各阶段独立 plan
-src/                          前端（Vue 3 + TS）
-  styles/global.css           全局样式（html/body 透明）
-  App.vue                     窗口 label 分发（占位 → demo 实现）
+docs/parity-matrix.md         与旧项目行为对照矩阵
+src/                          前端（Vue 3 + TS + pinia）
+  stores/                     notes/settings/prefs
+  components/console/         主控台（列表 + 设置面板）
+  components/sticker/         便签窗口（三模式容器/头部/查看/编辑/设置）
+  components/markdown/        markdown-it 渲染（todo 源行映射）
+  components/slash/           slash 浮层
+  utils/markdown.ts           markdown-it 实例 + hexToRgba
 src-tauri/                    Rust 侧
-  src/lib.rs                  Tauri Builder + 插件 + 命令注册
-  capabilities/default.json   权限（windows: main + sticker-*）
-  tauri.conf.json             窗口配置（transparent/decorations:false）
+  src/lib.rs                  Builder + 15 个业务命令 + 托盘/调度器 setup
+  src/db/                     schema v1-v5 迁移 + 5 个 repo
+  src/datetime/               自研 DateTime + 重复规则
+  src/slash/                  20 条命令 + 匹配/插入/状态机
+  src/editing/                编辑器纯函数（Tab/Enter/Backspace/todo）
+  src/reminder/scheduler.rs   10s 调度 + 续期追补
+  src/platform/               tray/notify/autostart/window_style
+  src/events.rs               事件名常量 + emit 封装
 ```
 
 ## 技术红线（违反即失败）
@@ -48,4 +59,5 @@ src-tauri/                    Rust 侧
 - **阶段进度**：完成一个阶段 → 更新 `docs/PLAN.md` §1 状态表 → 提交
 - **视觉验证**：需要看图（UI 截图/运行效果/debug）时用 `claude-vision-skill`（全局，硅基流动 nex-agi/Nex-N2-Pro）
 - **Python 辅助**：内置工具不足时可编写 Python 脚本辅助 debug/开发，用完清理
-- **敏感文件**：`docs/test.jpg`（身份证测试图）、`.env` 不得提交
+- **敏感文件**：`.env` 不得提交
+

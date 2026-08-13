@@ -29,7 +29,7 @@ pub struct DateTime {
 const DAYS_IN_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 pub fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 /// 某年某月的天数。
@@ -109,7 +109,7 @@ impl DateTime {
     }
 
     /// 转 epoch 秒（1970-01-01 00:00 UTC 语义；本地时间直接换算）。
-    pub fn to_epoch_secs(&self) -> Option<u64> {
+    pub fn to_epoch_secs(self) -> Option<u64> {
         if !self.is_valid() {
             return None;
         }

@@ -17,8 +17,10 @@
 | 阶段 3 — 平台集成（tray / notify / autostart / window_style） | [`docs/plan/phase-3.md`](plan/phase-3.md) | ✅ 已完成（2026-08-13） |
 | 阶段 4 — 提醒调度（reminder/scheduler） | [`docs/plan/phase-4.md`](plan/phase-4.md) | ✅ 已完成（2026-08-13，98 单测全绿） |
 | 阶段 5 — Vue UI（全新设计） | [`docs/plan/phase-5.md`](plan/phase-5.md) | ✅ 已完成（2026-08-13，视觉验证通过） |
-| 阶段 6 — 集成联调（多窗口 + 命令 + 事件） | [`docs/plan/phase-6.md`](plan/phase-6.md) | ⏳ 未开始（**下一步**） |
-| 阶段 7 — 测试与对等性验证 | [`docs/plan/phase-7.md`](plan/phase-7.md) | ⏳ 未开始 |
+| 阶段 6 — 集成联调（多窗口 + 命令 + 事件） | [`docs/plan/phase-6.md`](plan/phase-6.md) | ✅ 已完成（2026-08-13，旧库/提醒/恢复实测） |
+| 阶段 7 — 测试与对等性验证 | [`docs/plan/phase-7.md`](plan/phase-7.md) | ✅ 已完成（2026-08-13，99 单测 + 9 前端测试 + 打包冒烟） |
+
+> **全部阶段完成** ✅ 项目进入"等待用户审查与后续需求"状态。
 
 > **更新规则**：每完成一个阶段 → 更新上表状态为 ✅ 已完成、把"下一步"指向下一个阶段 → **用中文写 git 提交信息提交**（每个完成的小块功能单独提交，见 §5）。
 
