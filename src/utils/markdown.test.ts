@@ -31,12 +31,16 @@ describe("renderMarkdown", () => {
     expect(html).toContain("第一");
   });
 
-  it("数学公式 $..$ 渲染为 math-inline 容器（data-tex 保留源）", async () => {
+  it("数学公式 $..$ 渲染为 math-inline 容器（含真实 SVG 输出）", async () => {
     await mathInstancePromise;
     const html = renderMarkdown("公式 $E=mc^2$ 测试");
     expect(html).toContain("math-inline");
     expect(html).toContain("data-tex=");
     expect(html).toContain("E=mc^2");
+    // 字体预加载生效：SVG 实际输出（mjx-container 内包含 <svg> 与字形 path）
+    expect(html).toContain("mjx-container");
+    expect(html).toContain("<svg");
+    expect(html).toContain('d="');
   });
 
   it("块级公式 $$..$$ 渲染为 math-block 容器", async () => {
