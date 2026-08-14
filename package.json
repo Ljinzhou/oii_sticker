@@ -17,14 +17,12 @@
     "markdown-it": "^15.0.0",
     "markdown-it-task-lists": "^2.1.1",
     "pinia": "^4.0.3",
-    "turndown": "^7.2.4",
     "vue": "^3.5.13",
     "vue-router": "^5.2.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@types/markdown-it": "^14.1.2",
-    "@types/turndown": "^5.0.6",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/test-utils": "^2.4.11",
     "jsdom": "^30.0.1",
