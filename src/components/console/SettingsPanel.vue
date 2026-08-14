@@ -193,7 +193,16 @@ onMounted(async () => {
             @change="(e) => settings.set('edit_font_size', (e.target as HTMLInputElement).value)"
           />
         </label>
+        <label class="row">
+          <span>编辑模式显示行号</span>
+          <input
+            type="checkbox"
+            :checked="settings.get('editor_line_numbers', '0') === '1'"
+            @change="(e) => settings.set('editor_line_numbers', (e.target as HTMLInputElement).checked ? '1' : '0')"
+          />
+        </label>
         <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
+        <p class="hint">开启后在编辑模式左侧显示 Markdown 文本的行号。</p>
       </div>
 
       <!-- Debug -->

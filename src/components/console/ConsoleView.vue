@@ -24,7 +24,7 @@ const newSticker = (): NewSticker => ({
   height: 500,
   opacity: settings.opacity,
   bg_color: settings.bgColor,
-  always_on_top: false,
+  always_on_top: settings.get("default_sticker_always_on_top", "1") === "1",
   auto_scroll: false,
 });
 
