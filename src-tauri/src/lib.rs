@@ -399,16 +399,47 @@ fn apply_window_state_cmd(
 }
 
 /// 唤醒便签窗口：置前聚焦 + 可 resize（display 收起后使用）。
+/// 防御：窗口不存在（曾被销毁）时按数据库记录经主线程重建，保证主控台
+/// "显示"按钮始终有效；同步清除 display 模式锁定的 min/max 尺寸
+/// （与鼠标钩子唤醒路径一致，否则 set_resizable(true) 不生效）。
 #[tauri::command]
 fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
-        win.set_ignore_cursor_events(false)
-            .map_err(|e| format!("取消穿透失败: {e}"))?;
-        win.set_resizable(true).map_err(|e| format!("设置 resize 失败: {e}"))?;
-        let _ = win.show();
-        let _ = win.set_focus();
-        tracing::info!("[cmd] wake_sticker id={id}");
-    }
+    let label = format!("sticker-{id}");
+    let win = if let Some(win) = app.get_webview_window(&label) {
+        win
+    } else {
+        let state = app.state::<AppState>();
+        let s = state
+            .with_conn(|c| commands::get_sticker(c, id))
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
+        // 已知坑：IPC 线程同步建窗会卡死，必须投递主线程（AI-DEV-GUIDE §2.2）
+        let (tx, rx) = std::sync::mpsc::channel();
+        let app2 = app.clone();
+        app.run_on_main_thread(move || {
+            let result = create_sticker_win(
+                &app2, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
+            )
+            .map_err(|e| format!("重建便签窗口失败: {e}"));
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("投递主线程失败: {e}"))?;
+        let rebuilt = rx
+            .recv()
+            .map_err(|e| format!("等待重建窗口失败: {e}"))??;
+        tracing::info!("[cmd] wake_sticker id={id} 窗口不存在，已按数据库记录重建");
+        rebuilt
+    };
+    win.set_ignore_cursor_events(false)
+        .map_err(|e| format!("取消穿透失败: {e}"))?;
+    win.set_resizable(true).map_err(|e| format!("设置 resize 失败: {e}"))?;
+    win.set_min_size(None::<tauri::Size>)
+        .map_err(|e| format!("清除最小尺寸失败: {e}"))?;
+    win.set_max_size(None::<tauri::Size>)
+        .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
+    let _ = win.show();
+    let _ = win.set_focus();
+    tracing::info!("[cmd] wake_sticker id={id}");
     Ok(())
 }
 
@@ -433,6 +464,10 @@ fn hide_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         win.hide().map_err(|e| format!("隐藏窗口失败: {e}"))?;
         tracing::info!("[cmd] hide_sticker id={id}");
+        // 广播 push-update：主控台收到后刷新 openIds，把按钮切到"显示"
+        events::emit_push_update(&app, id);
+    } else {
+        tracing::warn!("[cmd] hide_sticker id={id} 窗口不存在");
     }
     Ok(())
 }
