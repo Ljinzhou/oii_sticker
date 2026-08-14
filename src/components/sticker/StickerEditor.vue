@@ -71,7 +71,7 @@ defineExpose({ save });
       :font-size="editFontSize"
       :show-line-numbers="showLineNumbers"
     />
-    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" />
+    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" @save="save" />
   </div>
 </template>
 
