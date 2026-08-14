@@ -77,8 +77,13 @@ onMounted(async () => {
   notes.refresh();
   settings.refresh();
   refreshOpenIds();
-  // 后端推送 → 刷新列表
-  unlisteners.push(await listen("sticky://push-update", () => notes.refresh()));
+  // 后端推送 → 刷新列表 + 窗口打开状态（隐藏/显示按钮实时同步）
+  unlisteners.push(
+    await listen("sticky://push-update", () => {
+      notes.refresh();
+      refreshOpenIds();
+    }),
+  );
   unlisteners.push(await listen("sticky://prefs-updated", () => settings.refresh()));
   // 托盘"系统设置"→ 打开设置面板
   unlisteners.push(await listen("sticky://open-settings", () => (showSettings.value = true)));
