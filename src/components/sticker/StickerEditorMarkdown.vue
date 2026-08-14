@@ -2,7 +2,7 @@
 // Markdown 编辑模式：原生文本 textarea + 行号 gutter + highlight.js 行级高亮层。
 // 高亮层（pre）覆盖在 textarea 下方：文字透明只留光标（caret），滚动同步，
 // 宽度按 textarea 实际内容区（clientWidth）精确对齐，保证换行位置一致。
-import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { highlightMarkdown } from "../../utils/markdown-highlight";
 
 const props = defineProps<{
@@ -25,16 +25,10 @@ const text = computed({
 // 行数 = 逻辑行数（按 \n 计）
 const lineCount = computed(() => props.modelValue.split("\n").length);
 
-// 高亮层：防抖 120ms 重算（大文本不卡输入）
-const hlHtml = ref("");
-let hlTimer: number | undefined;
-function scheduleHighlight() {
-  if (hlTimer) window.clearTimeout(hlTimer);
-  hlTimer = window.setTimeout(() => {
-    hlHtml.value = highlightMarkdown(props.modelValue);
-  }, 120);
-}
-watch(() => props.modelValue, scheduleHighlight, { immediate: true });
+// 高亮层：同步 computed（无防抖）——textarea 文字透明，高亮层必须
+// 与输入同步刷新，否则输入字符延迟可见（表现为卡顿）。
+// 整块 hljs 高亮后普通文本单次 <5ms，便签场景可接受。
+const hlHtml = computed(() => highlightMarkdown(props.modelValue));
 
 /** textarea 滚动 → 同步高亮层与行号区。 */
 function syncScroll() {
@@ -58,14 +52,12 @@ function alignWidths() {
 let observer: ResizeObserver | undefined;
 
 onMounted(() => {
-  scheduleHighlight();
   alignWidths();
   observer = new ResizeObserver(alignWidths);
   if (textarea.value) observer.observe(textarea.value);
 });
 
 onBeforeUnmount(() => {
-  if (hlTimer) window.clearTimeout(hlTimer);
   observer?.disconnect();
 });
 
@@ -193,5 +185,55 @@ function onKeydown(e: KeyboardEvent) {
 /* 选区仍可见（文字透明时） */
 .src::selection {
   background: rgba(79, 124, 255, 0.25);
+}
+
+/* ── markdown 语法标记着色（主流编辑器风格：标记符号着色、内容保持默认） ── */
+.hl-layer :deep(.md-head) {
+  color: #a855f7;
+  font-weight: 600;
+}
+
+.hl-layer :deep(.md-task) {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.hl-layer :deep(.md-list) {
+  color: #4f7cff;
+  font-weight: 600;
+}
+
+.hl-layer :deep(.md-quote) {
+  color: #9ca3af;
+}
+
+.hl-layer :deep(.md-hr) {
+  color: #9ca3af;
+}
+
+.hl-layer :deep(.md-code) {
+  color: #d97706;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+  padding: 0 2px;
+  font-family: Consolas, "Courier New", monospace;
+}
+
+.hl-layer :deep(.md-strong) {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.hl-layer :deep(.md-em) {
+  color: #b45309;
+  font-style: italic;
+}
+
+.hl-layer :deep(.md-link) {
+  color: #2563eb;
+}
+
+.hl-layer :deep(.md-math) {
+  color: #7c3aed;
 }
 </style>
