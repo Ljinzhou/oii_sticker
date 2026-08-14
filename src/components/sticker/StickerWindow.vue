@@ -11,6 +11,8 @@ import StickerViewer from "./StickerViewer.vue";
 import StickerEditor from "./StickerEditor.vue";
 import StickerSettings from "./StickerSettings.vue";
 
+const editorRef = ref<InstanceType<typeof StickerEditor> | null>(null);
+
 const prefs = usePrefsStore();
 const settings = useSettingsStore();
 
@@ -184,14 +186,18 @@ onBeforeUnmount(() => {
     @mousemove="onInteract"
     @keydown="onKeydown"
   >
-    <!-- 透明顶部蒙版：interact 模式覆盖在内容上方（不占布局空间），
-         显示四功能按钮 + 可拖动窗口（无背景色） -->
+    <!-- 透明顶部蒙版：interact/edit 模式覆盖在内容上方（不占布局空间），
+         显示功能按钮 + 可拖动窗口（无背景色）；编辑模式额外多保存/取消两个按钮 -->
     <div
-      v-if="mode === 'interact'"
+      v-if="mode === 'interact' || mode === 'edit'"
       class="overlay"
       data-tauri-drag-region
       @mousemove.stop="onInteract"
     >
+      <template v-if="mode === 'edit'">
+        <button class="ov-btn save" title="保存（Ctrl+S）" @click.stop="editorRef?.save()">保存</button>
+        <button class="ov-btn text" title="取消，不保存" @click.stop="applyMode('interact')">取消</button>
+      </template>
       <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
       <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
       <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
@@ -208,11 +214,11 @@ onBeforeUnmount(() => {
       />
       <StickerEditor
         v-else-if="mode === 'edit'"
+        ref="editorRef"
         :content="sticker?.content ?? ''"
         :sticker-id="stickerId"
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
-        @closed="onClosed"
       />
     </div>
 
@@ -286,6 +292,24 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* 文字按钮（保存/取消）：与 ov-btn 同风格，宽度自适应 */
+.ov-btn.save,
+.ov-btn.text {
+  width: auto;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.ov-btn.save {
+  background: #4f7cff;
+  color: #fff;
+}
+
+.ov-btn.save:hover {
+  background: #3b67e8;
+  color: #fff;
 }
 
 .ov-btn:hover {
