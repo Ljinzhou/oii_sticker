@@ -139,8 +139,9 @@ async function onSaved() {
 }
 
 async function onClosed() {
-  // 只关闭窗口，不删除数据（主控台保留该便签）
-  await getCurrentWindow().close();
+  // 关闭=隐藏窗口（不删除数据）；由 Rust hide_sticker_cmd 隐藏并广播
+  // push-update，主控台收到后把按钮切到"显示"，点"显示"再经 wake 恢复。
+  await invoke("hide_sticker_cmd", { id: stickerId });
 }
 
 onMounted(async () => {
