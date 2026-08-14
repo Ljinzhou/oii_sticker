@@ -71,6 +71,7 @@ function setupInvoke(mode: StickerMode) {
 }
 
 async function mountSticker(mode: StickerMode) {
+  setupInvoke(mode);
   const wrapper = shallowMount(StickerWindow, { global: { plugins: [createPinia()] } });
   await flushPromises();
   return wrapper;
@@ -84,7 +85,6 @@ beforeEach(() => {
 
 describe("StickerWindow", () => {
   it("交互模式蒙版仅三个功能按钮（无关闭按钮）", async () => {
-    setupInvoke("interact");
     const wrapper = await mountSticker("interact");
     const btns = wrapper.findAll(".ov-btn");
     expect(btns.length).toBe(3);
@@ -92,7 +92,6 @@ describe("StickerWindow", () => {
   });
 
   it("编辑模式点击关闭按钮调用 hide_sticker_cmd（隐藏而非销毁窗口）", async () => {
-    setupInvoke("edit");
     const wrapper = await mountSticker("edit");
     mocks.invokeMock.mockClear();
     wrapper.findComponent({ name: "StickerEditor" }).vm.$emit("closed");
