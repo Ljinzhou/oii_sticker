@@ -90,4 +90,13 @@ describe("StickerWindow", () => {
     expect(btns.length).toBe(3);
     expect(wrapper.find(".ov-btn.close").exists()).toBe(false);
   });
+
+  it("编辑模式点击关闭按钮调用 hide_sticker_cmd（隐藏而非销毁窗口）", async () => {
+    setupInvoke("edit");
+    const wrapper = await mountSticker("edit");
+    mocks.invokeMock.mockClear();
+    wrapper.findComponent({ name: "StickerEditor" }).vm.$emit("closed");
+    await flushPromises();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("hide_sticker_cmd", { id: 7 });
+  });
 });
