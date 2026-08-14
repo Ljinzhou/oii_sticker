@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown, hexToRgba } from "./markdown";
+import { renderMarkdown, hexToRgba, mathInstancePromise } from "./markdown";
 
 describe("renderMarkdown", () => {
   it("渲染基础 Markdown（标题/粗体/列表）", () => {
@@ -29,6 +29,20 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<blockquote>");
     expect(html).toContain("<ol>");
     expect(html).toContain("第一");
+  });
+
+  it("数学公式 $..$ 渲染为 math-inline 容器（data-tex 保留源）", async () => {
+    await mathInstancePromise;
+    const html = renderMarkdown("公式 $E=mc^2$ 测试");
+    expect(html).toContain("math-inline");
+    expect(html).toContain("data-tex=");
+    expect(html).toContain("E=mc^2");
+  });
+
+  it("块级公式 $$..$$ 渲染为 math-block 容器", async () => {
+    await mathInstancePromise;
+    const html = renderMarkdown("$$\n\\frac{1}{2}\n$$");
+    expect(html).toContain("math-block");
   });
 });
 

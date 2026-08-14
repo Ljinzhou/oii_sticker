@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { renderMarkdown } from "../../utils/markdown";
+import { computed, ref, watch, nextTick } from "vue";
+import hljs from "highlight.js";
+import { renderMarkdown, collectMathStyle } from "../../utils/markdown";
 
 const props = defineProps<{
   content: string;
@@ -9,7 +10,40 @@ const props = defineProps<{
 
 const emit = defineEmits<{ toggle: [line: number] }>();
 
+const root = ref<HTMLDivElement | null>(null);
+
 const html = computed(() => renderMarkdown(props.content));
+
+/** 渲染后：注入 mathjax SVG CSS + 代码块语法高亮（仅带 language-* 标记的）。 */
+watch(
+  html,
+  async () => {
+    await nextTick();
+    // 数学公式样式（每次渲染后收集增量 CSS）
+    const css = await collectMathStyle();
+    if (css) {
+      let style = document.getElementById("mathjax-style") as HTMLStyleElement | null;
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "mathjax-style";
+        document.head.appendChild(style);
+      }
+      style.textContent = css;
+    }
+    // 代码块高亮（跳过无语言标记的，避免 auto 误判普通文本）
+    root.value?.querySelectorAll("pre code").forEach((c) => {
+      const el = c as HTMLElement;
+      if (el.classList.contains("hljs")) return;
+      if (!/language-[\w+-]+/.test(el.className)) return;
+      try {
+        hljs.highlightElement(el);
+      } catch {
+        /* 高亮失败保持原样 */
+      }
+    });
+  },
+  { immediate: true },
+);
 
 function onContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
@@ -24,7 +58,7 @@ function onContainerClick(e: MouseEvent) {
 </script>
 
 <template>
-  <div class="markdown" :class="{ interactive }" v-html="html" @click="onContainerClick"></div>
+  <div ref="root" class="markdown" :class="{ interactive }" v-html="html" @click="onContainerClick"></div>
 </template>
 
 <style scoped>
@@ -98,6 +132,11 @@ function onContainerClick(e: MouseEvent) {
   padding: 0;
 }
 
+/* highlight.js 高亮代码块：去掉主题的浅色底色，融入便签背景 */
+.markdown :deep(pre code.hljs) {
+  background: transparent;
+}
+
 .markdown :deep(a) {
   color: #4f7cff;
 }
@@ -123,6 +162,17 @@ function onContainerClick(e: MouseEvent) {
 .markdown :deep(img) {
   max-width: 100%;
   border-radius: 6px;
+}
+
+/* 数学公式 */
+.markdown :deep(.math-inline),
+.markdown :deep(.math-block) {
+  color: inherit;
+}
+
+.markdown :deep(.math-block) {
+  margin: 8px 0;
+  overflow-x: auto;
 }
 
 /* 任务清单 checkbox */

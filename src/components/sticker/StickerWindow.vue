@@ -126,8 +126,32 @@ function onDblClick() {
   }
 }
 
-/** E 键进入编辑（非编辑态）。 */
+/** 编辑模式形态（即时预览 | Markdown，全局配置 editor_mode）。 */
+const editorMode = computed(() => settings.get("editor_mode", "markdown"));
+
+function setEditorMode(v: "markdown" | "live") {
+  settings.set("editor_mode", v);
+}
+
+/** ✎ 按钮：编辑模式外进入编辑；编辑模式内自动保存并退出（颜色恢复默认）。 */
+function onEditBtn() {
+  if (mode.value === "edit") {
+    // save() 成功会 emit saved → onSaved → applyMode('interact')；失败留在编辑态
+    editorRef.value?.save();
+  } else {
+    applyMode("edit");
+  }
+}
+
+/** E 键进入编辑（非编辑态）；Ctrl+S 保存（编辑态）。 */
 function onKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+    e.preventDefault();
+    if (mode.value === "edit") {
+      editorRef.value?.save();
+    }
+    return;
+  }
   if (mode.value !== "edit" && (e.key === "e" || e.key === "E")) {
     applyMode("edit");
   }
@@ -187,7 +211,7 @@ onBeforeUnmount(() => {
     @keydown="onKeydown"
   >
     <!-- 透明顶部蒙版：interact/edit 模式覆盖在内容上方（不占布局空间），
-         显示功能按钮 + 可拖动窗口（无背景色）；编辑模式额外多保存/取消两个按钮 -->
+         可拖动窗口（无背景色）；编辑模式额外有 保存 + 编辑模式开关（居左） -->
     <div
       v-if="mode === 'interact' || mode === 'edit'"
       class="overlay"
@@ -195,20 +219,28 @@ onBeforeUnmount(() => {
       data-tauri-drag-region
       @mousemove.stop="onInteract"
     >
-      <!-- 编辑模式：保存/取消居左 -->
+      <!-- 编辑模式：保存 + 即时预览|Markdown 开关居左 -->
       <div v-if="mode === 'edit'" class="overlay-left">
         <button class="ov-btn save" title="保存（Ctrl+S）" @click.stop="editorRef?.save()">保存</button>
-        <button class="ov-btn text" title="取消，不保存" @click.stop="applyMode('interact')">取消</button>
+        <div class="editor-switch" title="编辑模式">
+          <button class="sw" :class="{ on: editorMode === 'live' }" @click.stop="setEditorMode('live')">即时预览</button>
+          <button class="sw" :class="{ on: editorMode === 'markdown' }" @click.stop="setEditorMode('markdown')">Markdown</button>
+        </div>
       </div>
       <div class="overlay-right">
+        <button
+          class="ov-btn"
+          :class="{ active: mode === 'edit' }"
+          :title="mode === 'edit' ? '保存并退出编辑' : '编辑（E 或双击内容）'"
+          @click.stop="onEditBtn"
+        >✎</button>
         <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
-        <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
         <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
         <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
       </div>
     </div>
 
-    <div class="body" :style="{ fontSize: bodyFontSize + 'px' }">
+    <div class="body" :class="{ editing: mode === 'edit' }" :style="{ fontSize: bodyFontSize + 'px' }">
       <StickerViewer
         v-if="mode === 'display' || mode === 'interact'"
         :content="sticker?.content ?? ''"
@@ -259,6 +291,11 @@ onBeforeUnmount(() => {
   flex: 1;
   overflow-y: auto;
   padding: 14px 16px;
+}
+
+/* 编辑模式：顶部留出按钮条空间，避免与内容重叠 */
+.body.editing {
+  padding-top: 46px;
 }
 
 /* ── 透明顶部蒙版（interact/edit 模式） ── */
@@ -315,20 +352,27 @@ onBeforeUnmount(() => {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
 }
 
-/* 文字按钮（保存/取消）：与 ov-btn 同风格，宽度自适应 */
-.ov-btn.save,
-.ov-btn.text {
+/* 文字按钮（保存）：与 ov-btn 同风格，宽度自适应 */
+.ov-btn.save {
   width: auto;
   padding: 0 10px;
   font-size: 12px;
-}
-
-.ov-btn.save {
   background: #4f7cff;
   color: #fff;
 }
 
 .ov-btn.save:hover {
+  background: #3b67e8;
+  color: #fff;
+}
+
+/* 编辑模式：✎ 蓝色高亮 */
+.ov-btn.active {
+  background: #4f7cff;
+  color: #fff;
+}
+
+.ov-btn.active:hover {
   background: #3b67e8;
   color: #fff;
 }
@@ -341,6 +385,40 @@ onBeforeUnmount(() => {
 .ov-btn.close:hover {
   background: #ffe3e3;
   color: #d33;
+}
+
+/* 编辑模式开关：即时预览 | Markdown */
+.editor-switch {
+  display: flex;
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 6px;
+  padding: 2px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+
+.editor-switch .sw {
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #666;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.editor-switch .sw:hover {
+  color: #4f7cff;
+}
+
+.editor-switch .sw.on {
+  background: #4f7cff;
+  color: #fff;
+}
+
+.editor-switch .sw.on:hover {
+  background: #3b67e8;
+  color: #fff;
 }
 
 /* ── 模式切换提示 toast（2 秒） ── */
