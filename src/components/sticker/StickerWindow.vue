@@ -195,7 +195,6 @@ onBeforeUnmount(() => {
       <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
       <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
       <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
-      <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
     </div>
 
     <div class="body" :style="{ fontSize: bodyFontSize + 'px' }">
@@ -292,11 +291,6 @@ onBeforeUnmount(() => {
 .ov-btn:hover {
   background: #fff;
   color: #4f7cff;
-}
-
-.ov-btn.close:hover {
-  background: #ffe3e3;
-  color: #d33;
 }
 
 /* ── 模式切换提示 toast（2 秒） ── */
