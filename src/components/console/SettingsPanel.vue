@@ -201,8 +201,16 @@ onMounted(async () => {
             @change="(e) => settings.set('editor_line_numbers', (e.target as HTMLInputElement).checked ? '1' : '0')"
           />
         </label>
+        <label class="row">
+          <span>编辑模式默认形态</span>
+          <select :value="settings.get('editor_mode', 'markdown')" @change="(e) => settings.set('editor_mode', (e.target as HTMLSelectElement).value)">
+            <option value="markdown">Markdown（原生文本）</option>
+            <option value="live">即时预览（渲染即编辑）</option>
+          </select>
+        </label>
         <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
         <p class="hint">开启后在编辑模式左侧显示 Markdown 文本的行号。</p>
+        <p class="hint">可在便签编辑模式左上角开关即时切换，此处为全局默认。</p>
       </div>
 
       <!-- Debug -->

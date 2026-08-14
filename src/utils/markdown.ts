@@ -1,6 +1,49 @@
-// markdown-it 封装：渲染 + todo 源行映射
+// markdown-it 封装：渲染 + todo 源行映射 + 数学公式（mathjax 离线 SVG）
 import MarkdownIt from "markdown-it";
+import { ref } from "vue";
+import { createMathjaxInstance, mathjax } from "@mdit/plugin-mathjax";
 
+// ═══════════════ 数学公式（@mdit/plugin-mathjax，离线 SVG 输出） ═══════════════
+// createMathjaxInstance 为异步（sync 入口是 Node 专用，浏览器构建必须用异步版）。
+// 初始化完成前 $..$ 按普通文本输出，就绪后 mathVersion+1 触发视图重渲染。
+type MathjaxInstance = Awaited<ReturnType<typeof createMathjaxInstance>>;
+
+let mathInst: MathjaxInstance | null = null;
+/** mathjax 就绪版本号：就绪后 +1，渲染视图据此重渲染公式。 */
+export const mathVersion = ref(0);
+
+/** 转义 HTML 属性（data-tex 内嵌 tex 源）。 */
+export function escapeAttr(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// markdown-it 渲染规则的宽松签名（其官方类型带 Env，与自定义包裹互操作不便）
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RendererRule = (tokens: any[], idx: number, options: any, env: any, self: any) => string;
+
+/**
+ * 包裹 math 渲染规则：外层加 span/div（class=math-inline|math-block、
+ * contenteditable=false、data-tex 保留 tex 源），供即时预览编辑与 turndown 回写。
+ */
+export function wrapMathRule(
+  rule: RendererRule | undefined,
+  className: string,
+  tag: string,
+) {
+  return function (tokens: any[], idx: number, options: any, env: any, self: any): string {
+    const inner = rule
+      ? rule(tokens, idx, options, env, self)
+      : self.renderToken(tokens, idx, options);
+    const tex = tokens[idx].content;
+    return `<${tag} class="${className}" contenteditable="false" data-tex="${escapeAttr(tex)}">${inner}</${tag}>`;
+  };
+}
+
+// ── 渲染实例（StickerViewer / 展示 / 交互模式） ──
 const md = new MarkdownIt({
   html: false,
   linkify: true,
@@ -40,10 +83,50 @@ md.renderer.rules.list_item_open = function (tokens, idx, options, env, self) {
   return html.replace("<li", `<li class="task-item"`) + checkbox;
 };
 
-/** 渲染 markdown → HTML（含 todo checkbox 的 data-line）。 */
+/** 渲染 markdown → HTML（含 todo checkbox 的 data-line 与 mathjax SVG）。 */
 export function renderMarkdown(content: string): string {
   return md.render(content);
 }
+
+/** 收集 mathjax 渲染产生的 SVG CSS 并清空缓存（渲染后调用，注入全局 style）。 */
+export async function collectMathStyle(): Promise<string> {
+  if (!mathInst) return "";
+  const css = await mathInst.outputStyle();
+  mathInst.clearStyle();
+  return css;
+}
+
+/** 异步初始化 mathjax：完成后注册进 md，并 bump mathVersion 触发重渲染。
+ *  解析为实例（或 null 表示失败），供编辑实例复用注册。 */
+export const mathInstancePromise = createMathjaxInstance({
+  output: "svg",
+  delimiters: "dollars",
+})
+  .then((inst) => {
+    if (!inst) {
+      console.error("[math] mathjax 实例创建失败");
+      return null;
+    }
+    mathInst = inst;
+    md.use(mathjax, inst);
+    // 公式规则包裹（须在插件注册后覆盖，保留 data-tex）
+    md.renderer.rules.math_inline = wrapMathRule(
+      md.renderer.rules.math_inline,
+      "math-inline",
+      "span",
+    );
+    md.renderer.rules.math_block = wrapMathRule(
+      md.renderer.rules.math_block,
+      "math-block",
+      "div",
+    );
+    mathVersion.value++;
+    return inst;
+  })
+  .catch((e) => {
+    console.error("[math] mathjax 初始化失败：", e);
+    return null;
+  });
 
 /** 从 CSS 变量生成 rgba（前端偏好面板用）。 */
 export function hexToRgba(hex: string, alpha: number): string {

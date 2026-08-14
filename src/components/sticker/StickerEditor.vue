@@ -1,36 +1,31 @@
 <script setup lang="ts">
+// 编辑容器：持有 draft，按全局配置 editor_mode 路由到
+// StickerEditorMarkdown（原生文本）或 StickerEditorLive（即时预览）。
+// 保存/退出编辑由 StickerWindow overlay 的按钮调用本组件 expose 的 save()。
 import { ref, computed, onMounted } from "vue";
 import { invoke } from "../../composables/useTauri";
 import { useSettingsStore } from "../../stores/settings";
+import StickerEditorMarkdown from "./StickerEditorMarkdown.vue";
+import StickerEditorLive from "./StickerEditorLive.vue";
 
 const props = defineProps<{
   content: string;
   stickerId: number;
 }>();
 
-const emit = defineEmits<{
-  saved: [];
-  cancelled: [];
-}>();
+const emit = defineEmits<{ saved: [] }>();
 
 const settings = useSettingsStore();
 const draft = ref(props.content);
-const textarea = ref<HTMLTextAreaElement | null>(null);
-const gutter = ref<HTMLDivElement | null>(null);
+const liveRef = ref<InstanceType<typeof StickerEditorLive> | null>(null);
 
-// 编辑模式下文字字号（system_config edit_font_size，默认 14）
-const editFontSize = computed(() => settings.get("edit_font_size", "14"));
-// 是否显示行号（system_config editor_line_numbers，默认关闭）
+// 编辑模式形态（system_config editor_mode：markdown | live，默认 markdown）
+const editorMode = computed(() => settings.get("editor_mode", "markdown"));
+const isLive = computed(() => editorMode.value === "live");
+// 编辑模式下文字字号（edit_font_size，默认 14）
+const editFontSize = computed(() => Number(settings.get("edit_font_size", "14")));
+// 是否显示行号（editor_line_numbers，默认关）
 const showLineNumbers = computed(() => settings.get("editor_line_numbers", "0") === "1");
-// 行数 = 逻辑行数（按 \n 计）
-const lineCount = computed(() => draft.value.split("\n").length);
-
-/** textarea 滚动时同步行号区滚动。 */
-function syncScroll() {
-  if (gutter.value && textarea.value) {
-    gutter.value.scrollTop = textarea.value.scrollTop;
-  }
-}
 
 /** 从 markdown 第一行提取标题（`# xxx` → xxx）。 */
 function extractTitle(text: string): string {
@@ -42,8 +37,12 @@ function extractTitle(text: string): string {
   return trimmed.slice(0, 30);
 }
 
-/** 保存：Markdown 原文直接落库，退出后进入交互模式才渲染。 */
+/** 保存：Markdown 原文直接落库，退出后进入交互模式才渲染。
+ *  即时预览模式下先 flush（防抖窗口内的输入立即回写，不丢内容）。 */
 async function save() {
+  if (isLive.value) {
+    liveRef.value?.flush();
+  }
   const title = extractTitle(draft.value);
   try {
     await invoke("update_sticker_cmd", {
@@ -57,97 +56,28 @@ async function save() {
   emit("saved");
 }
 
-/** 取消：不保存，退出编辑。 */
-function cancel() {
-  emit("cancelled");
-}
-
-/** Tab 插入两个空格（保持 Markdown 缩进习惯）；Ctrl+S 保存。 */
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Tab") {
-    e.preventDefault();
-    const el = textarea.value;
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    draft.value = draft.value.slice(0, start) + "  " + draft.value.slice(end);
-    requestAnimationFrame(() => {
-      el.setSelectionRange(start + 2, start + 2);
-    });
-  } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
-    e.preventDefault();
-    save();
-  }
-}
-
 onMounted(() => {
   settings.refresh();
-  textarea.value?.focus();
 });
 
-// 供 StickerWindow overlay 的保存/取消按钮调用
-defineExpose({ save, cancel });
+defineExpose({ save });
 </script>
 
 <template>
-  <!-- Markdown 原生文本编辑区：透明背景、无聚焦高亮。
-       保存/取消按钮在 StickerWindow 的 overlay 上（与交互模式按钮同风格） -->
-  <div class="editor">
-    <div v-if="showLineNumbers" ref="gutter" class="gutter" :style="{ fontSize: editFontSize + 'px' }">
-      <div v-for="n in lineCount" :key="n" class="ln">{{ n }}</div>
-    </div>
-    <textarea
-      ref="textarea"
+  <div class="editor-root">
+    <StickerEditorMarkdown
+      v-if="!isLive"
       v-model="draft"
-      class="src"
-      :style="{ fontSize: editFontSize + 'px' }"
-      spellcheck="false"
-      @keydown="onKeydown"
-      @scroll="syncScroll"
-    ></textarea>
+      :font-size="editFontSize"
+      :show-line-numbers="showLineNumbers"
+    />
+    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" />
   </div>
 </template>
 
 <style scoped>
-.editor {
-  display: flex;
+.editor-root {
   width: 100%;
   height: 100%;
-  overflow: hidden;
-}
-
-/* 行号区：与 textarea 同字号/行高/padding-top 对齐，滚动同步 */
-.gutter {
-  flex: none;
-  overflow: hidden;
-  padding: 8px 6px 8px 0;
-  border-right: 1px solid rgba(0, 0, 0, 0.08);
-  user-select: none;
-  line-height: 1.7;
-  text-align: right;
-  color: rgba(0, 0, 0, 0.3);
-}
-
-.ln {
-  padding-right: 8px;
-}
-
-.src {
-  flex: 1;
-  width: 100%;
-  box-sizing: border-box;
-  border: none;
-  outline: none;
-  resize: none;
-  background: transparent;
-  color: #333;
-  line-height: 1.7;
-  padding: 8px 6px;
-  font-family: inherit;
-}
-
-.src:focus {
-  background: transparent;
-  box-shadow: none;
 }
 </style>
