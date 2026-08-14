@@ -3,6 +3,55 @@ import MarkdownIt from "markdown-it";
 import { ref } from "vue";
 import { createMathjaxInstance, mathjax } from "@mdit/plugin-mathjax";
 
+// ═══════════════ SVG 动态字体预加载 ═══════════════
+// mdit-mathjax 的 asyncLoad 用动态 import(e) 加载字体模块（如
+// '@mathjax/mathjax-newcm-font/js/svg/dynamic/latin.js'），vite 无法静态分析
+// 该变量路径，运行时浏览器解析裸说明符失败 → 公式渲染中断。
+// 修复：静态导入全部 SVG 动态字体（副作用 dynamicSetup 注册字形数据），
+// 并在 mdit 初始化完成后覆盖 mathjax 单例的 asyncLoad 直接返回已解析。
+// 与 mdit 插件解析到同一文件（mjs/mathjax.js 单例），此处经 "./*" 通配直通路径
+import { mathjax as mathjaxCore } from "@mathjax/src/mjs/mathjax.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/accents.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/accents-b-i.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/arabic.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/arrows.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/braille.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/braille-d.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/calligraphic.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/cherokee.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/cyrillic.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/cyrillic-ss.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/devanagari.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/double-struck.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/fraktur.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/greek.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/greek-ss.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/hebrew.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/latin.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/latin-b.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/latin-bi.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/latin-i.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/marrows.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/math.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/monospace.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/monospace-ex.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/monospace-l.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/mshapes.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/phonetics.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/phonetics-ss.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/PUA.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif-b.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif-bi.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif-ex.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif-i.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/sans-serif-r.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/script.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/shapes.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/symbols.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/symbols-b-i.js";
+import "@mathjax/mathjax-newcm-font/js/svg/dynamic/variants.js";
+
 // ═══════════════ 数学公式（@mdit/plugin-mathjax，离线 SVG 输出） ═══════════════
 // createMathjaxInstance 为异步（sync 入口是 Node 专用，浏览器构建必须用异步版）。
 // 初始化完成前 $..$ 按普通文本输出，就绪后 mathVersion+1 触发视图重渲染。
@@ -109,6 +158,12 @@ export const mathInstancePromise = createMathjaxInstance({
     }
     mathInst = inst;
     md.use(mathjax, inst);
+    // 字体已全部静态预加载（dynamicSetup 已注册字形数据），
+    // 覆盖 mdit 设置的 asyncLoad（动态 import 在 vite 打包下会失败）
+    mathjaxCore.asyncLoad = (name: string) => {
+      console.debug(`[math] 字体已预加载，跳过动态加载：${name}`);
+      return Promise.resolve({});
+    };
     // 公式规则包裹（须在插件注册后覆盖，保留 data-tex）
     md.renderer.rules.math_inline = wrapMathRule(
       md.renderer.rules.math_inline,
