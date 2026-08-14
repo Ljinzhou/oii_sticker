@@ -183,6 +183,17 @@ onMounted(async () => {
             @change="(e) => settings.set('default_sticker_body_font_size', (e.target as HTMLInputElement).value)"
           />
         </label>
+        <label class="row">
+          <span>编辑模式字号</span>
+          <input
+            type="number"
+            min="10"
+            max="36"
+            :value="settings.get('edit_font_size', '14')"
+            @change="(e) => settings.set('edit_font_size', (e.target as HTMLInputElement).value)"
+          />
+        </label>
+        <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
       </div>
 
       <!-- Debug -->

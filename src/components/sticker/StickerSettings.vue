@@ -44,8 +44,18 @@ async function load() {
   alwaysOnTop.value = (await invoke<{ always_on_top: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.always_on_top ?? false;
 }
 
-/** 防抖保存偏好（滑块拖动实时生效）。 */
-function savePrefsSoon() {
+/** 拖动/输入过程中：本地即时应用（视觉立即生效，无网络往返）。 */
+function applyPrefsSoon() {
+  prefs.applyLocal({
+    opacity: Number(opacity.value) / 100,
+    bg_color: bgColor.value,
+    text_color: textColor.value,
+    body_font_size: bodyFontSize.value,
+  });
+}
+
+/** 松手/确认后：持久化到后端。 */
+function commitPrefs() {
   if (debounceTimer) window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => {
     prefs.save(props.stickerId, {
@@ -54,7 +64,7 @@ function savePrefsSoon() {
       text_color: textColor.value,
       body_font_size: bodyFontSize.value,
     });
-  }, 150);
+  }, 250);
 }
 
 function saveAlwaysOnTop(v: boolean) {
@@ -97,20 +107,20 @@ onMounted(load);
         <h3>外观（修改即时生效）</h3>
         <label class="row">
           <span>背景透明度</span>
-          <input v-model.number="opacity" type="range" min="15" max="100" @input="savePrefsSoon" />
+          <input v-model.number="opacity" type="range" min="15" max="100" @input="applyPrefsSoon" @change="commitPrefs" />
           <span class="val">{{ opacity }}%</span>
         </label>
         <label class="row">
           <span>背景颜色</span>
-          <input v-model="bgColor" type="color" @input="savePrefsSoon" />
+          <input v-model="bgColor" type="color" @input="applyPrefsSoon" @change="commitPrefs" />
         </label>
         <label class="row">
           <span>文字颜色</span>
-          <input v-model="textColor" type="color" @input="savePrefsSoon" />
+          <input v-model="textColor" type="color" @input="applyPrefsSoon" @change="commitPrefs" />
         </label>
         <label class="row">
           <span>正文字号</span>
-          <input v-model.number="bodyFontSize" type="number" min="9" max="28" @change="savePrefsSoon" />
+          <input v-model.number="bodyFontSize" type="number" min="9" max="28" @change="commitPrefs" />
         </label>
         <label class="row">
           <span>窗口置顶</span>

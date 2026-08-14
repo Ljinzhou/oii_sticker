@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { invoke } from "../../composables/useTauri";
-import SlashMenu from "../slash/SlashMenu.vue";
-import type { SlashItem } from "../../types";
+import { useSettingsStore } from "../../stores/settings";
+import { renderMarkdownEditable, htmlToMarkdown } from "../../utils/markdown";
 
 const props = defineProps<{
   content: string;
@@ -12,15 +12,14 @@ const props = defineProps<{
 const emit = defineEmits<{
   saved: [];
   cancelled: [];
-  toggleSettings: [];
+  closed: [];
 }>();
 
-const content = ref(props.content);
-const textarea = ref<HTMLTextAreaElement | null>(null);
-const slashMenu = ref(false);
-const slashItems = ref<SlashItem[]>([]);
-const slashQuery = ref("");
-const slashSelected = ref(0);
+const settings = useSettingsStore();
+const editableEl = ref<HTMLElement | null>(null);
+
+// 编辑模式下文字字号（system_config edit_font_size，默认 14）
+const editFontSize = computed(() => settings.get("edit_font_size", "14"));
 
 /** 从 markdown 第一行提取标题（`# xxx` → xxx）。 */
 function extractTitle(text: string): string {
@@ -32,147 +31,102 @@ function extractTitle(text: string): string {
   return trimmed.slice(0, 30);
 }
 
-async function querySlash(q: string) {
-  if (q.startsWith("/")) {
-    slashQuery.value = q.slice(1);
-    slashItems.value = await invoke<SlashItem[]>("slash_query_cmd", { query: slashQuery.value });
-    slashMenu.value = slashItems.value.length > 0;
-    slashSelected.value = 0;
-  } else {
-    slashMenu.value = false;
-  }
-}
-
-function onInput() {
-  const el = textarea.value;
-  if (!el) return;
-  querySlash(content.value.slice(0, el.selectionStart));
-}
-
-function applySlash(item: SlashItem) {
-  const el = textarea.value;
-  if (!el) return;
-  const caret = el.selectionStart;
-  const before = content.value.slice(0, caret);
-  const slash = before.lastIndexOf("/");
-  const prefix = before.slice(0, slash);
-  const after = content.value.slice(caret);
-  content.value = prefix + item.template + after;
-  slashMenu.value = false;
-  requestAnimationFrame(() => {
-    const pos = (prefix + item.template).length;
-    el.focus();
-    el.setSelectionRange(pos, pos);
-  });
-}
-
+/** 保存：把编辑后的 HTML 转回 Markdown 并落库。 */
 async function save() {
-  await invoke("update_sticker_cmd", {
-    id: props.stickerId,
-    patch: { title: extractTitle(content.value), content: content.value },
-  });
+  const md = htmlToMarkdown(editableEl.value?.innerHTML ?? "");
+  const title = extractTitle(md);
+  try {
+    await invoke("update_sticker_cmd", {
+      id: props.stickerId,
+      patch: { title, content: md },
+    });
+  } catch (e) {
+    console.error("[ui] 保存失败：", e);
+    return;
+  }
   emit("saved");
 }
 
+/** 取消：恢复原始内容并退出编辑。 */
+function cancel() {
+  if (editableEl.value) {
+    editableEl.value.innerHTML = renderMarkdownEditable(props.content);
+  }
+  emit("cancelled");
+}
+
+/** 编辑模式下 Tab 键插入两个空格（保持缩进习惯）。 */
 function onKeydown(e: KeyboardEvent) {
-  if (slashMenu.value && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-    e.preventDefault();
-    const len = slashItems.value.length;
-    if (!len) return;
-    slashSelected.value =
-      (slashSelected.value + (e.key === "ArrowDown" ? 1 : -1) + len) % len;
-    return;
-  }
-  if (slashMenu.value && e.key === "Enter" && slashItems.value[slashSelected.value]) {
-    e.preventDefault();
-    applySlash(slashItems.value[slashSelected.value]);
-    return;
-  }
-  if (slashMenu.value && e.key === "Escape") {
-    slashMenu.value = false;
-    return;
-  }
   if (e.key === "Tab") {
     e.preventDefault();
-    const el = textarea.value;
-    if (!el) return;
-    const caret = el.selectionStart;
-    content.value = content.value.slice(0, caret) + "  " + content.value.slice(caret);
-    requestAnimationFrame(() => {
-      el.setSelectionRange(caret + 2, caret + 2);
-    });
+    document.execCommand("insertText", false, "  ");
   }
 }
 
 onMounted(() => {
-  textarea.value?.focus();
+  settings.refresh();
+  if (editableEl.value) {
+    editableEl.value.innerHTML = renderMarkdownEditable(props.content);
+  }
 });
 </script>
 
 <template>
   <div class="editor">
-    <textarea
-      ref="textarea"
-      v-model="content"
-      class="content-input"
-      placeholder="第一行输入 # 标题，/ 唤起命令菜单"
-      @input="onInput"
-      @keydown="onKeydown"
-      @click="onInput"
-    ></textarea>
+    <!-- 左上角：保存 / 取消 / 关闭 -->
     <div class="bar">
       <button class="btn primary" @click="save">保存</button>
-      <button class="btn" @click="emit('cancelled')">取消</button>
-      <button class="btn" title="设置" @click="emit('toggleSettings')">⚙</button>
+      <button class="btn" @click="cancel">取消</button>
+      <button class="btn close" title="关闭窗口" @click="emit('closed')">✕</button>
+      <span class="tip">点击内容直接编辑，保存后自动转回 Markdown</span>
     </div>
-    <SlashMenu
-      v-if="slashMenu"
-      :items="slashItems"
-      :selected="slashSelected"
-      @select="applySlash"
-      @close="slashMenu = false"
-    />
+
+    <!-- WYSIWYG：Markdown 渲染视图上直接编辑 -->
+    <div
+      ref="editableEl"
+      class="editable"
+      contenteditable="true"
+      :style="{ fontSize: editFontSize + 'px' }"
+      spellcheck="false"
+      @keydown="onKeydown"
+    ></div>
   </div>
 </template>
 
 <style scoped>
 .editor {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
   min-height: 100%;
-  position: relative;
 }
 
-.content-input {
-  flex: 1;
-  min-height: 200px;
-  border: none;
-  border-radius: 8px;
-  padding: 10px;
-  font-size: 13px;
-  line-height: 1.7;
-  font-family: inherit;
-  color: #333;
-  resize: none;
-  outline: none;
-  background: rgba(255, 255, 255, 0.55);
-}
-
-.content-input:focus {
-  box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.4);
-}
-
+/* 左上角操作条（悬浮，不占内容布局） */
 .bar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
   display: flex;
+  align-items: center;
   gap: 8px;
-  justify-content: flex-end;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(6px);
+}
+
+.tip {
+  font-size: 11px;
+  color: #999;
+  margin-left: 4px;
 }
 
 .btn {
   border: 1px solid rgba(0, 0, 0, 0.12);
   border-radius: 8px;
-  padding: 6px 14px;
+  padding: 5px 14px;
   font-size: 13px;
   background: #fff;
   color: #333;
@@ -187,5 +141,104 @@ onMounted(() => {
   background: #4f7cff;
   border-color: #4f7cff;
   color: #fff;
+}
+
+.btn.close:hover {
+  background: #ffe3e3;
+  color: #d33;
+}
+
+/* WYSIWYG 编辑区：与交互模式渲染样式一致（复用 markdown 视觉） */
+.editable {
+  flex: 1;
+  overflow-y: auto;
+  outline: none;
+  line-height: 1.7;
+  color: #333;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  padding: 4px 6px;
+}
+
+.editable:focus {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.editable :deep(h1),
+.editable :deep(h2),
+.editable :deep(h3),
+.editable :deep(h4) {
+  margin: 14px 0 8px;
+  line-height: 1.3;
+}
+
+.editable :deep(h1) {
+  font-size: 1.5em;
+}
+
+.editable :deep(h2) {
+  font-size: 1.3em;
+}
+
+.editable :deep(h3) {
+  font-size: 1.15em;
+}
+
+.editable :deep(p) {
+  margin: 6px 0;
+}
+
+.editable :deep(ul),
+.editable :deep(ol) {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.editable :deep(li) {
+  margin: 2px 0;
+}
+
+.editable :deep(blockquote) {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid rgba(0, 0, 0, 0.15);
+  opacity: 0.85;
+}
+
+.editable :deep(code) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.92em;
+}
+
+.editable :deep(pre) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+
+.editable :deep(a) {
+  color: #4f7cff;
+}
+
+.editable :deep(hr) {
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+  margin: 12px 0;
+}
+
+.editable :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.editable :deep(th),
+.editable :deep(td) {
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  padding: 4px 10px;
 }
 </style>

@@ -1,10 +1,26 @@
-// markdown-it 封装：渲染 + todo 源行映射
+// markdown-it 封装：渲染 + todo 源行映射 + 编辑模式（WYSIWYG 回写）
 import MarkdownIt from "markdown-it";
+import TurndownService from "turndown";
 
 const md = new MarkdownIt({
   html: false,
   linkify: true,
   breaks: false,
+});
+
+/** 编辑模式实例：任务标记保持为 `[ ]` 文本（不生成 checkbox），便于 contenteditable 编辑与回写。 */
+const mdEditable = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: false,
+});
+
+const turndown = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  codeBlockStyle: "fenced",
+  emDelimiter: "*",
+  strongDelimiter: "**",
 });
 
 // 自写任务清单渲染：检测 `- [ ]` / `- [x]` / `- [X]` 标记，
@@ -43,6 +59,24 @@ md.renderer.rules.list_item_open = function (tokens, idx, options, env, self) {
 /** 渲染 markdown → HTML（含 todo checkbox 的 data-line）。 */
 export function renderMarkdown(content: string): string {
   return md.render(content);
+}
+
+/** 编辑模式渲染：任务标记保留为 `[ ]`/`[x]` 纯文本（供 contenteditable 直接编辑）。 */
+export function renderMarkdownEditable(content: string): string {
+  const defaultListItemOpen = mdEditable.renderer.rules.list_item_open;
+  mdEditable.renderer.rules.list_item_open = function (tokens, idx, options, env, self) {
+    const html = defaultListItemOpen
+      ? defaultListItemOpen(tokens, idx, options, env, self)
+      : self.renderToken(tokens, idx, options);
+    // 编辑模式不做 checkbox 转换，任务标记文本原样保留
+    return html;
+  };
+  return mdEditable.render(content);
+}
+
+/** 编辑后的 HTML → Markdown（WYSIWYG 保存回写）。 */
+export function htmlToMarkdown(html: string): string {
+  return turndown.turndown(html);
 }
 
 /** 从 CSS 变量生成 rgba（前端偏好面板用）。 */
