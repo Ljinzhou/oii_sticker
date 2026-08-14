@@ -64,11 +64,6 @@ function preview(sticker: Sticker): string {
   return text.length > 40 ? text.slice(0, 40) + "…" : text;
 }
 
-function reminderText(s: Sticker): string {
-  // 提醒信息由 attrs 提供；列表简化显示模式即可
-  return s.display_mode;
-}
-
 function minimizeWindow() {
   getCurrentWindow().minimize();
 }
@@ -115,7 +110,6 @@ onBeforeUnmount(() => {
         <div v-for="s in notes.stickers" :key="s.id" class="card">
           <div class="card-head">
             <span class="card-title">{{ s.title || "（无标题）" }}</span>
-            <span class="mode-badge">{{ reminderText(s) }}</span>
             <button class="btn small" :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'" @click="toggleSticker(s)">
               {{ isOpen(s.id) ? "隐藏" : "显示" }}
             </button>
@@ -271,14 +265,6 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.mode-badge {
-  font-size: 11px;
-  color: #4f7cff;
-  background: rgba(79, 124, 255, 0.1);
-  border-radius: 6px;
-  padding: 2px 8px;
 }
 
 .card-preview {
