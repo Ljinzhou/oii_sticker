@@ -29,10 +29,9 @@ let toastTimer: number | undefined;
 
 const cardStyle = computed(() => {
   const bg = prefs.effective?.bg_color ?? sticker.value?.bg_color ?? "#FFF4D6";
-  // 背景半透明、文字不透明：alpha 来自用户设置的 opacity（立即生效），
-  // display 收起模式在此基础上再减淡；文字颜色恒不透明。
-  const base = prefs.effective?.opacity ?? 0.9;
-  const alpha = mode.value === "display" ? base * 0.4 : base;
+  // 背景半透明、文字不透明：始终以用户设置的 opacity 为准（展示/交互/编辑一致），
+  // 不再对 display 额外减淡；文字颜色恒不透明。
+  const alpha = prefs.effective?.opacity ?? 0.9;
   return {
     background: hexToRgba(bg, alpha),
     color: prefs.effective?.text_color ?? "#222222",
@@ -213,7 +212,7 @@ onBeforeUnmount(() => {
         :sticker-id="stickerId"
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
-        @toggle-settings="showSettings = !showSettings"
+        @closed="onClosed"
       />
     </div>
 
