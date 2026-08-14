@@ -50,7 +50,7 @@ function cancel() {
   emit("cancelled");
 }
 
-/** Tab 插入两个空格（保持 Markdown 缩进习惯）。 */
+/** Tab 插入两个空格（保持 Markdown 缩进习惯）；Ctrl+S 保存。 */
 function onKeydown(e: KeyboardEvent) {
   if (e.key === "Tab") {
     e.preventDefault();
@@ -62,6 +62,9 @@ function onKeydown(e: KeyboardEvent) {
     requestAnimationFrame(() => {
       el.setSelectionRange(start + 2, start + 2);
     });
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+    e.preventDefault();
+    save();
   }
 }
 
@@ -69,79 +72,28 @@ onMounted(() => {
   settings.refresh();
   textarea.value?.focus();
 });
+
+// 供 StickerWindow overlay 的保存/取消按钮调用
+defineExpose({ save, cancel });
 </script>
 
 <template>
-  <div class="editor">
-    <!-- 左上角：保存（蓝底）/ 取消（白底），样式与交互模式蒙版按钮一致 -->
-    <div class="actions">
-      <button class="ov-btn save" @click="save">保存</button>
-      <button class="ov-btn" @click="cancel">取消</button>
-    </div>
-
-    <!-- Markdown 原生文本编辑区：透明背景、无聚焦高亮 -->
-    <textarea
-      ref="textarea"
-      v-model="draft"
-      class="src"
-      :style="{ fontSize: editFontSize + 'px' }"
-      spellcheck="false"
-      @keydown="onKeydown"
-    ></textarea>
-  </div>
+  <!-- Markdown 原生文本编辑区：透明背景、无聚焦高亮。
+       保存/取消按钮在 StickerWindow 的 overlay 上（与交互模式按钮同风格） -->
+  <textarea
+    ref="textarea"
+    v-model="draft"
+    class="src"
+    :style="{ fontSize: editFontSize + 'px' }"
+    spellcheck="false"
+    @keydown="onKeydown"
+  ></textarea>
 </template>
 
 <style scoped>
-.editor {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 100%;
-  height: 100%;
-}
-
-/* 左上角操作按钮：与交互模式蒙版按钮（ov-btn）同风格 */
-.actions {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 15;
-  display: flex;
-  gap: 6px;
-  padding: 4px;
-}
-
-.ov-btn {
-  border: none;
-  background: rgba(255, 255, 255, 0.85);
-  border-radius: 8px;
-  padding: 4px 12px;
-  font-size: 12px;
-  color: #555;
-  cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
-  transition: background 0.15s;
-}
-
-.ov-btn:hover {
-  background: #fff;
-  color: #4f7cff;
-}
-
-.ov-btn.save {
-  background: #4f7cff;
-  color: #fff;
-}
-
-.ov-btn.save:hover {
-  background: #3b67e8;
-  color: #fff;
-}
-
-/* Markdown 原生文本编辑区：透明、无边框、无聚焦高亮 */
 .src {
-  flex: 1;
   width: 100%;
+  height: 100%;
   box-sizing: border-box;
   border: none;
   outline: none;
