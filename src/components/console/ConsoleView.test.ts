@@ -80,4 +80,16 @@ describe("ConsoleView", () => {
     expect(wrapper.find(".mode-badge").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("edit");
   });
+
+  it("收到 push-update 事件后同时刷新列表与窗口打开状态", async () => {
+    await mountConsole();
+    mocks.invokeMock.mockClear();
+    const handler = mocks.handlers.get("sticky://push-update");
+    expect(handler).toBeTruthy();
+    handler!(1);
+    await flushPromises();
+    const cmds = mocks.invokeMock.mock.calls.map((c) => c[0]);
+    expect(cmds).toContain("list_stickers_cmd");
+    expect(cmds).toContain("list_open_sticker_ids_cmd");
+  });
 });
