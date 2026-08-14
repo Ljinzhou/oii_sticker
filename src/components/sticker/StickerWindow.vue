@@ -214,7 +214,6 @@ onBeforeUnmount(() => {
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
         @toggle-settings="showSettings = !showSettings"
-        @closed="onClosed"
       />
     </div>
 

@@ -13,7 +13,6 @@ const emit = defineEmits<{
   saved: [];
   cancelled: [];
   toggleSettings: [];
-  closed: [];
 }>();
 
 const content = ref(props.content);
@@ -125,7 +124,6 @@ onMounted(() => {
       <button class="btn primary" @click="save">保存</button>
       <button class="btn" @click="emit('cancelled')">取消</button>
       <button class="btn" title="设置" @click="emit('toggleSettings')">⚙</button>
-      <button class="btn close" title="关闭窗口" @click="emit('closed')">✕</button>
     </div>
     <SlashMenu
       v-if="slashMenu"
@@ -189,10 +187,5 @@ onMounted(() => {
   background: #4f7cff;
   border-color: #4f7cff;
   color: #fff;
-}
-
-.btn.close:hover {
-  background: #ffe3e3;
-  color: #d33;
 }
 </style>
