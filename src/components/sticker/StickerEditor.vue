@@ -16,9 +16,21 @@ const emit = defineEmits<{
 const settings = useSettingsStore();
 const draft = ref(props.content);
 const textarea = ref<HTMLTextAreaElement | null>(null);
+const gutter = ref<HTMLDivElement | null>(null);
 
 // 编辑模式下文字字号（system_config edit_font_size，默认 14）
 const editFontSize = computed(() => settings.get("edit_font_size", "14"));
+// 是否显示行号（system_config editor_line_numbers，默认关闭）
+const showLineNumbers = computed(() => settings.get("editor_line_numbers", "0") === "1");
+// 行数 = 逻辑行数（按 \n 计）
+const lineCount = computed(() => draft.value.split("\n").length);
+
+/** textarea 滚动时同步行号区滚动。 */
+function syncScroll() {
+  if (gutter.value && textarea.value) {
+    gutter.value.scrollTop = textarea.value.scrollTop;
+  }
+}
 
 /** 从 markdown 第一行提取标题（`# xxx` → xxx）。 */
 function extractTitle(text: string): string {
@@ -80,20 +92,49 @@ defineExpose({ save, cancel });
 <template>
   <!-- Markdown 原生文本编辑区：透明背景、无聚焦高亮。
        保存/取消按钮在 StickerWindow 的 overlay 上（与交互模式按钮同风格） -->
-  <textarea
-    ref="textarea"
-    v-model="draft"
-    class="src"
-    :style="{ fontSize: editFontSize + 'px' }"
-    spellcheck="false"
-    @keydown="onKeydown"
-  ></textarea>
+  <div class="editor">
+    <div v-if="showLineNumbers" ref="gutter" class="gutter" :style="{ fontSize: editFontSize + 'px' }">
+      <div v-for="n in lineCount" :key="n" class="ln">{{ n }}</div>
+    </div>
+    <textarea
+      ref="textarea"
+      v-model="draft"
+      class="src"
+      :style="{ fontSize: editFontSize + 'px' }"
+      spellcheck="false"
+      @keydown="onKeydown"
+      @scroll="syncScroll"
+    ></textarea>
+  </div>
 </template>
 
 <style scoped>
-.src {
+.editor {
+  display: flex;
   width: 100%;
   height: 100%;
+  overflow: hidden;
+}
+
+/* 行号区：与 textarea 同字号/行高/padding-top 对齐，滚动同步 */
+.gutter {
+  flex: none;
+  overflow: hidden;
+  padding: 8px 6px 8px 0;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  user-select: none;
+  line-height: 1.7;
+  text-align: right;
+  color: rgba(0, 0, 0, 0.3);
+}
+
+.ln {
+  padding-right: 8px;
+}
+
+.src {
+  flex: 1;
+  width: 100%;
   box-sizing: border-box;
   border: none;
   outline: none;

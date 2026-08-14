@@ -57,27 +57,60 @@ fn db_health(state: State<'_, AppState>) -> Result<DbHealth, String> {
         .map_err(|e| e.to_string())
 }
 
-/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏、不可最大化），label = `sticker-<id>`。
-fn create_sticker_win(
-    app: &tauri::AppHandle,
+/// 便签窗口创建参数（避免 create_sticker_win 参数过多）。
+#[derive(Clone)]
+struct StickerWinArgs {
     id: i64,
-    title: &str,
+    title: String,
     x: i32,
     y: i32,
     w: i32,
     h: i32,
-) -> tauri::Result<WebviewWindow> {
-    let label = format!("sticker-{id}");
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
-        .title(title)
-        .inner_size(w as f64, h as f64)
-        .position(x as f64, y as f64)
+    always_on_top: bool,
+}
+
+impl StickerWinArgs {
+    fn from_new(new: &NewSticker, id: i64) -> Self {
+        Self {
+            id,
+            title: new.title.clone(),
+            x: new.pos_x,
+            y: new.pos_y,
+            w: new.width,
+            h: new.height,
+            always_on_top: new.always_on_top,
+        }
+    }
+
+    fn from_sticker(s: &models::Sticker) -> Self {
+        Self {
+            id: s.id,
+            title: s.title.clone(),
+            x: s.pos_x,
+            y: s.pos_y,
+            w: s.width,
+            h: s.height,
+            always_on_top: s.always_on_top,
+        }
+    }
+}
+
+/// 创建一个独立便签窗口（透明、无边框、不出现在任务栏、不可最大化），label = `sticker-<id>`。
+/// 创建后立即应用置顶（Builder 不提供置顶选项，须显式 set_always_on_top）。
+fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Result<WebviewWindow> {
+    let label = format!("sticker-{}", args.id);
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title(&args.title)
+        .inner_size(args.w as f64, args.h as f64)
+        .position(args.x as f64, args.y as f64)
         .transparent(true)
         .decorations(false)
         .skip_taskbar(true)
         .maximizable(false) // 禁用最大化（双击标题栏不触发）
         .resizable(true)
-        .build()
+        .build()?;
+    let _ = win.set_always_on_top(args.always_on_top);
+    Ok(win)
 }
 
 /// 显示主控台窗口（不存在则创建）。
@@ -106,7 +139,21 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
             };
             match state.with_conn(|c| create_sticker(c, &new)) {
                 Ok(id) => {
-                    let _ = create_sticker_win(app, id, &new.title, 120, 120, 400, 500);
+                    // 新建便签按系统默认置顶配置应用（default_sticker_always_on_top）
+                    let on_top = state
+                        .with_conn(commands::get_config)
+                        .map(|cfg| cfg.get_or("default_sticker_always_on_top", "1") == "1")
+                        .unwrap_or(true);
+                    let args = StickerWinArgs {
+                        id,
+                        title: new.title.clone(),
+                        x: 120,
+                        y: 120,
+                        w: 400,
+                        h: 500,
+                        always_on_top: on_top,
+                    };
+                    let _ = create_sticker_win(app, args);
                     events::emit_push_update(app, id);
                 }
                 Err(e) => tracing::warn!("托盘新建便签失败：{e:#}"),
@@ -162,12 +209,12 @@ async fn create_sticker_cmd(
 
     // 窗口创建投递到主线程异步执行（避免在 IPC/async 线程同步建窗阻塞事件循环）
     let app2 = app.clone();
-    let title = new.title.clone();
-    let (x, y, w, h) = (new.pos_x, new.pos_y, new.width, new.height);
+    let args = StickerWinArgs::from_new(&new, id);
+    let title = args.title.clone();
     app.run_on_main_thread(move || {
-        let win = create_sticker_win(&app2, id, &title, x, y, w, h);
+        let win = create_sticker_win(&app2, args);
         tracing::info!(
-            "[cmd] create_sticker_cmd id={id} title={title} pos=({x},{y}) win_ok={}",
+            "[cmd] create_sticker_cmd id={id} title={title} win_ok={}",
             win.is_ok()
         );
     })
@@ -340,7 +387,7 @@ struct SlashDto {
 #[tauri::command]
 fn main_close_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let behavior = state
-        .with_conn(|c| commands::get_config(c))
+        .with_conn(commands::get_config)
         .map(|cfg| cfg.get_or("main_close_behavior", "hide"))
         .unwrap_or_else(|e| {
             tracing::warn!("[cmd] main_close_cmd 读取配置失败：{e}");
@@ -398,29 +445,29 @@ fn apply_window_state_cmd(
     Ok(())
 }
 
-/// 唤醒便签窗口：置前聚焦 + 可 resize（display 收起后使用）。
+/// 唤醒便签窗口：置前聚焦 + 可 resize + 恢复置顶（display 收起后使用）。
 /// 防御：窗口不存在（曾被销毁）时按数据库记录经主线程重建，保证主控台
 /// "显示"按钮始终有效；同步清除 display 模式锁定的 min/max 尺寸
 /// （与鼠标钩子唤醒路径一致，否则 set_resizable(true) 不生效）。
 #[tauri::command]
 fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     let label = format!("sticker-{id}");
+    // 先取数据库记录（含 always_on_top），窗口存在与否都要恢复置顶
+    let state = app.state::<AppState>();
+    let s = state
+        .with_conn(|c| commands::get_sticker(c, id))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
     let win = if let Some(win) = app.get_webview_window(&label) {
         win
     } else {
-        let state = app.state::<AppState>();
-        let s = state
-            .with_conn(|c| commands::get_sticker(c, id))
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
         // 已知坑：IPC 线程同步建窗会卡死，必须投递主线程（AI-DEV-GUIDE §2.2）
         let (tx, rx) = std::sync::mpsc::channel();
         let app2 = app.clone();
+        let s2 = s.clone();
         app.run_on_main_thread(move || {
-            let result = create_sticker_win(
-                &app2, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
-            )
-            .map_err(|e| format!("重建便签窗口失败: {e}"));
+            let result = create_sticker_win(&app2, StickerWinArgs::from_sticker(&s2))
+                .map_err(|e| format!("重建便签窗口失败: {e}"));
             let _ = tx.send(result);
         })
         .map_err(|e| format!("投递主线程失败: {e}"))?;
@@ -430,6 +477,8 @@ fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         tracing::info!("[cmd] wake_sticker id={id} 窗口不存在，已按数据库记录重建");
         rebuilt
     };
+    win.set_always_on_top(s.always_on_top)
+        .map_err(|e| format!("恢复置顶失败: {e}"))?;
     win.set_ignore_cursor_events(false)
         .map_err(|e| format!("取消穿透失败: {e}"))?;
     win.set_resizable(true).map_err(|e| format!("设置 resize 失败: {e}"))?;
@@ -439,7 +488,7 @@ fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
         .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
     let _ = win.show();
     let _ = win.set_focus();
-    tracing::info!("[cmd] wake_sticker id={id}");
+    tracing::info!("[cmd] wake_sticker id={id} always_on_top={}", s.always_on_top);
     Ok(())
 }
 
@@ -560,16 +609,16 @@ pub fn run() {
                     ..Default::default()
                 };
                 if let Ok(id) = state.with_conn(|c| create_sticker(c, &default)) {
-                    let _ = create_sticker_win(
-                        &handle, id, &default.title, default.pos_x, default.pos_y,
-                        default.width, default.height,
-                    );
+                    // 首次默认便签按系统默认置顶（default_sticker_always_on_top=1）
+                    let args = StickerWinArgs {
+                        always_on_top: true,
+                        ..StickerWinArgs::from_new(&default, id)
+                    };
+                    let _ = create_sticker_win(&handle, args);
                 }
             } else {
                 for s in stickers {
-                    if let Ok(win) = create_sticker_win(
-                        &handle, s.id, &s.title, s.pos_x, s.pos_y, s.width, s.height,
-                    ) {
+                    if let Ok(win) = create_sticker_win(&handle, StickerWinArgs::from_sticker(&s)) {
                         // 启动即按持久化模式同步窗口状态（display → 穿透+锁尺寸），
                         // 不依赖前端加载完成，确保展示模式立即生效。
                         if s.display_mode == "display" {

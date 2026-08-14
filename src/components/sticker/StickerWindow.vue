@@ -191,17 +191,21 @@ onBeforeUnmount(() => {
     <div
       v-if="mode === 'interact' || mode === 'edit'"
       class="overlay"
+      :class="{ editing: mode === 'edit' }"
       data-tauri-drag-region
       @mousemove.stop="onInteract"
     >
-      <template v-if="mode === 'edit'">
+      <!-- 编辑模式：保存/取消居左 -->
+      <div v-if="mode === 'edit'" class="overlay-left">
         <button class="ov-btn save" title="保存（Ctrl+S）" @click.stop="editorRef?.save()">保存</button>
         <button class="ov-btn text" title="取消，不保存" @click.stop="applyMode('interact')">取消</button>
-      </template>
-      <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
-      <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
-      <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
-      <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
+      </div>
+      <div class="overlay-right">
+        <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
+        <button class="ov-btn" title="编辑（E 或双击内容）" @click.stop="applyMode('edit')">✎</button>
+        <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
+        <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
+      </div>
     </div>
 
     <div class="body" :style="{ fontSize: bodyFontSize + 'px' }">
@@ -257,7 +261,7 @@ onBeforeUnmount(() => {
   padding: 14px 16px;
 }
 
-/* ── 透明顶部蒙版（interact 模式） ── */
+/* ── 透明顶部蒙版（interact/edit 模式） ── */
 .overlay {
   position: absolute;
   top: 0;
@@ -273,6 +277,23 @@ onBeforeUnmount(() => {
   cursor: grab;
   z-index: 15;
   opacity: 1;
+}
+
+/* 编辑模式：保存/取消居左，四按钮居右 */
+.overlay.editing {
+  justify-content: space-between;
+  padding-right: 6px;
+}
+
+.overlay-left,
+.overlay-right {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.overlay-left {
+  padding-left: 6px;
 }
 
 .overlay:hover {
