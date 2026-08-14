@@ -94,4 +94,39 @@ defineExpose({ flush });
 .live-host :deep(.cm-editor.cm-focused) {
   outline: none;
 }
+
+/* ── 行内渲染 widget 样式（Live Preview） ── */
+.live-host :deep(.live-render.live-strong strong) {
+  font-weight: 700;
+}
+.live-host :deep(.live-render.live-em em) {
+  font-style: italic;
+}
+.live-host :deep(.live-render.live-del del) {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+.live-host :deep(.live-render.live-code code) {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.92em;
+}
+.live-host :deep(.live-render.live-link a) {
+  color: #4f7cff;
+  text-decoration: none;
+  cursor: pointer;
+}
+.live-host :deep(.live-render.live-math .math-inline) {
+  color: inherit;
+}
+
+/* 任务 checkbox（替换 [ ] 标记的 widget） */
+.live-host :deep(.live-task-checkbox) {
+  margin: 0 4px 0 2px;
+  accent-color: #4f7cff;
+  cursor: pointer;
+  vertical-align: middle;
+}
 </style>

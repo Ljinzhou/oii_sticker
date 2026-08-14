@@ -4,8 +4,9 @@
 import { Compartment, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { indentWithTab } from "@codemirror/commands";
+import { liveDecorationsPlugin } from "./liveDecorations";
 
 export interface LiveViewOptions {
   doc: string;
@@ -58,12 +59,13 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     doc: opts.doc,
     extensions: [
       basicSetup,
-      markdown(),
+      markdown({ base: markdownLanguage }), // 含 GFM：删除线/任务列表/表格/自动链接
       keymap.of([
         indentWithTab,
         { key: "Mod-s", run: () => { opts.onSave(); return true; } },
       ]),
       EditorView.lineWrapping,
+      liveDecorationsPlugin,
       EditorView.updateListener.of((u) => {
         if (u.docChanged) opts.onDocChange(u.state.doc.toString());
       }),
