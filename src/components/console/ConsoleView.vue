@@ -114,11 +114,16 @@ onBeforeUnmount(() => {
       <div v-else class="cards">
         <div v-for="s in notes.stickers" :key="s.id" class="card">
           <div class="card-head">
+            <button class="btn small danger del" title="删除便签" @click="confirming = s">✕</button>
             <span class="card-title">{{ s.title || "（无标题）" }}</span>
-            <button class="btn small" :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'" @click="toggleSticker(s)">
+            <button
+              class="btn small"
+              :class="{ show: !isOpen(s.id) }"
+              :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'"
+              @click="toggleSticker(s)"
+            >
               {{ isOpen(s.id) ? "隐藏" : "显示" }}
             </button>
-            <button class="btn small danger" title="删除便签" @click="confirming = s">✕</button>
           </div>
           <div class="card-preview">{{ preview(s) }}</div>
           <div class="card-foot">
@@ -221,8 +226,19 @@ onBeforeUnmount(() => {
 }
 
 .btn.small {
-  padding: 3px 8px;
-  font-size: 12px;
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
+/* 便签隐藏时：显示按钮蓝底（醒目提示可恢复） */
+.btn.small.show {
+  background: #4f7cff;
+  border-color: #4f7cff;
+  color: #fff;
+}
+
+.btn.small.show:hover {
+  background: #3b67e8;
 }
 
 .btn.danger:hover {
@@ -263,7 +279,7 @@ onBeforeUnmount(() => {
 }
 
 .card-title {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: #222;
   flex: 1;

@@ -38,8 +38,8 @@ function markdownSyntaxHighlight(escapedLine: string): string {
   s = s.replace(/^(\s*[-*+]\s)(\[[ xX]\])(\s)/, '$1<span class="md-task">$2</span>$3');
   // 无序列表标记
   s = s.replace(/^(\s*)([-*+])(\s)/, '$1<span class="md-list">$2</span>$3');
-  // 有序列表标记
-  s = s.replace(/^(\s*)(\d+)(\.)(\s)/, '$1<span class="md-list">$2$3</span>$4');
+  // 有序列表标记（支持复合编号：1. / 1.1 / 1.1.1 / 1.1.1.）
+  s = s.replace(/^(\s*)(\d+\.(?:\d+\.)*\d*)(\s)/, '$1<span class="md-list">$2</span>$3');
   // 引用标记（注意：行已 escape，> 呈现为 &gt;）
   s = s.replace(/^(\s*)(&gt;)(\s?)/, '$1<span class="md-quote">$2</span>$3');
   // 分隔线

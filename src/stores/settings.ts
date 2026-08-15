@@ -11,7 +11,7 @@ export const useSettingsStore = defineStore("settings", {
     get: (state) => (key: string, fallback = "") =>
       state.config.entries[key] ?? fallback,
     opacity: (state) => parseFloat(state.config.entries["default_sticker_opacity"] ?? "0.9"),
-    bgColor: (state) => state.config.entries["default_sticker_bg_color"] ?? "#CCFFCC",
+    bgColor: (state) => state.config.entries["default_sticker_bg_color"] ?? "#FFF4D6",
     bodyFontSize: (state) =>
       parseInt(state.config.entries["default_sticker_body_font_size"] ?? "13", 10),
     // 交互模式无操作后自动收起回展示模式的秒数（系统设置可改，默认 5）

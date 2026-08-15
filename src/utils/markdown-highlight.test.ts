@@ -56,6 +56,17 @@ describe("highlightMarkdown", () => {
     expect(out).toContain('<span class="md-hr">---</span>');
   });
 
+  it("复合编号有序列表着色（1.1 / 3.1.1 / 尾点）", () => {
+    const out = highlightMarkdown("1. 文本\n  1.1 子项\n    3.1.1 深层\n  1.1. 尾点");
+    expect(out).toContain('<span class="md-list">1.</span>');
+    expect(out).toContain('<span class="md-list">1.1</span>');
+    expect(out).toContain('<span class="md-list">3.1.1</span>');
+    expect(out).toContain('<span class="md-list">1.1.</span>');
+    // 纯数字不加点不误判为列表
+    const plain = highlightMarkdown("123 只是数字");
+    expect(plain).not.toContain("md-list");
+  });
+
   it("围栏内代码不被 markdown 语法着色干扰", () => {
     const out = highlightMarkdown("```js\n# 不是标题\nconst x = 1;\n```");
     // 围栏内行交给 hljs：js 中 # 开头是注释或非法，不产生 md-head span

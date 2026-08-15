@@ -14,6 +14,7 @@ const bgColor = ref("#FFF4D6");
 const textColor = ref("#222222");
 const bodyFontSize = ref(13);
 const alwaysOnTop = ref(false);
+const autoScroll = ref(false);
 
 // 提醒（变更即写库）
 const remindAt = ref("");
@@ -41,7 +42,8 @@ async function load() {
   } catch {
     /* 忽略 */
   }
-  alwaysOnTop.value = (await invoke<{ always_on_top: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.always_on_top ?? false;
+  alwaysOnTop.value = (await invoke<{ always_on_top: boolean; auto_scroll: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.always_on_top ?? false;
+  autoScroll.value = (await invoke<{ always_on_top: boolean; auto_scroll: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.auto_scroll ?? false;
 }
 
 /** 拖动/输入过程中：本地即时应用（视觉立即生效，无网络往返）。 */
@@ -69,6 +71,10 @@ function commitPrefs() {
 
 function saveAlwaysOnTop(v: boolean) {
   invoke("update_sticker_cmd", { id: props.stickerId, patch: { always_on_top: v } });
+}
+
+function saveAutoScroll(v: boolean) {
+  invoke("update_sticker_cmd", { id: props.stickerId, patch: { auto_scroll: v } });
 }
 
 function saveReminder() {
@@ -125,6 +131,10 @@ onMounted(load);
         <label class="row">
           <span>窗口置顶</span>
           <input v-model="alwaysOnTop" type="checkbox" @change="saveAlwaysOnTop(alwaysOnTop)" />
+        </label>
+        <label class="row">
+          <span>自动滚动</span>
+          <input v-model="autoScroll" type="checkbox" @change="saveAutoScroll(autoScroll)" />
         </label>
         <button class="link" @click="resetPrefs">↺ 恢复默认偏好</button>
       </section>
