@@ -101,27 +101,44 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         let info = &*(lparam as *const MSLLHOOKSTRUCT);
         let now = now_ms();
-        let mut state = STATE.lock().unwrap();
-        if let Some(inner) = state.as_mut() {
-            match wparam as u32 {
-                // 中键按下：武装（3 秒内左键点击便签即唤醒）
-                WM_MBUTTONDOWN => {
-                    inner.armed_at = Some(now);
-                    tracing::debug!("[hook] 中键按下，武装唤醒（3 秒内左键点击展示便签）");
+        // ⚠ 性能红线：WH_MOUSE_LL 回调运行在系统鼠标消息线程，回调阻塞会
+        // 卡住**整个系统**的鼠标输入（表现为鼠标无法移动、程序未响应）。
+        // 因此回调内只做轻量状态记录（短锁），所有重活（窗口操作/写库/
+        // 事件）一律异步投递到主线程执行，回调必须立即返回。
+        match wparam as u32 {
+            // 中键按下：武装（3 秒内左键点击便签即唤醒）
+            WM_MBUTTONDOWN => {
+                if let Ok(mut state) = STATE.lock() {
+                    if let Some(inner) = state.as_mut() {
+                        inner.armed_at = Some(now);
+                    }
                 }
-                // 左键按下：若已武装（未超时）且命中展示便签 → 唤醒
-                WM_LBUTTONDOWN => {
+                tracing::debug!("[hook] 中键按下，武装唤醒（3 秒内左键点击展示便签）");
+            }
+            // 左键按下：若已武装（未超时）→ 投递主线程执行唤醒
+            WM_LBUTTONDOWN => {
+                let armed = STATE.lock().ok().and_then(|mut s| {
+                    let inner = s.as_mut()?;
                     let armed = inner
                         .armed_at
                         .map(|t| now - t < ARM_TIMEOUT_MS)
                         .unwrap_or(false);
                     inner.armed_at = None; // 一次武装对应一次左键
-                    if armed {
-                        try_wake(&inner.app, info.pt);
+                    Some(armed)
+                });
+                if armed.unwrap_or(false) {
+                    // 异步投递：回调绝不阻塞系统鼠标线程
+                    if let Ok(state) = STATE.lock() {
+                        if let Some(inner) = state.as_ref() {
+                            let app = inner.app.clone();
+                            let pt = info.pt;
+                            let app2 = app.clone();
+                            let _ = app.run_on_main_thread(move || try_wake(&app2, pt));
+                        }
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)

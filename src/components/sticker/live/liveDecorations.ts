@@ -79,6 +79,45 @@ class TaskCheckboxWidget extends WidgetType {
   }
 }
 
+/** 列表标记 widget：无序显示圆点，有序显示计算编号（支持 1. / 1.1. 嵌套）。 */
+class ListMarkWidget extends WidgetType {
+  constructor(readonly text: string) {
+    super();
+  }
+
+  eq(other: ListMarkWidget) {
+    return other.text === this.text;
+  }
+
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "live-listmark";
+    span.textContent = this.text;
+    return span;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** 分隔线 widget。 */
+class HrWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+
+  toDOM() {
+    const div = document.createElement("div");
+    div.className = "live-hr";
+    return div;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /** 从 markdown-it 片段渲染提取 <p> 内 HTML。 */
 function renderFragment(src: string): string {
   const html = renderMarkdownEditable(src);
@@ -91,6 +130,15 @@ interface InlineRange {
   to: number;
   kind: "render" | "task" | "math";
   checked?: boolean;
+}
+
+/** 块级渲染范围：标题标记/列表标记/引用标记/分隔线。 */
+interface BlockRange {
+  from: number;
+  to: number;
+  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr";
+  level?: number; // heading 级别
+  ordinal?: string; // 有序列表显示编号（如 "1."、"1.1."）；无序为 "•"
 }
 
 /** 收集行内元素范围（lezer 树 + math 正则），返回非重叠列表。 */
@@ -187,16 +235,199 @@ function inlineDecoration(view: EditorView, r: InlineRange): Decoration {
   });
 }
 
-/** 构建 decoration 集：光标所在行不渲染（显示源码）。 */
+/** 收集块级渲染范围（标题/列表标记/引用/分隔线）。
+ *  有序列表编号按嵌套层级计算（1. / 1.1. / 1.1.1.）。 */
+export function collectBlockRanges(view: EditorView): BlockRange[] {
+  const state = view.state;
+  const doc = state.doc;
+  let tree = syntaxTree(state);
+  if (tree.length < doc.length) {
+    tree = ensureSyntaxTree(state, doc.length) ?? tree;
+  }
+  const ranges: BlockRange[] = [];
+  // 列表层级栈（enter/leave 维护）
+  const stack: Array<{ type: "ol" | "ul"; count: number }> = [];
+  // 当前 ListItem 上下文（ListMark 处理时使用）
+  let currentItem: { ordered: boolean; ordinal: string } | null = null;
+
+  tree.iterate({
+    enter: (node) => {
+      const name = node.type.name;
+      const from = node.from;
+      const to = node.to;
+      if (name === "BulletList") {
+        stack.push({ type: "ul", count: 0 });
+        return;
+      }
+      if (name === "OrderedList") {
+        stack.push({ type: "ol", count: 0 });
+        return;
+      }
+      if (name === "ListItem") {
+        if (stack.length) stack[stack.length - 1].count++;
+        const ordered = stack[stack.length - 1]?.type === "ol";
+        const ordinal = stack
+          .filter((s) => s.type === "ol")
+          .map((s) => s.count)
+          .join(".");
+        currentItem = { ordered, ordinal };
+        return;
+      }
+      if (name === "ListMark") {
+        if (currentItem) {
+          ranges.push({
+            from,
+            to,
+            kind: "listmark",
+            ordinal: currentItem.ordered ? `${currentItem.ordinal}.` : "•",
+          });
+        }
+        return;
+      }
+      if (name === "HeaderMark") {
+        // 标题级别：行首 # 数量（setext 标题按所在行前缀推断）
+        const line = doc.lineAt(from);
+        const m = /^\s*(#{1,6})/.exec(line.text);
+        ranges.push({
+          from,
+          to,
+          kind: "heading-mark",
+          level: m ? m[1].length : 1,
+        });
+        return;
+      }
+      if (name === "ATXHeading1" || name === "ATXHeading2" || name === "ATXHeading3"
+        || name === "ATXHeading4" || name === "ATXHeading5" || name === "ATXHeading6") {
+        const level = Number(name.replace("ATXHeading", ""));
+        ranges.push({ from, to, kind: "heading-line", level });
+        return;
+      }
+      if (name === "SetextHeading1" || name === "SetextHeading2") {
+        ranges.push({
+          from,
+          to,
+          kind: "heading-line",
+          level: name === "SetextHeading1" ? 1 : 2,
+        });
+        return;
+      }
+      if (name === "QuoteMark") {
+        ranges.push({ from, to, kind: "quote" });
+        return;
+      }
+      if (name === "Blockquote") {
+        ranges.push({ from, to, kind: "quote-line" });
+        return;
+      }
+      if (name === "HorizontalRule") {
+        ranges.push({ from, to, kind: "hr" });
+      }
+    },
+    leave: (node) => {
+      const name = node.type.name;
+      if (name === "BulletList" || name === "OrderedList") {
+        stack.pop();
+      }
+      if (name === "ListItem") {
+        currentItem = null;
+      }
+    },
+  });
+  return ranges;
+}
+
+/** 标题标记 widget（隐藏 # 符号，占位保持行内布局）。 */
+class HeadingMarkWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const s = document.createElement("span");
+    s.className = "live-heading-mark";
+    return s;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** 引用标记 widget（隐藏 > 符号）。 */
+class QuoteMarkWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const s = document.createElement("span");
+    s.className = "live-quote-mark";
+    s.textContent = " ";
+    return s;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** 块级范围 → Decoration。 */
+function blockDecoration(r: BlockRange): Decoration {
+  switch (r.kind) {
+    case "heading-mark":
+      return Decoration.replace({ widget: new HeadingMarkWidget() });
+    case "heading-line":
+      return Decoration.mark({ class: `cm-live-h${r.level ?? 1}` });
+    case "listmark":
+      return Decoration.replace({
+        widget: new ListMarkWidget(r.ordinal ?? "•"),
+      });
+    case "quote":
+      return Decoration.replace({ widget: new QuoteMarkWidget() });
+    case "quote-line":
+      return Decoration.mark({ class: "cm-live-quote" });
+    case "hr":
+      return Decoration.replace({ widget: new HrWidget() });
+  }
+}
+
+/** 构建 decoration 集：光标所在行不渲染（显示源码）。
+ *  mark 类（标题整行样式）可与任何 decoration 重叠；replace 类做非重叠贪心。 */
 export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
   const builder = new RangeSetBuilder<Decoration>();
   const doc = view.state.doc;
   const head = view.state.selection.main.head;
   const curLine = doc.lineAt(head);
+
+  interface Item {
+    from: number;
+    to: number;
+    deco: Decoration;
+    isMark: boolean;
+  }
+  const ranges: Item[] = [];
   for (const r of collectInlineRanges(view)) {
+    ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false });
+  }
+  for (const r of collectBlockRanges(view)) {
+    ranges.push({
+      from: r.from,
+      to: r.to,
+      deco: blockDecoration(r),
+      isMark: r.kind === "heading-line" || r.kind === "quote-line",
+    });
+  }
+  ranges.sort((a, b) => a.from - b.from || b.to - a.to);
+
+  const replaceAccepted: Item[] = [];
+  for (const r of ranges) {
     // 与光标行相交 → 跳过（显示源码）
     if (r.from < curLine.to && r.to > curLine.from) continue;
-    builder.add(r.from, r.to, inlineDecoration(view, r));
+    if (r.isMark) {
+      builder.add(r.from, r.to, r.deco);
+      continue;
+    }
+    // replace 类：非重叠贪心（外层优先，嵌套内层丢弃）
+    const prev = replaceAccepted[replaceAccepted.length - 1];
+    if (prev && r.from < prev.to) continue;
+    replaceAccepted.push(r);
+    builder.add(r.from, r.to, r.deco);
   }
   return builder.finish();
 }
