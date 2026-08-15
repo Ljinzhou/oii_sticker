@@ -83,7 +83,7 @@ mod tests {
         let conn = test_conn();
         let cfg = load_all(&conn).unwrap();
         assert_eq!(cfg.get_or("default_sticker_opacity", ""), "0.9");
-        assert_eq!(cfg.get_or("default_sticker_bg_color", ""), "#CCFFCC");
+        assert_eq!(cfg.get_or("default_sticker_bg_color", ""), "#FFF4D6");
         assert!(cfg.entries.len() >= 15);
     }
 }

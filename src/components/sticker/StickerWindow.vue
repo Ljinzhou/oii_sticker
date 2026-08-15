@@ -42,6 +42,44 @@ const cardStyle = computed(() => {
 
 const bodyFontSize = computed(() => prefs.effective?.body_font_size ?? 13);
 
+// ── 自动滚动（便签设置 auto_scroll）：仅展示模式，先向下到底→再向上到顶→反复 ──
+const bodyRef = ref<HTMLElement | null>(null);
+const autoScroll = computed(() => sticker.value?.auto_scroll ?? false);
+let scrollRaf: number | undefined;
+let scrollDir = 1; // 1 = 向下，-1 = 向上
+
+function tickScroll() {
+  const el = bodyRef.value;
+  if (el) {
+    const max = el.scrollHeight - el.clientHeight;
+    if (max > 0) {
+      el.scrollTop += (settings.autoScrollSpeed / 60) * scrollDir;
+      if (el.scrollTop >= max) {
+        el.scrollTop = max;
+        scrollDir = -1;
+      } else if (el.scrollTop <= 0) {
+        scrollDir = 1;
+      }
+    }
+  }
+  scrollRaf = requestAnimationFrame(tickScroll);
+}
+
+function startAutoScroll() {
+  stopAutoScroll();
+  if (autoScroll.value && mode.value === "display") {
+    scrollDir = 1;
+    scrollRaf = requestAnimationFrame(tickScroll);
+  }
+}
+
+function stopAutoScroll() {
+  if (scrollRaf !== undefined) cancelAnimationFrame(scrollRaf);
+  scrollRaf = undefined;
+}
+
+watch([autoScroll, mode], startAutoScroll);
+
 async function load() {
   sticker.value = (await invoke<Sticker | null>("get_sticker_cmd", { id: stickerId })) ?? null;
   if (sticker.value) {
@@ -195,6 +233,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (collapseTimer) window.clearTimeout(collapseTimer);
+  stopAutoScroll();
   unlisteners.forEach((u) => u());
 });
 </script>
@@ -240,7 +279,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="body" :class="{ editing: mode === 'edit' }" :style="{ fontSize: bodyFontSize + 'px' }">
+    <div ref="bodyRef" class="body" :class="{ editing: mode === 'edit' }" :style="{ fontSize: bodyFontSize + 'px' }">
       <StickerViewer
         v-if="mode === 'display' || mode === 'interact'"
         :content="sticker?.content ?? ''"

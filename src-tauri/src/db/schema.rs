@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -29,7 +29,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ("default_sticker_title_centered", "0", "新便签默认标题是否居中（0 居左，1 居中）"),
         ("default_sticker_title_font_size", "14", "新便签默认标题字号（px）"),
         ("default_sticker_body_font_size", "13", "新便签默认正文字号（px）"),
-        ("default_sticker_bg_color", "#CCFFCC", "新便签默认背景颜色（#RRGGBB）"),
+        ("default_sticker_bg_color", "#FFF4D6", "新便签默认背景颜色（#RRGGBB）"),
         ("default_sticker_text_color", "#222222", "新便签默认正文颜色（#RRGGBB）"),
         // v3：自动滚动默认参数。
         ("default_sticker_auto_scroll", "0", "新便签默认是否自动滚动正文（0 关，1 开）"),
@@ -111,7 +111,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<()> {
                 ('default_sticker_title_centered',  '0',      '新便签默认标题是否居中（0 居左，1 居中）'),
                 ('default_sticker_title_font_size', '14',     '新便签默认标题字号（px）'),
                 ('default_sticker_body_font_size',  '13',     '新便签默认正文字号（px）'),
-                ('default_sticker_bg_color',        '#CCFFCC','新便签默认背景颜色（#RRGGBB）'),
+                ('default_sticker_bg_color',        '#FFF4D6','新便签默认背景颜色（#RRGGBB）'),
                 ('default_sticker_text_color',      '#222222','新便签默认正文颜色（#RRGGBB）');
             ",
         )
@@ -166,6 +166,20 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v5 → v6 迁移：默认背景色统一为 #FFF4D6（旧默认 #CCFFCC 修正，
+/// 与便签实际默认背景保持一致）。
+fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute(
+            "UPDATE system_config SET value = '#FFF4D6'
+             WHERE key = 'default_sticker_bg_color' AND value = '#CCFFCC'",
+            [],
+        )
+        .context("迁移 v5→v6 失败")?;
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -191,6 +205,9 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
     }
     if current < 5 {
         migrate_v4_to_v5(conn)?;
+    }
+    if current < 6 {
+        migrate_v5_to_v6(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -233,7 +250,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(run_migrations(&conn).unwrap(), 5);
+        assert_eq!(run_migrations(&conn).unwrap(), 6);
     }
 
     /// v2 库执行迁移：auto_scroll_speed 列应被补上；
@@ -250,14 +267,14 @@ mod tests {
         )
         .unwrap();
 
-        // 第一次迁移到 v5。
-        assert_eq!(run_migrations(&conn).unwrap(), 5);
+        // 第一次迁移到 v6。
+        assert_eq!(run_migrations(&conn).unwrap(), 6);
 
         // 模拟"迁移中途崩溃后重跑"：列已存在时再跑 v2→v3 不得报错。
         migrate_v2_to_v3(&conn).unwrap();
 
         // 再次全量迁移应为 no-op 成功。
-        assert_eq!(run_migrations(&conn).unwrap(), 5);
+        assert_eq!(run_migrations(&conn).unwrap(), 6);
 
         // 列确实存在。
         assert!(table_has_column(&conn, "sticker_prefs", "auto_scroll_speed").unwrap());
@@ -282,7 +299,7 @@ mod tests {
         // 事务已回滚：连接不在事务中，可以继续执行新语句。
         conn.execute_batch("ALTER TABLE sticker_prefs_bak RENAME TO sticker_prefs;")
             .unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 5);
+        assert_eq!(run_migrations(&conn).unwrap(), 6);
     }
 
     /// 全新库：init_schema 建全部表并写 user_version=5。
@@ -315,6 +332,35 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
+    }
+
+    /// v5 → v6：旧默认背景色 #CCFFCC 迁移为 #FFF4D6，其他键不受影响。
+    #[test]
+    fn migrate_v5_to_v6_fixes_bg_color_default() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT);
+             INSERT INTO system_config VALUES ('default_sticker_bg_color', '#CCFFCC', 'x');
+             INSERT INTO system_config VALUES ('default_sticker_opacity', '0.9', 'x');",
+        )
+        .unwrap();
+        migrate_v5_to_v6(&conn).unwrap();
+        let v: String = conn
+            .query_row(
+                "SELECT value FROM system_config WHERE key = 'default_sticker_bg_color'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "#FFF4D6");
+        let custom: String = conn
+            .query_row(
+                "SELECT value FROM system_config WHERE key = 'default_sticker_opacity'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(custom, "0.9", "其他键不受影响");
     }
 }

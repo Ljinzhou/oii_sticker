@@ -103,28 +103,30 @@ onMounted(async () => {
 
 <template>
   <div class="settings-page">
+    <!-- 顶部拖拽条：设置面板覆盖主控台后仍可拖动窗口 -->
+    <div class="drag-bar" data-tauri-drag-region></div>
     <aside class="nav">
       <h2 class="page-title">系统设置</h2>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'general' }"
         @click="activeMenu = 'general'"
-      >⚙ 通用</button>
+      >通用设置</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'defaults' }"
         @click="activeMenu = 'defaults'"
-      >🖌 便签默认</button>
+      >便签样式</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'debug' }"
         @click="activeMenu = 'debug'"
-      >🐞 Debug</button>
+      >Debug</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'about' }"
         @click="activeMenu = 'about'"
-      >ℹ 关于</button>
+      >关于</button>
     </aside>
 
     <section class="content">
@@ -263,6 +265,18 @@ onMounted(async () => {
   grid-template-columns: 180px 1fr;
   grid-template-rows: 1fr auto;
   z-index: 30;
+}
+
+/* 顶部拖拽区（覆盖主控台后仍可拖动窗口） */
+.drag-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  cursor: grab;
+  z-index: 5;
+  -webkit-app-region: drag;
 }
 
 .nav {
