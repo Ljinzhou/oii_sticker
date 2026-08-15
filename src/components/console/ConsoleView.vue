@@ -114,16 +114,18 @@ onBeforeUnmount(() => {
       <div v-else class="cards">
         <div v-for="s in notes.stickers" :key="s.id" class="card">
           <div class="card-head">
-            <button class="btn small danger del" title="删除便签" @click="confirming = s">✕</button>
             <span class="card-title">{{ s.title || "（无标题）" }}</span>
-            <button
-              class="btn small"
-              :class="{ show: !isOpen(s.id) }"
-              :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'"
-              @click="toggleSticker(s)"
-            >
-              {{ isOpen(s.id) ? "隐藏" : "显示" }}
-            </button>
+            <div class="card-btns">
+              <button class="btn small danger del" title="删除便签" @click="confirming = s">✕</button>
+              <button
+                class="btn small"
+                :class="{ show: !isOpen(s.id) }"
+                :title="isOpen(s.id) ? '隐藏窗口' : '显示窗口'"
+                @click="toggleSticker(s)"
+              >
+                {{ isOpen(s.id) ? "隐藏" : "显示" }}
+              </button>
+            </div>
           </div>
           <div class="card-preview">{{ preview(s) }}</div>
           <div class="card-foot">
@@ -276,6 +278,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 右侧按钮组：删除（✕）紧挨显示按钮左侧 */
+.card-btns {
+  display: flex;
+  gap: 6px;
+  flex: none;
 }
 
 .card-title {

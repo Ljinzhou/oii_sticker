@@ -136,8 +136,8 @@ interface InlineRange {
 interface BlockRange {
   from: number;
   to: number;
-  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr";
-  level?: number; // heading 级别
+  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line";
+  level?: number; // heading 级别 / 复合编号嵌套深度
   ordinal?: string; // 有序列表显示编号（如 "1."、"1.1."）；无序为 "•"
 }
 
@@ -245,6 +245,37 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
     tree = ensureSyntaxTree(state, doc.length) ?? tree;
   }
   const ranges: BlockRange[] = [];
+  // 代码块范围（复合编号正则扫描需跳过）
+  const codeRanges: Array<[number, number]> = [];
+
+  // ⚠ 复合编号行（编辑层标记：1.1 / 3.1.1 / 1.1.1.）优先于 lezer 识别：
+  // lezer 会把 "1.1 b" 解析为普通列表项（ListMark "1."，编号按 2. 递增），
+  // 与用户源码的复合编号语义冲突。故先扫描复合编号行并记录范围，
+  // 遍历树时跳过与其重叠的 ListMark。
+  const text = doc.toString();
+  const lines = text.split("\n");
+  const compoundMarks: Array<{ from: number; to: number; ordinal: string; lineStart: number; lineEnd: number; depth: number }> = [];
+  let offset = 0;
+  for (const line of lines) {
+    const start = offset;
+    const end = offset + line.length;
+    const m = /^(\s*)(\d+\.\d+(?:\.\d+)*\.?)(\s)/.exec(line);
+    if (m) {
+      // 嵌套深度 = 段数 - 1（去掉可能的尾点再数段）
+      const depth = m[2].replace(/\.$/, "").split(".").length - 1;
+      const numStart = start + m[1].length;
+      compoundMarks.push({
+        from: numStart,
+        to: numStart + m[2].length,
+        ordinal: m[2],
+        lineStart: start,
+        lineEnd: end,
+        depth,
+      });
+    }
+    offset = end + 1; // +1 换行符
+  }
+
   // 列表层级栈（enter/leave 维护）
   const stack: Array<{ type: "ol" | "ul"; count: number }> = [];
   // 当前 ListItem 上下文（ListMark 处理时使用）
@@ -255,6 +286,10 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
       const name = node.type.name;
       const from = node.from;
       const to = node.to;
+      if (name === "FencedCode") {
+        codeRanges.push([from, to]);
+        return false;
+      }
       if (name === "BulletList") {
         stack.push({ type: "ul", count: 0 });
         return;
@@ -274,6 +309,9 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
         return;
       }
       if (name === "ListMark") {
+        // 复合编号行已被正则优先识别：跳过 lezer 的 ListMark（避免编号冲突；
+        // lezer 的标记可能是复合编号的前缀，如 "1." ⊂ "1.1"）
+        if (compoundMarks.some((c) => c.from === from && c.to >= to)) return;
         if (currentItem) {
           ranges.push({
             from,
@@ -333,6 +371,26 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
       }
     },
   });
+
+  // 复合编号行输出（跳过代码块范围）：编号 replace 为列表标记（保持源码编号），
+  // 整行加缩进 padding（mark class 按嵌套深度，模拟 Obsidian 层级）。
+  for (const c of compoundMarks) {
+    if (codeRanges.some(([cf, ct]) => c.lineStart >= cf && c.lineEnd <= ct)) continue;
+    ranges.push({
+      from: c.from,
+      to: c.to,
+      kind: "listmark",
+      ordinal: c.ordinal,
+    });
+    if (c.depth >= 1) {
+      ranges.push({
+        from: c.lineStart,
+        to: c.lineEnd,
+        kind: "compound-line",
+        level: c.depth,
+      });
+    }
+  }
   return ranges;
 }
 
@@ -384,6 +442,8 @@ function blockDecoration(r: BlockRange): Decoration {
       return Decoration.mark({ class: "cm-live-quote" });
     case "hr":
       return Decoration.replace({ widget: new HrWidget() });
+    case "compound-line":
+      return Decoration.mark({ class: `cm-live-n${r.level ?? 1}` });
   }
 }
 
@@ -400,25 +460,39 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     to: number;
     deco: Decoration;
     isMark: boolean;
+    isBlock: boolean;
   }
   const ranges: Item[] = [];
+  // Obsidian 精确行为：行内元素只在「光标位于该元素内（含边界）或选区跨越」时
+  // 显示源码标记，其余元素始终渲染（同行其他元素不受影响）；
+  // 块级标记/任务 checkbox 按「光标所在行」显示源码。
+  const sel = view.state.selection.main;
   for (const r of collectInlineRanges(view)) {
-    ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false });
+    if (r.kind === "task") {
+      // 块级语义：光标所在行显示 [ ] 文本
+      if (r.from < curLine.to && r.to > curLine.from) continue;
+    } else {
+      const cursorIn = sel.from >= r.from && sel.from <= r.to;
+      const selOverlap = sel.from < r.to && sel.to > r.from;
+      if (cursorIn || selOverlap) continue;
+    }
+    ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false, isBlock: false });
   }
   for (const r of collectBlockRanges(view)) {
     ranges.push({
       from: r.from,
       to: r.to,
       deco: blockDecoration(r),
-      isMark: r.kind === "heading-line" || r.kind === "quote-line",
+      isMark: r.kind === "heading-line" || r.kind === "quote-line" || r.kind === "compound-line",
+      isBlock: true,
     });
   }
   ranges.sort((a, b) => a.from - b.from || b.to - a.to);
 
   const replaceAccepted: Item[] = [];
   for (const r of ranges) {
-    // 与光标行相交 → 跳过（显示源码）
-    if (r.from < curLine.to && r.to > curLine.from) continue;
+    // 块级标记：光标所在行显示源码（行内元素已按 Obsidian 元素级规则判断过）
+    if (r.isBlock && r.from < curLine.to && r.to > curLine.from) continue;
     if (r.isMark) {
       builder.add(r.from, r.to, r.deco);
       continue;

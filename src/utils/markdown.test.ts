@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderMarkdown, hexToRgba, mathInstancePromise } from "./markdown";
+import { renderMarkdown, hexToRgba, mathInstancePromise, normalizeCompoundLists } from "./markdown";
 
 describe("renderMarkdown", () => {
   it("渲染基础 Markdown（标题/粗体/列表）", () => {
@@ -47,6 +47,25 @@ describe("renderMarkdown", () => {
     await mathInstancePromise;
     const html = renderMarkdown("$$\n\\frac{1}{2}\n$$");
     expect(html).toContain("math-block");
+  });
+});
+
+describe("normalizeCompoundLists", () => {
+  it("复合编号行转为嵌套列表语法", () => {
+    expect(normalizeCompoundLists("1. 文本\n1.1 子项")).toBe("1. 文本\n  1. 子项");
+    expect(normalizeCompoundLists("1. 文本\n1.1 子项\n1.1.1 深层")).toBe(
+      "1. 文本\n  1. 子项\n    1. 深层",
+    );
+    expect(normalizeCompoundLists("1.1. 尾点文本")).toBe("  1. 尾点文本");
+  });
+
+  it("单级编号与普通行不变", () => {
+    expect(normalizeCompoundLists("1. 文本\n2. 文本\n普通行")).toBe("1. 文本\n2. 文本\n普通行");
+  });
+
+  it("围栏代码块内不转换", () => {
+    const md = "```\n1.1 code line\n```";
+    expect(normalizeCompoundLists(md)).toBe(md);
   });
 });
 

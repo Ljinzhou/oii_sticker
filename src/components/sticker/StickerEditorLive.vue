@@ -170,4 +170,18 @@ defineExpose({ flush });
   margin: 10px 0;
   width: 100%;
 }
+
+/* 复合编号行缩进（按嵌套深度，模拟 Obsidian 层级） */
+.live-host :deep(.cm-live-n1) {
+  padding-left: 1.3em;
+}
+.live-host :deep(.cm-live-n2) {
+  padding-left: 2.6em;
+}
+.live-host :deep(.cm-live-n3) {
+  padding-left: 3.9em;
+}
+.live-host :deep(.cm-live-n4) {
+  padding-left: 5.2em;
+}
 </style>
