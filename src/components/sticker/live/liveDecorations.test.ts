@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { collectInlineRanges, buildLiveDecorations } from "./liveDecorations";
+import { collectInlineRanges, collectBlockRanges, buildLiveDecorations } from "./liveDecorations";
 
 // jsdom polyfill（CM6 需要）
 class ResizeObserverMock {
@@ -69,6 +69,49 @@ describe("collectInlineRanges", () => {
     const view = makeView("```js\n**不是粗体**\n```");
     const renders = collectInlineRanges(view).filter((r) => r.kind === "render");
     expect(renders.length).toBe(0);
+    view.destroy();
+  });
+});
+
+describe("collectBlockRanges（块级渲染）", () => {
+  it("标题标记与标题行范围（含级别）", () => {
+    const view = makeView("# 一级\n## 二级");
+    const blocks = collectBlockRanges(view);
+    const marks = blocks.filter((b) => b.kind === "heading-mark");
+    expect(marks.map((m) => m.level)).toEqual([1, 2]);
+    const lines = blocks.filter((b) => b.kind === "heading-line");
+    expect(lines.length).toBe(2);
+    view.destroy();
+  });
+
+  it("无序列表标记渲染为圆点", () => {
+    const view = makeView("- 一项\n- 二项");
+    const marks = collectBlockRanges(view).filter((b) => b.kind === "listmark");
+    expect(marks.length).toBe(2);
+    expect(marks.every((m) => m.ordinal === "•")).toBe(true);
+    view.destroy();
+  });
+
+  it("有序列表嵌套编号（1. / 1.1. / 1.1.1.）", () => {
+    const view = makeView("1. a\n   1. b\n      1. c");
+    const marks = collectBlockRanges(view).filter((b) => b.kind === "listmark");
+    expect(marks.map((m) => m.ordinal)).toEqual(["1.", "1.1.", "1.1.1."]);
+    view.destroy();
+  });
+
+  it("有序列表同层续接编号（1. / 2.）", () => {
+    const view = makeView("1. a\n2. b");
+    const marks = collectBlockRanges(view).filter((b) => b.kind === "listmark");
+    expect(marks.map((m) => m.ordinal)).toEqual(["1.", "2."]);
+    view.destroy();
+  });
+
+  it("引用标记与引用行范围、分隔线", () => {
+    const view = makeView("> 引用\n\n---");
+    const blocks = collectBlockRanges(view);
+    expect(blocks.some((b) => b.kind === "quote")).toBe(true);
+    expect(blocks.some((b) => b.kind === "quote-line")).toBe(true);
+    expect(blocks.some((b) => b.kind === "hr")).toBe(true);
     view.destroy();
   });
 });

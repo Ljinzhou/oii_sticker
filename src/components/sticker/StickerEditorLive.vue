@@ -129,4 +129,45 @@ defineExpose({ flush });
   cursor: pointer;
   vertical-align: middle;
 }
+
+/* ── 块级渲染（标题/列表/引用/分隔线） ── */
+.live-host :deep(.cm-live-h1) {
+  font-size: 1.5em;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.live-host :deep(.cm-live-h2) {
+  font-size: 1.3em;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.live-host :deep(.cm-live-h3) {
+  font-size: 1.15em;
+  font-weight: 700;
+}
+.live-host :deep(.cm-live-h4),
+.live-host :deep(.cm-live-h5),
+.live-host :deep(.cm-live-h6) {
+  font-weight: 700;
+}
+
+.live-host :deep(.live-listmark) {
+  color: #4f7cff;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.live-host :deep(.cm-live-quote) {
+  display: inline-block;
+  border-left: 3px solid rgba(0, 0, 0, 0.15);
+  padding-left: 8px;
+  opacity: 0.85;
+}
+
+.live-host :deep(.live-hr) {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.15);
+  margin: 10px 0;
+  width: 100%;
+}
 </style>

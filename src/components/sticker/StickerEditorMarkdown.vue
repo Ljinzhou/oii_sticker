@@ -4,6 +4,11 @@
 // 宽度按 textarea 实际内容区（clientWidth）精确对齐，保证换行位置一致。
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { highlightMarkdown } from "../../utils/markdown-highlight";
+import {
+  handleEnterAtCursor,
+  handleTabAtCursor,
+  handleShiftTabAtCursor,
+} from "../../utils/edit-actions";
 
 const props = defineProps<{
   modelValue: string;
@@ -61,18 +66,51 @@ onBeforeUnmount(() => {
   observer?.disconnect();
 });
 
-/** Tab 插入两个空格（保持 Markdown 缩进习惯）。 */
+/** Enter / Tab / Shift+Tab 智能编辑（列表续行、嵌套缩进；围栏内退化）。
+ *  逻辑移植自 Rust editing 模块（handle_enter/tab/shift_tab_at_cursor）。 */
 function onKeydown(e: KeyboardEvent) {
+  const el = textarea.value;
+  if (!el) return;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+
   if (e.key === "Tab") {
     e.preventDefault();
-    const el = textarea.value;
-    if (!el) return;
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    text.value = props.modelValue.slice(0, start) + "  " + props.modelValue.slice(end);
-    requestAnimationFrame(() => {
-      el.setSelectionRange(start + 2, start + 2);
-    });
+    if (start !== end) {
+      // 多行/多字符选区：整体缩进（每行前加 2 空格）——简化为默认 2 空格缩进
+      const prefix = props.modelValue.slice(0, start);
+      const sel = props.modelValue.slice(start, end);
+      const suffix = props.modelValue.slice(end);
+      const indented = sel
+        .split("\n")
+        .map((l, i) => (i === 0 && prefix.endsWith("\n") ? `  ${l}` : i > 0 ? `  ${l}` : l))
+        .join("\n");
+      const added = indented.length - sel.length;
+      text.value = `${prefix}${indented}${suffix}`;
+      requestAnimationFrame(() => {
+        el.setSelectionRange(start + (prefix.endsWith("\n") ? 2 : 0), end + added);
+      });
+      return;
+    }
+    if (e.shiftKey) {
+      const r = handleShiftTabAtCursor(props.modelValue, start);
+      if (r) {
+        text.value = r.text;
+        requestAnimationFrame(() => el.setSelectionRange(r.cursor, r.cursor));
+      }
+    } else {
+      const r = handleTabAtCursor(props.modelValue, start);
+      text.value = r.text;
+      requestAnimationFrame(() => el.setSelectionRange(r.cursor, r.cursor));
+    }
+  } else if (e.key === "Enter" && start === end) {
+    // 列表行智能续行（非列表行交给默认回车）
+    const r = handleEnterAtCursor(props.modelValue, start);
+    if (r) {
+      e.preventDefault();
+      text.value = r.text;
+      requestAnimationFrame(() => el.setSelectionRange(r.cursor, r.cursor));
+    }
   }
 }
 </script>
