@@ -100,6 +100,24 @@ function onContainerClick(e: MouseEvent) {
   padding-left: 22px;
 }
 
+/* 有序列表复合编号（1. / 1.1 / 1.1.1，Obsidian 风格） */
+.markdown :deep(ol) {
+  list-style: none;
+  counter-reset: item;
+}
+
+.markdown :deep(ol > li) {
+  counter-increment: item;
+  position: relative;
+}
+
+.markdown :deep(ol > li::before) {
+  content: counters(item, ".") ". ";
+  color: #4f7cff;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
 .markdown :deep(li) {
   margin: 2px 0;
 }

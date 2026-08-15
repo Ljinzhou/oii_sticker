@@ -132,9 +132,39 @@ md.renderer.rules.list_item_open = function (tokens, idx, options, env, self) {
   return html.replace("<li", `<li class="task-item"`) + checkbox;
 };
 
-/** 渲染 markdown → HTML（含 todo checkbox 的 data-line 与 mathjax SVG）。 */
+/** 复合编号行（编辑层标记）→ 标准嵌套列表语法（渲染视图专用，不改源码）：
+ *  `1.1 文本` → `  1. 文本`（嵌套深度 = 链长-1），供 markdown-it 识别为嵌套列表，
+ *  编号层级由 CSS counter（counters(item, ".")）显示为 1. / 1.1 / 1.1.1。 */
+export function normalizeCompoundLists(md: string): string {
+  let inFence = false;
+  let fenceChar = "";
+  return md
+    .split("\n")
+    .map((line) => {
+      const t = line.trimStart();
+      // 围栏开关跟踪：``` / ~~~
+      if (!inFence && (t.startsWith("```") || t.startsWith("~~~"))) {
+        inFence = true;
+        fenceChar = t.startsWith("```") ? "`" : "~";
+        return line;
+      }
+      if (inFence && ((fenceChar === "`" && t.startsWith("```")) || (fenceChar === "~" && t.startsWith("~~~")))) {
+        inFence = false;
+        return line;
+      }
+      if (inFence) return line; // 代码块内不转换
+      const m = /^(\s*)(\d+(?:\.\d+)+)\.?(\s.*)$/.exec(line);
+      if (!m) return line;
+      const depth = m[2].split(".").length - 1;
+      return `${m[1]}${"  ".repeat(depth)}1.${m[3]}`;
+    })
+    .join("\n");
+}
+
+/** 渲染 markdown → HTML（含 todo checkbox 的 data-line 与 mathjax SVG；
+ *  复合编号先归一化为嵌套列表语法）。 */
 export function renderMarkdown(content: string): string {
-  return md.render(content);
+  return md.render(normalizeCompoundLists(content));
 }
 
 /** 收集 mathjax 渲染产生的 SVG CSS 并清空缓存（渲染后调用，注入全局 style）。 */

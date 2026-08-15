@@ -106,6 +106,24 @@ describe("collectBlockRanges（块级渲染）", () => {
     view.destroy();
   });
 
+  it("复合编号行识别为列表标记（含缩进 mark）", () => {
+    const view = makeView("1. a\n  1.1 b\n    3.1.1 c\n1. 尾\n1.1. 尾点");
+    const blocks = collectBlockRanges(view).sort((a, b) => a.from - b.from);
+    // lezer 单级列表（1. 与同列表第 2 项 2.）+ 复合编号（1.1 / 3.1.1 / 1.1.）
+    const marks = blocks.filter((b) => b.kind === "listmark");
+    expect(marks.map((m) => m.ordinal)).toEqual(["1.", "1.1", "3.1.1", "2.", "1.1."]);
+    const indents = blocks.filter((b) => b.kind === "compound-line");
+    expect(indents.map((i) => i.level)).toEqual([1, 2, 1]);
+    view.destroy();
+  });
+
+  it("围栏代码块内的复合编号不识别", () => {
+    const view = makeView("```\n1.1 code\n```");
+    const marks = collectBlockRanges(view).filter((b) => b.kind === "listmark");
+    expect(marks.length).toBe(0);
+    view.destroy();
+  });
+
   it("引用标记与引用行范围、分隔线", () => {
     const view = makeView("> 引用\n\n---");
     const blocks = collectBlockRanges(view);
@@ -137,6 +155,41 @@ describe("buildLiveDecorations", () => {
       count++;
     });
     expect(count).toBe(1); // 只有行一渲染
+    view.destroy();
+  });
+
+  it("Obsidian 精确行为：光标在行内但不在元素内时，该元素仍渲染", () => {
+    const view = makeView("abc **粗体**", 0); // 光标在行首普通文本
+    const deco = buildLiveDecorations(view);
+    let count = 0;
+    deco.between(0, view.state.doc.length, () => {
+      count++;
+    });
+    expect(count).toBe(1); // strong 仍渲染（光标不在其内）
+    view.destroy();
+  });
+
+  it("Obsidian 精确行为：光标进入元素（含边界）→ 显示源码", () => {
+    const view = makeView("abc **粗体**", 0);
+    view.dispatch({ selection: { anchor: 5 } }); // 光标在 ** 起始边界
+    const deco = buildLiveDecorations(view);
+    let count = 0;
+    deco.between(0, view.state.doc.length, () => {
+      count++;
+    });
+    expect(count).toBe(0); // strong 显示源码
+    view.destroy();
+  });
+
+  it("选区跨越元素 → 显示源码", () => {
+    const view = makeView("abc **粗体** 结尾", 0);
+    view.dispatch({ selection: { anchor: 0, head: 8 } }); // 选中跨越 strong
+    const deco = buildLiveDecorations(view);
+    let count = 0;
+    deco.between(0, view.state.doc.length, () => {
+      count++;
+    });
+    expect(count).toBe(0);
     view.destroy();
   });
 });
