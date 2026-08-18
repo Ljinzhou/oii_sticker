@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 import MarkdownView from "./MarkdownView.vue";
+import markdownViewSource from "./MarkdownView.vue?raw";
 
 describe("MarkdownView", () => {
   it("渲染内容为 HTML（v-html）", () => {
@@ -30,5 +31,15 @@ describe("MarkdownView", () => {
     });
     await wrapper.find("input.task-checkbox").trigger("click");
     expect(wrapper.emitted("toggle")).toBeUndefined();
+  });
+
+  it("有序列表编号与无序列表对齐且使用正文颜色", () => {
+    const orderedMarkerCss = markdownViewSource.match(
+      /\.markdown :deep\(ol > li::before\)\s*\{([^}]*)\}/,
+    )?.[1];
+
+    expect(orderedMarkerCss).toBeTruthy();
+    expect(orderedMarkerCss).toMatch(/margin-left:\s*-22px/);
+    expect(orderedMarkerCss).toMatch(/color:\s*inherit/);
   });
 });
