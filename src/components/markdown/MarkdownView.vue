@@ -113,8 +113,9 @@ function onContainerClick(e: MouseEvent) {
 
 .markdown :deep(ol > li::before) {
   content: counters(item, ".") ". ";
-  color: #4f7cff;
+  color: inherit;
   font-weight: 600;
+  margin-left: -22px;
   margin-right: 4px;
 }
 
