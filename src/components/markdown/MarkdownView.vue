@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from "vue";
 import hljs from "highlight.js";
-import { renderMarkdown, collectMathStyle } from "../../utils/markdown";
+import { renderMarkdown, collectMathStyle, mathVersion } from "../../utils/markdown";
 
 const props = defineProps<{
   content: string;
@@ -12,7 +12,10 @@ const emit = defineEmits<{ toggle: [line: number] }>();
 
 const root = ref<HTMLDivElement | null>(null);
 
-const html = computed(() => renderMarkdown(props.content));
+const html = computed(() => {
+  void mathVersion.value;
+  return renderMarkdown(props.content);
+});
 
 /** 渲染后：注入 mathjax SVG CSS + 代码块语法高亮（仅带 language-* 标记的）。 */
 watch(
