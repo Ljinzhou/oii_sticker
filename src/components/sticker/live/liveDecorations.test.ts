@@ -89,6 +89,25 @@ describe("collectInlineRanges", () => {
 });
 
 describe("collectBlockRanges（块级渲染）", () => {
+  it("识别独立 Todo 标签与块级公式，供 Live Preview 替换为组件", () => {
+    const doc = [
+      '<todo-block id="todo-1"></todo-block>',
+      "",
+      "$$",
+      "E=mc^2",
+      "$$",
+      "",
+      "<show-done></show-done>",
+    ].join("\n");
+    const view = makeView(doc, doc.length);
+    const blocks = collectBlockRanges(view);
+
+    expect(blocks.find((block) => block.kind === "todo-block")?.todoId).toBe("todo-1");
+    expect(blocks.find((block) => block.kind === "math-block")?.source).toBe("$$\nE=mc^2\n$$");
+    expect(blocks.some((block) => block.kind === "done-block")).toBe(true);
+    view.destroy();
+  });
+
   it("收集完整 fenced 代码块并提取语言和源码范围", () => {
     const source = "```rust\nfn main() {\n  println!(\"hello\");\n}\n```";
     const view = makeView(source, source.length);

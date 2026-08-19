@@ -4,18 +4,21 @@
 // 后续阶段（B-E）：行内渲染 decoration、光标穿越、块级交互、斜杠菜单、工具栏等。
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { EditorView } from "@codemirror/view";
-import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize } from "./live/LiveEditorView";
+import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize, setLiveTodoBlocksInView } from "./live/LiveEditorView";
+import type { TodoBlock } from "../../types";
+import type { SlashAnchor } from "../slash/types";
 
 const props = defineProps<{
   modelValue: string;
   fontSize: number;
   fontFamily: string;
+  todoBlocks: TodoBlock[];
 }>();
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   save: [];
-  slash: [query: string, from: number, to: number];
+  slash: [query: string, from: number, to: number, anchor: SlashAnchor];
   slashClose: [];
   openTodo: [id: string];
 }>();
@@ -52,9 +55,10 @@ onMounted(() => {
     fontFamily: props.fontFamily,
     onDocChange: scheduleEmit,
     onSave: () => emit("save"),
-    onSlash: (query, from, to) => emit("slash", query, from, to),
+    onSlash: (query, from, to, anchor) => emit("slash", query, from, to, anchor),
     onSlashClose: () => emit("slashClose"),
     onTodoOpen: (id) => emit("openTodo", id),
+    todoBlocks: props.todoBlocks,
   });
   view.focus();
 });
@@ -80,6 +84,14 @@ watch(
   (v) => {
     if (view) setLiveFontFamily(view, v);
   },
+);
+
+watch(
+  () => props.todoBlocks,
+  (blocks) => {
+    if (view) setLiveTodoBlocksInView(view, blocks);
+  },
+  { deep: true },
 );
 
 onBeforeUnmount(() => {
@@ -214,6 +226,61 @@ defineExpose({ flush });
   font-size: 0.92em;
   line-height: 1.5;
 }
+
+.live-host :deep(.live-math-block .math-block) {
+  margin: 8px 0;
+  overflow-x: auto;
+  color: inherit;
+}
+
+.live-host :deep(.live-todo-block),
+.live-host :deep(.live-done-block) {
+  margin: 8px 0;
+}
+.live-host :deep(.todo-block-card),
+.live-host :deep(.done-block-card) {
+  overflow: hidden;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.42);
+}
+.live-host :deep(.tb-head) {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.live-host :deep(.tb-title) {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-host :deep(.tb-count),
+.live-host :deep(.done-block-card summary) {
+  color: #777;
+  font-size: 12px;
+}
+.live-host :deep(.tb-list),
+.live-host :deep(.db-list) {
+  margin: 0;
+  padding: 6px 10px;
+  list-style: none;
+}
+.live-host :deep(.tb-list li),
+.live-host :deep(.db-list li) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+.live-host :deep(.tb-sub) { padding-left: 22px; }
+.live-host :deep(.tb-done) { color: #999; text-decoration: line-through; }
+.live-host :deep(.done-block-card) { padding: 7px 10px; }
+.live-host :deep(.todo-task-checkbox) { accent-color: #4f7cff; }
 
 /* 复合编号行缩进（按嵌套深度，模拟 Obsidian 层级） */
 .live-host :deep(.cm-live-n1) {

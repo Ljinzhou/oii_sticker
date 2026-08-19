@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import type { SlashItem } from "../../types";
+import type { SlashAnchor } from "./types";
 
 const props = defineProps<{
   items: SlashItem[];
   selected: number;
   recentIds?: string[];
+  anchor: SlashAnchor;
 }>();
 
 const emit = defineEmits<{
@@ -31,7 +33,7 @@ function recentItems() {
 </script>
 
 <template>
-  <div class="slash-menu" @mousedown.prevent>
+  <div class="slash-menu" :style="{ left: `min(${props.anchor.left}px, calc(100% - 276px))`, top: `${props.anchor.top}px` }" @mousedown.prevent>
     <template v-if="recentItems().length">
       <div class="cat">最近用过的标签</div>
       <button v-for="item in recentItems()" :key="`recent-${item.id}`" class="item" @click="emit('select', item)"><span class="name">{{ item.name }}</span><span class="hint">{{ item.hint }}</span></button>
@@ -63,8 +65,6 @@ function recentItems() {
 <style scoped>
 .slash-menu {
   position: absolute;
-  left: 16px;
-  top: 52px;
   width: 260px;
   max-height: 360px;
   overflow-y: auto;

@@ -176,6 +176,16 @@ function onInteract() {
   resetCollapseTimer();
 }
 
+async function startDragging(event: MouseEvent) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  try {
+    await getCurrentWindow().startDragging();
+  } catch (error) {
+    console.error("[sticker] 启动窗口拖动失败：", error);
+  }
+}
+
 /** 双击：interact→edit 编辑（display 穿透唤醒由全局鼠标钩子驱动）。 */
 function onDblClick() {
   if (mode.value === "interact") {
@@ -282,8 +292,8 @@ onBeforeUnmount(() => {
       v-if="mode === 'interact' || mode === 'edit'"
       class="overlay"
       :class="{ editing: mode === 'edit' }"
-      data-tauri-drag-region
       @mousemove.stop="onInteract"
+      @mousedown.self="startDragging"
     >
       <!-- 编辑模式：保存 + 及时预览|Markdown 开关居左 -->
       <div v-if="mode === 'edit'" class="overlay-left">
@@ -327,6 +337,7 @@ onBeforeUnmount(() => {
         ref="editorRef"
         :content="sticker?.content ?? ''"
         :sticker-id="stickerId"
+        :todo-blocks="todoBlocks"
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
       />

@@ -98,6 +98,39 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.destroy();
   });
 
+  it("及时预览将块级公式替换为 MathJax 渲染结果", async () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "$$\nE=mc^2\n$$\n正文",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    await mathInstancePromise;
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(host.querySelector(".live-math-block .math-block")).not.toBeNull();
+    view.destroy();
+  });
+
+  it("及时预览将 Todo 标签替换为任务卡片", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: '<todo-block id="t-1"></todo-block>\n正文',
+      fontSize: 14,
+      todoBlocks: [{
+        id: "t-1", sticker_id: 7, title: "购买牛奶", description: null, is_completed: false,
+        parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
+      }],
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    expect(host.querySelector(".live-todo-block .todo-block-card")).not.toBeNull();
+    expect(host.textContent).toContain("购买牛奶");
+    view.destroy();
+  });
+
 
   it("键盘回车走 Live Preview transaction 而不是插入裸换行", () => {
     const host = mountHost();
