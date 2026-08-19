@@ -10,6 +10,7 @@ import { EditorState, Range, RangeSet, StateEffect, StateField } from "@codemirr
 import { Decoration, DecorationSet, EditorView, ViewPlugin } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { refreshLivePreview } from "./liveEffects";
+import { mathVersion } from "../../../utils/markdown";
 import {
   HeadingMarkWidget,
   HrWidget,
@@ -383,7 +384,7 @@ function blockDecoration(r: BlockRange, todoBlocks: TodoBlock[] = []): Decoratio
       return Decoration.replace({ block: true, widget: new CodeBlockWidget(code, r.language) });
     }
     case "math-block":
-      return Decoration.replace({ block: true, widget: new MathBlockWidget(r.source ?? "") });
+      return Decoration.replace({ block: true, widget: new MathBlockWidget(r.source ?? "", mathVersion.value) });
     case "todo-block":
       return Decoration.replace({ block: true, widget: new TodoBlockWidget(r.source ?? "", todoBlocks) });
     case "done-block":

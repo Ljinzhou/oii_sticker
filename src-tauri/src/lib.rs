@@ -457,15 +457,20 @@ fn open_todo_window_cmd(
         let _ = win.unminimize();
         return win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"));
     }
-    let (tx, rx) = std::sync::mpsc::channel();
     let app2 = app.clone();
     let id2 = id.clone();
     app.run_on_main_thread(move || {
-        let result = create_todo_win(&app2, &id2).map_err(|e| format!("创建 Todo 窗口失败: {e}"));
-        let _ = tx.send(result);
+        match create_todo_win(&app2, &id2) {
+            Ok(win) => {
+                tracing::info!("[cmd] open_todo_window id={id2} 创建成功");
+                if let Err(error) = win.set_focus() {
+                    tracing::warn!("[cmd] open_todo_window id={id2} 聚焦失败: {error}");
+                }
+            }
+            Err(error) => tracing::error!("[cmd] open_todo_window id={id2} 创建失败: {error}"),
+        }
     }).map_err(|e| format!("投递主线程失败: {e}"))?;
-    let win = rx.recv().map_err(|e| format!("等待 Todo 窗口失败: {e}"))??;
-    win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"))
+    Ok(())
 }
 
 #[tauri::command]
