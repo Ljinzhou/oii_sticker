@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount, flushPromises } from "@vue/test-utils";
 import { createPinia } from "pinia";
 import StickerWindow from "./StickerWindow.vue";
@@ -57,21 +57,21 @@ const effectivePrefs = {
   auto_scroll_speed: 30,
 };
 
-function setupInvoke(mode: StickerMode) {
+function setupInvoke(mode: StickerMode, autoScroll = false, speed = 30) {
   mocks.invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "get_sticker_cmd":
-        return Promise.resolve({ ...sticker, display_mode: mode });
+        return Promise.resolve({ ...sticker, auto_scroll: autoScroll, display_mode: mode });
       case "effective_prefs_cmd":
-        return Promise.resolve(effectivePrefs);
+        return Promise.resolve({ ...effectivePrefs, auto_scroll_speed: speed });
       default:
         return Promise.resolve(undefined);
     }
   });
 }
 
-async function mountSticker(mode: StickerMode) {
-  setupInvoke(mode);
+async function mountSticker(mode: StickerMode, autoScroll = false, speed = 30) {
+  setupInvoke(mode, autoScroll, speed);
   const wrapper = shallowMount(StickerWindow, { global: { plugins: [createPinia()] } });
   await flushPromises();
   return wrapper;
@@ -81,6 +81,10 @@ beforeEach(() => {
   mocks.handlers.clear();
   mocks.invokeMock.mockReset();
   mocks.listenMock.mockClear();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("StickerWindow", () => {
@@ -102,5 +106,27 @@ describe("StickerWindow", () => {
   it("编辑模式不显示收起回展示模式按钮", async () => {
     const wrapper = await mountSticker("edit");
     expect(wrapper.find('.ov-btn[title="收起回展示模式"]').exists()).toBe(false);
+  });
+
+  it("自动滚动使用便签 effective speed 并在卸载时取消 RAF", async () => {
+    const frames: FrameRequestCallback[] = [];
+    const cancelFrame = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    }));
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+
+    const wrapper = await mountSticker("display", true, 60);
+    const body = wrapper.find<HTMLElement>(".body").element;
+    Object.defineProperty(body, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(body, "clientHeight", { configurable: true, value: 100 });
+
+    frames.shift()?.(0);
+    frames.shift()?.(1000);
+    expect(body.scrollTop).toBeCloseTo(60, 8);
+
+    wrapper.unmount();
+    expect(cancelFrame).toHaveBeenCalled();
   });
 });
