@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize } from "./LiveEditorView";
 import { mathInstancePromise } from "../../../utils/markdown";
+import { MathBlockWidget } from "./liveWidgets";
 
 // CM6 在 jsdom 中需要 ResizeObserver / rAF / DOMRect polyfill
 class ResizeObserverMock {
@@ -113,6 +114,11 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.destroy();
   });
 
+  it("MathJax 首次就绪后会替换预初始化公式部件，而不会复用旧 DOM", () => {
+    const source = "$$\nE=mc^2\n$$";
+    expect(new MathBlockWidget(source, 0).eq(new MathBlockWidget(source, 1))).toBe(false);
+  });
+
   it("及时预览将 Todo 标签替换为任务卡片", () => {
     const host = mountHost();
     const view = createLiveView(host, {
@@ -128,6 +134,26 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     expect(host.querySelector(".live-todo-block .todo-block-card")).not.toBeNull();
     expect(host.textContent).toContain("购买牛奶");
+    view.destroy();
+  });
+
+  it("点击及时预览中的 Todo 卡片会按 data-todo-id 打开对应窗口", () => {
+    const host = mountHost();
+    const onTodoOpen = vi.fn();
+    const view = createLiveView(host, {
+      doc: '<todo-block id="t-1"></todo-block>\n正文',
+      fontSize: 14,
+      todoBlocks: [{
+        id: "t-1", sticker_id: 7, title: "购买牛奶", description: null, is_completed: false,
+        parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
+      }],
+      onDocChange: () => {},
+      onSave: () => {},
+      onTodoOpen,
+    });
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    host.querySelector<HTMLElement>(".todo-block-card")?.click();
+    expect(onTodoOpen).toHaveBeenCalledWith("t-1");
     view.destroy();
   });
 

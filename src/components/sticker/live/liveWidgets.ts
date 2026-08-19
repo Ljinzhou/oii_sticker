@@ -39,12 +39,14 @@ export class CodeBlockWidget extends WidgetType {
 
 /** 将 $$...$$ 块替换为 MathJax 输出。 */
 export class MathBlockWidget extends WidgetType {
-  constructor(readonly source: string) {
+  constructor(readonly source: string, readonly rendererVersion: number) {
     super();
   }
 
   eq(other: MathBlockWidget) {
-    return other.source === this.source;
+    // MathJax is initialized asynchronously.  A block created before it is
+    // ready contains fallback Markdown; its DOM must not be reused afterwards.
+    return other.source === this.source && other.rendererVersion === this.rendererVersion;
   }
 
   toDOM() {

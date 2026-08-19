@@ -164,13 +164,9 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   });
   const view = new EditorView({ state, parent });
   view.dom.addEventListener("click", (event) => {
-    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-    if (pos === null) return;
-    const doc = view.state.doc.toString();
-    const start = doc.lastIndexOf("<todo-block", pos);
-    const end = doc.indexOf("</todo-block>", start);
-    if (start < 0 || end < pos) return;
-    const id = /\bid=["']([^"']+)["']/.exec(doc.slice(start, end + "</todo-block>".length))?.[1];
+    const target = event.target as HTMLElement | null;
+    const card = target?.closest<HTMLElement>(".todo-block-card");
+    const id = card?.dataset.todoId;
     if (id) opts.onTodoOpen?.(id);
   });
   void mathInstancePromise.then(() => {

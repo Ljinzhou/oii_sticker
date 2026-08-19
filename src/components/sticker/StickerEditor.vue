@@ -83,6 +83,14 @@ async function openSlash(query: string, from: number, to: number, anchor?: Slash
   slashItems.value = await invoke<SlashItem[]>("slash_query_cmd", { query });
 }
 
+async function openTodo(id: string) {
+  try {
+    await invoke("open_todo_window_cmd", { id });
+  } catch (error) {
+    console.error("[editor] 打开 Todo 窗口失败：", error);
+  }
+}
+
 async function selectSlash(item: SlashItem) {
   if (item.id === "todo-block") {
     const block = await invoke<{ id: string }>("create_todo_block_cmd", { stickerId: props.stickerId, parentId: null });
@@ -111,9 +119,9 @@ defineExpose({ save, discard });
       :show-line-numbers="showLineNumbers"
       @slash="openSlash"
       @slash-close="slashItems = []"
-      @open-todo="(id) => invoke('open_todo_window_cmd', { id })"
+      @open-todo="openTodo"
     />
-    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" :todo-blocks="props.todoBlocks ?? []" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="(id) => invoke('open_todo_window_cmd', { id })" />
+    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" :todo-blocks="props.todoBlocks ?? []" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="openTodo" />
     <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" :anchor="slashAnchor" @select="selectSlash" @close="slashItems = []" />
   </div>
 </template>
