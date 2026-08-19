@@ -98,4 +98,9 @@ describe("StickerWindow", () => {
     await flushPromises();
     expect(mocks.invokeMock).toHaveBeenCalledWith("hide_sticker_cmd", { id: 7 });
   });
+
+  it("编辑模式不显示收起回展示模式按钮", async () => {
+    const wrapper = await mountSticker("edit");
+    expect(wrapper.find('.ov-btn[title="收起回展示模式"]').exists()).toBe(false);
+  });
 });

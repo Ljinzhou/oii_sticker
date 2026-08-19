@@ -14,6 +14,8 @@ export const useSettingsStore = defineStore("settings", {
     bgColor: (state) => state.config.entries["default_sticker_bg_color"] ?? "#FFF4D6",
     bodyFontSize: (state) =>
       parseInt(state.config.entries["default_sticker_body_font_size"] ?? "13", 10),
+    editFontFamily: (state) =>
+      state.config.entries["edit_font_family"] ?? "Microsoft YaHei",
     // 交互模式无操作后自动收起回展示模式的秒数（系统设置可改，默认 5）
     autoCollapseSecs: (state) =>
       parseInt(state.config.entries["auto_collapse_secs"] ?? "5", 10),

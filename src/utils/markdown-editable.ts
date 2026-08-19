@@ -1,4 +1,4 @@
-// 编辑回写封装：即时预览（WYSIWYG）用的渲染实例 + HTML→Markdown 回写。
+// 编辑回写封装：及时预览（WYSIWYG）用的渲染实例 + HTML→Markdown 回写。
 // 任务标记保留为 `[ ]` 纯文本（不生成 checkbox）；公式以 data-tex 保真回写。
 import MarkdownIt from "markdown-it";
 import TurndownService from "turndown";
@@ -28,7 +28,7 @@ mathInstancePromise.then((inst) => {
   );
 });
 
-/** 即时预览渲染：任务标记保留为 `[ ]`/`[x]` 纯文本（供 contenteditable 直接编辑）。 */
+/** 及时预览渲染：任务标记保留为 `[ ]`/`[x]` 纯文本（供 contenteditable 直接编辑）。 */
 export function renderMarkdownEditable(content: string): string {
   void mathVersion.value; // mathjax 就绪后触发重渲染
   return mdEditable.render(content);

@@ -41,6 +41,7 @@ const cardStyle = computed(() => {
 });
 
 const bodyFontSize = computed(() => prefs.effective?.body_font_size ?? 13);
+const editFontFamily = computed(() => settings.editFontFamily);
 
 // ── 自动滚动（便签设置 auto_scroll）：仅展示模式，先向下到底→再向上到顶→反复 ──
 const bodyRef = ref<HTMLElement | null>(null);
@@ -164,7 +165,7 @@ function onDblClick() {
   }
 }
 
-/** 编辑模式形态（即时预览 | Markdown，全局配置 editor_mode）。 */
+/** 编辑模式形态（及时预览 | Markdown，全局配置 editor_mode）。 */
 const editorMode = computed(() => settings.get("editor_mode", "markdown"));
 
 function setEditorMode(v: "markdown" | "live") {
@@ -258,11 +259,11 @@ onBeforeUnmount(() => {
       data-tauri-drag-region
       @mousemove.stop="onInteract"
     >
-      <!-- 编辑模式：保存 + 即时预览|Markdown 开关居左 -->
+      <!-- 编辑模式：保存 + 及时预览|Markdown 开关居左 -->
       <div v-if="mode === 'edit'" class="overlay-left">
         <button class="ov-btn save" title="保存（Ctrl+S）" @click.stop="editorRef?.save()">保存</button>
         <div class="editor-switch" title="编辑模式">
-          <button class="sw" :class="{ on: editorMode === 'live' }" @click.stop="setEditorMode('live')">即时预览</button>
+          <button class="sw" :class="{ on: editorMode === 'live' }" @click.stop="setEditorMode('live')">及时预览</button>
           <button class="sw" :class="{ on: editorMode === 'markdown' }" @click.stop="setEditorMode('markdown')">Markdown</button>
         </div>
       </div>
@@ -273,13 +274,18 @@ onBeforeUnmount(() => {
           :title="mode === 'edit' ? '保存并退出编辑' : '编辑（E 或双击内容）'"
           @click.stop="onEditBtn"
         >✎</button>
-        <button class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
+        <button v-if="mode !== 'edit'" class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
         <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
         <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
       </div>
     </div>
 
-    <div ref="bodyRef" class="body" :class="{ editing: mode === 'edit' }" :style="{ fontSize: bodyFontSize + 'px' }">
+    <div
+      ref="bodyRef"
+      class="body"
+      :class="{ editing: mode === 'edit' }"
+      :style="{ fontSize: bodyFontSize + 'px', fontFamily: mode === 'edit' ? editFontFamily : undefined }"
+    >
       <StickerViewer
         v-if="mode === 'display' || mode === 'interact'"
         :content="sticker?.content ?? ''"
@@ -426,7 +432,7 @@ onBeforeUnmount(() => {
   color: #d33;
 }
 
-/* 编辑模式开关：即时预览 | Markdown */
+/* 编辑模式开关：及时预览 | Markdown */
 .editor-switch {
   display: flex;
   background: rgba(255, 255, 255, 0.75);

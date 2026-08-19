@@ -1,7 +1,7 @@
 # 主流 Markdown 编辑器操作方式调研报告
 
 > 2026-08-15 · 多 agent 并行调研（Notion / Obsidian / Typora，均基于官方文档实测抓取 + 使用经验），
-> 用于 oii_sticker 即时预览编辑器"复刻主流编辑器操作方式"的需求分析。
+> 用于 oii_sticker 及时预览编辑器"复刻主流编辑器操作方式"的需求分析。
 
 ## 一、三类编辑器定位
 
@@ -76,7 +76,7 @@
 
 ## 四、对 oii_sticker 的结论
 
-- **技术路线**：即时预览编辑器用 **CodeMirror 6**（Obsidian Live Preview 同款内核）替代当前
+- **技术路线**：及时预览编辑器用 **CodeMirror 6**（Obsidian Live Preview 同款内核）替代当前
   contenteditable 方案——contenteditable 无法实现"光标穿越标记、元素展开、自动转换、表格导航"
   等核心细节，CM6 的 decoration + 状态机是成熟路径。
 - **复刻范围**（便签场景裁剪）：行内标记渲染与光标穿越、块级自动转换、回车/Tab/退格行为、
