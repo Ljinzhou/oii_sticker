@@ -8,6 +8,33 @@ export function renderFragment(src: string): string {
   return match ? match[1] : html;
 }
 
+/** 将完整 fenced 代码块渲染为语义化代码块。 */
+export class CodeBlockWidget extends WidgetType {
+  constructor(readonly code: string, readonly language?: string) {
+    super();
+  }
+
+  eq(other: CodeBlockWidget) {
+    return other.code === this.code && other.language === this.language;
+  }
+
+  toDOM() {
+    const wrapper = document.createElement("div");
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    wrapper.className = "live-code-block";
+    if (this.language) code.className = `language-${this.language}`;
+    code.textContent = this.code;
+    pre.append(code);
+    wrapper.append(pre);
+    return wrapper;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /** 将行内 Markdown 片段替换为渲染 DOM。 */
 export class InlineRenderWidget extends WidgetType {
   constructor(readonly html: string, readonly cls: string) {

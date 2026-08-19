@@ -187,6 +187,28 @@ defineExpose({ flush });
   width: 100%;
 }
 
+.live-host :deep(.live-code-block) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 4px 0;
+}
+.live-host :deep(.live-code-block pre) {
+  margin: 0;
+  min-width: 0;
+  white-space: pre;
+}
+.live-host :deep(.live-code-block code) {
+  display: block;
+  min-width: max-content;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  line-height: 1.5;
+}
+
 /* 复合编号行缩进（按嵌套深度，模拟 Obsidian 层级） */
 .live-host :deep(.cm-live-n1) {
   padding-left: 1.3em;
