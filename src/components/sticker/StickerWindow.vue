@@ -5,6 +5,7 @@ import { invoke, listen } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
 import { useSettingsStore } from "../../stores/settings";
 import { hexToRgba } from "../../utils/markdown";
+import { advanceAutoScroll, type AutoScrollState } from "../../utils/auto-scroll";
 import type { Sticker, StickerMode } from "../../types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import StickerViewer from "./StickerViewer.vue";
@@ -46,40 +47,55 @@ const editFontFamily = computed(() => settings.editFontFamily);
 // ── 自动滚动（便签设置 auto_scroll）：仅展示模式，先向下到底→再向上到顶→反复 ──
 const bodyRef = ref<HTMLElement | null>(null);
 const autoScroll = computed(() => sticker.value?.auto_scroll ?? false);
+const autoScrollSpeed = computed(
+  () => prefs.effective?.auto_scroll_speed ?? settings.autoScrollSpeed,
+);
 let scrollRaf: number | undefined;
-let scrollDir = 1; // 1 = 向下，-1 = 向上
+let lastScrollTimestamp: number | undefined;
+let scrollState: AutoScrollState = { position: 0, direction: 1 };
 
-function tickScroll() {
+function tickScroll(timestamp: number) {
   const el = bodyRef.value;
   if (el) {
     const max = el.scrollHeight - el.clientHeight;
     if (max > 0) {
-      el.scrollTop += (settings.autoScrollSpeed / 60) * scrollDir;
-      if (el.scrollTop >= max) {
-        el.scrollTop = max;
-        scrollDir = -1;
-      } else if (el.scrollTop <= 0) {
-        scrollDir = 1;
+      if (lastScrollTimestamp === undefined) {
+        lastScrollTimestamp = timestamp;
+      } else {
+        scrollState = advanceAutoScroll(
+          scrollState,
+          max,
+          autoScrollSpeed.value,
+          timestamp - lastScrollTimestamp,
+        );
+        lastScrollTimestamp = timestamp;
+        el.scrollTop = scrollState.position;
       }
+    } else {
+      scrollState = { position: 0, direction: 1 };
+      lastScrollTimestamp = timestamp;
+      el.scrollTop = 0;
     }
   }
-  scrollRaf = requestAnimationFrame(tickScroll);
+  scrollRaf = requestAnimationFrame((nextTimestamp) => tickScroll(nextTimestamp));
 }
 
 function startAutoScroll() {
   stopAutoScroll();
   if (autoScroll.value && mode.value === "display") {
-    scrollDir = 1;
-    scrollRaf = requestAnimationFrame(tickScroll);
+    scrollState = { position: bodyRef.value?.scrollTop ?? 0, direction: 1 };
+    lastScrollTimestamp = undefined;
+    scrollRaf = requestAnimationFrame((timestamp) => tickScroll(timestamp));
   }
 }
 
 function stopAutoScroll() {
   if (scrollRaf !== undefined) cancelAnimationFrame(scrollRaf);
   scrollRaf = undefined;
+  lastScrollTimestamp = undefined;
 }
 
-watch([autoScroll, mode], startAutoScroll);
+watch([autoScroll, autoScrollSpeed, mode], startAutoScroll);
 
 async function load() {
   sticker.value = (await invoke<Sticker | null>("get_sticker_cmd", { id: stickerId })) ?? null;
