@@ -125,6 +125,14 @@ fn create_todo_win(app: &tauri::AppHandle, id: &str) -> tauri::Result<WebviewWin
         .skip_taskbar(true)
         .maximizable(false)
         .resizable(false)
+        .on_page_load(|window, payload| {
+            tracing::info!(
+                "[DEBUG-todo-boot] label={} event={:?} url={}",
+                window.label(),
+                payload.event(),
+                payload.url(),
+            );
+        })
         .build()?;
     Ok(win)
 }
@@ -448,11 +456,13 @@ fn open_todo_window_cmd(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    tracing::info!("[DEBUG-todo-boot] open command received id={id}");
     if state.with_conn(|c| commands::get_todo_block(c, &id)).map_err(|e| e.to_string())?.is_none() {
         return Err("Todo 块不存在".into());
     }
     let label = format!("todo-{id}");
     if let Some(win) = app.get_webview_window(&label) {
+        tracing::info!("[DEBUG-todo-boot] reusing existing window label={label}");
         let _ = win.show();
         let _ = win.unminimize();
         return win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"));

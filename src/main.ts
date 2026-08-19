@@ -2,6 +2,7 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import "./styles/global.css";
+import { showBootFailure } from "./utils/boot-failure";
 // highlight.js 浅色主题（便签背景为浅色系；代码块底色在 MarkdownView 中置透明）
 import "highlight.js/styles/github.css";
 
@@ -9,4 +10,13 @@ import "highlight.js/styles/github.css";
 // display 模式的右键双击唤醒由 Rust 侧全局鼠标钩子处理，不受影响。
 document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-createApp(App).use(createPinia()).mount("#app");
+window.addEventListener("error", (event) => showBootFailure(event.error ?? event.message));
+window.addEventListener("unhandledrejection", (event) => showBootFailure(event.reason));
+
+try {
+  const app = createApp(App);
+  app.config.errorHandler = (error) => showBootFailure(error);
+  app.use(createPinia()).mount("#app");
+} catch (error) {
+  showBootFailure(error);
+}
