@@ -1,46 +1,40 @@
 # oii_sticker
 
-Tauri 2 + Vue 3 + TypeScript 桌面便签应用（重写自 [oi_sticker](https://github.com/)，GPL v3）。
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+![Tauri](https://img.shields.io/badge/Tauri-2.x-24c8db)
+![Vue](https://img.shields.io/badge/Vue-3.x-4fc08d)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6)
+![Rust](https://img.shields.io/badge/Rust-2021-dea584)
+![Platform](https://img.shields.io/badge/Platform-Windows-0078d6)
+![Version](https://img.shields.io/badge/Version-0.1.0-orange)
 
-多窗口 Markdown 便签：三模式（展示/交互/编辑）、SQLite 持久化、提醒调度（重复规则 + 关机追补）、系统托盘、通知、开机自启、窗口样式个性化、slash 命令。
+## 简介
 
-## 功能
+**oii_sticker** 是一款基于 **Tauri 2 + Vue 3** 构建的桌面便签应用。
 
-- **多便签多窗口**：每个便签一个独立 OS 窗口（透明、无边框、可置顶、任务栏隐藏）
-- **三种模式**：display（低透明收起，双击唤醒）/ interact（可勾选待办，5s 无操作自动收起）/ edit（编辑器 + slash 命令）
-- **Markdown 渲染**：前端 markdown-it（标题/列表/任务清单/引用/链接/表格/图片），todo 勾选映射回源行并落库
-- **提醒调度**：`daily` / `weekly:mon,wed` / `interval:N` / `monthly:N` / `yearly:M-D` + 旧格式（`30m`/`1h`/`2d`），触发系统通知 + `alert-active` 状态信号（无动画）
-- **个性化偏好**：背景色/透明度/字号/置顶/自动滚动，合并链 `prefs → sticker → system → 兜底`
-- **系统集成**：托盘（新建/主控台/设置/退出）、通知（官方插件）、开机自启（官方插件）
-- **slash 命令**：20 条内置（标题/列表/代码/高级），拼音/首字母/别名/中文检索
+它不仅仅是一个便签工具，更是一张灵活自由的**桌面浮动窗口**：每张便签独立成窗，内置完整的 **Markdown 编辑** 与 **Todo 任务** 功能，可以贴在桌面上的任意位置，随时记录想法、管理任务。
 
-## 开发
+oii_sticker 还可以是你**私人的知识笔记工具**：凭借完整的 Markdown 渲染与本地持久化能力，你可以把碎片灵感、学习笔记、工作记录统统收进一张张便签中，构建属于自己的知识库。
 
-```powershell
-pnpm install          # 安装前端依赖
-pnpm tauri dev        # 开发运行
-pnpm test             # 前端 vitest
-pnpm build            # vue-tsc + vite build
-cd src-tauri
-cargo test            # Rust 单测（99）
-cargo clippy          # lint
-pnpm tauri build      # 打包
-```
+得益于 Tauri 2 框架与 Rust 语言特性，oii_sticker **占用内存极低、启动速度极快**。如果你需要一款能随时提醒你完成任务的工具，oii_sticker 绝对是最合适的软件。
 
-## 文档
+## 特点
 
-- `docs/PLAN.md` — 执行总览与进度追踪
-- `docs/plan/phase-*.md` — 各阶段详细计划
-- `docs/parity-matrix.md` — 与旧项目行为对照矩阵
-- `AGENTS.md` — 工程约定
+- **占用低、启动快**：基于 Tauri 2 + Rust 构建，运行时占用内存极低，启动速度极快，几乎感受不到负担。
+- **不影响正常工作**：展示模式下便签可随意穿透点击；想交互时，按一次 **鼠标中键** 再**点击便签窗口**，即可进入交互模式，无需打断手头工作。
+- **完整的 Markdown 编辑**：渲染与编辑基于 `markdown-it` 开发，支持标题、列表、任务清单、代码高亮与 MathJax 数学公式，所见即所得。
+- **独立便签窗口**：每一个便签窗口都是独立的 OS 窗口，透明、无边框、可置顶、任务栏隐藏，可自由摆放在桌面任何位置。
+- **方便的 Todo 功能**：集成了一般 Todo 程序的所有基本功能，支持子任务、截止日期、提醒与重复规则，完全可以管理自己的日常任务。
+- **样式完全自定义**：便签背景色、文字颜色、标题与正文字号、字体均可单独设置，让每张便签都符合你的习惯。
+- **数据自动保存**：所有内容实时写入本地 SQLite，不怕断电、崩溃等突发情况，重新打开即恢复原样。
+- **丰富的输入体验**：CodeMirror 编辑器 + 斜杠菜单（`/` 唤起），快速插入任务块、代码块，并自动记忆最近使用。
 
-## 技术红线（已达成）
+## 未来计划
 
-- 不含 `slint` / `pulldown-cmark` / `tray-icon` / `notify-rust` / `windows-sys` 直调
-- 单一 Tauri runtime（无独立 tokio runtime）
-- SQLite（rusqlite bundled），schema 与旧库兼容（`user_version=5`）
-- GPL v3（保留原 LICENSE 与作者声明）
+- **更多内置小工具**：计划内置番茄钟、计时器等实用小工具，让便签不仅记事，还能帮你专注工作。
+- **完整的插件系统与开发文档**：让程序中的任意功能、样式、代码都可以通过插件系统由用户完全扩展，配合完善的开发文档，打造属于自己的桌面工具集。
+- **集成 AI 能力**：引入 AI 辅助，帮助撰写文本、总结便签内容、智能管理便签，让记录与整理更加轻松。
 
-## 许可
+## 许可证
 
-GNU General Public License v3.0（衍生自 oi_sticker，保留原版权与作者声明）。
+本项目使用 [GPL v3.0](LICENSE) 开源许可证。您可以自由使用、修改与分发，但任何衍生作品也必须以 GPL v3.0 协议开源。
