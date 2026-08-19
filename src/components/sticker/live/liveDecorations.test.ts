@@ -195,6 +195,17 @@ describe("buildLiveDecorations", () => {
     }
   });
 
+  it("光标位于结束 fence 之后时重新显示代码块", () => {
+    const source = "```rust\nfn main() {}\n```\n正文";
+    const view = makeView(source, source.length);
+    let hasCodeBlock = false;
+    buildCodeBlockDecorations(view.state).between(0, view.state.doc.length, (_from, _to, value) => {
+      if (value.spec.widget instanceof CodeBlockWidget) hasCodeBlock = true;
+    });
+    expect(hasCodeBlock).toBe(true);
+    view.destroy();
+  });
+
   it("选区与代码块相交时恢复整块源码", () => {
     const source = "```rust\nfn main() {}\n```";
     const view = makeView(source, 0);
