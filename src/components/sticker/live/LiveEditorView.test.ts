@@ -48,6 +48,23 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.destroy();
   });
 
+  it("在真实编辑器中直接提供 fenced 代码块 decoration", () => {
+    const host = mountHost();
+    const source = "块外正文\n\n```rust\nfn main() {}\n```";
+    let view: ReturnType<typeof createLiveView> | undefined;
+
+    expect(() => {
+      view = createLiveView(host, {
+        doc: source,
+        fontSize: 14,
+        onDocChange: () => {},
+        onSave: () => {},
+      });
+    }).not.toThrow();
+    expect(host.querySelector(".live-code-block pre > code.language-rust")).not.toBeNull();
+    view?.destroy();
+  });
+
   it("标题语法高亮不显示下划线", () => {
     const host = mountHost();
     const view = createLiveView(host, {

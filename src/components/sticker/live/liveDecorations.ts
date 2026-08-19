@@ -6,8 +6,8 @@
 // - 光标所在行的元素**不渲染**（显示源码，便于编辑标记），其余行渲染；
 // - 嵌套元素只渲染最外层（非重叠贪心）；
 // - 渲染用 markdown-it 片段渲染（保证嵌套/公式正确），输出为 replace widget。
-import { Range, RangeSet } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
+import { EditorState, Range, RangeSet, StateField } from "@codemirror/state";
+import { Decoration, DecorationSet, EditorView, ViewPlugin } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { refreshLivePreview } from "./liveEffects";
 import {
@@ -16,6 +16,7 @@ import {
   InlineRenderWidget,
   ListMarkWidget,
   QuoteMarkWidget,
+  CodeBlockWidget,
   renderFragment,
   TaskCheckboxWidget,
 } from "./liveWidgets";
@@ -32,9 +33,11 @@ interface InlineRange {
 interface BlockRange {
   from: number;
   to: number;
-  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line";
+  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line" | "code-block";
   level?: number; // heading 级别 / 复合编号嵌套深度
   ordinal?: string; // 有序列表显示编号（如 "1."、"1.1."）；无序为 "•"
+  source?: string;
+  language?: string;
 }
 
 /** 收集行内元素范围（lezer 树 + math 正则），返回非重叠列表。 */
@@ -138,8 +141,7 @@ function inlineDecoration(view: EditorView, r: InlineRange): Decoration {
 
 /** 收集块级渲染范围（标题/列表标记/引用/分隔线）。
  *  有序列表编号按嵌套层级计算（1. / 1.1. / 1.1.1.）。 */
-export function collectBlockRanges(view: EditorView): BlockRange[] {
-  const state = view.state;
+function collectBlockRangesFromState(state: EditorState): BlockRange[] {
   const doc = state.doc;
   let tree = syntaxTree(state);
   if (tree.length < doc.length) {
@@ -189,6 +191,23 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
       const to = node.to;
       if (name === "FencedCode") {
         codeRanges.push([from, to]);
+        const source = doc.sliceString(from, to);
+        const opening = /^[ \t]*(`{3,}|~{3,})([^\r\n]*)\r?\n/.exec(source);
+        if (opening) {
+          const marker = opening[1];
+          const closing = new RegExp(`\\r?\\n[ \\t]*${marker[0]}{${marker.length},}[ \\t]*$`).exec(source);
+          if (closing) {
+            const info = opening[2].trim().split(/\s+/, 1)[0] ?? "";
+            const language = /^[A-Za-z0-9_+-]+$/.test(info) ? info : undefined;
+            ranges.push({
+              from,
+              to,
+              kind: "code-block",
+              source,
+              language,
+            });
+          }
+        }
         return false;
       }
       if (name === "BulletList") {
@@ -299,9 +318,22 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
   return ranges;
 }
 
+export function collectBlockRanges(view: EditorView): BlockRange[] {
+  return collectBlockRangesFromState(view.state);
+}
+
 /** 块级范围 → Decoration。 */
 function blockDecoration(r: BlockRange): Decoration {
   switch (r.kind) {
+    case "code-block": {
+      const source = r.source ?? "";
+      const firstNewline = source.search(/\r?\n/);
+      const lastNewline = source.lastIndexOf("\n");
+      const code = firstNewline >= 0 && lastNewline > firstNewline
+        ? source.slice(firstNewline + (source[firstNewline] === "\r" ? 2 : 1), lastNewline + 1)
+        : "";
+      return Decoration.replace({ block: true, widget: new CodeBlockWidget(code, r.language) });
+    }
     case "heading-mark":
       return Decoration.replace({ widget: new HeadingMarkWidget() });
     case "heading-line":
@@ -320,6 +352,35 @@ function blockDecoration(r: BlockRange): Decoration {
       return Decoration.mark({ class: `cm-live-n${r.level ?? 1}` });
   }
 }
+
+function selectionTouchesRange(state: EditorState, from: number, to: number): boolean {
+  return state.selection.ranges.some((selection) => {
+    if (selection.empty) return selection.from >= from && selection.from <= to;
+    return selection.from < to && selection.to > from;
+  });
+}
+
+/**
+ * 代码块会改变编辑器的垂直布局，必须由 StateField 直接提供，不能经 ViewPlugin。
+ */
+export function buildCodeBlockDecorations(state: EditorState): DecorationSet {
+  const decorations = collectBlockRangesFromState(state)
+    .filter((range) => range.kind === "code-block")
+    .filter((range) => !selectionTouchesRange(state, range.from, range.to))
+    .map((range) => blockDecoration(range).range(range.from, range.to));
+  return Decoration.set(decorations, true);
+}
+
+export const codeBlockDecorationsField = StateField.define<DecorationSet>({
+  create: buildCodeBlockDecorations,
+  update(decorations, transaction) {
+    if (transaction.docChanged || transaction.selection) {
+      return buildCodeBlockDecorations(transaction.state);
+    }
+    return decorations;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 /** 构建 decoration 集：光标所在行不渲染（显示源码）。
  *  mark 类（标题整行样式）可与任何 decoration 重叠；replace 类做非重叠贪心。 */
@@ -346,13 +407,17 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
       // 块级语义：光标所在行显示 [ ] 文本
       if (r.from < curLine.to && r.to > curLine.from) continue;
     } else {
-      const cursorIn = sel.from >= r.from && sel.from <= r.to;
+      const cursorIn = sel.from >= r.from && sel.from < r.to;
       const selOverlap = sel.from < r.to && sel.to > r.from;
       if (cursorIn || selOverlap) continue;
     }
     ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false, isBlock: false });
   }
   for (const r of collectBlockRanges(view)) {
+    if (r.kind === "code-block") {
+      // 影响垂直布局的 fenced block 由 codeBlockDecorationsField 直接提供。
+      continue;
+    }
     ranges.push({
       from: r.from,
       to: r.to,

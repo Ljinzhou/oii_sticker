@@ -8,7 +8,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { indentWithTab } from "@codemirror/commands";
 import { tags } from "@lezer/highlight";
-import { liveDecorationsPlugin } from "./liveDecorations";
+import { codeBlockDecorationsField, liveDecorationsPlugin } from "./liveDecorations";
 import { refreshLivePreview } from "./liveEffects";
 import {
   buildBackspaceTransaction,
@@ -118,6 +118,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         { key: "Mod-s", run: () => { opts.onSave(); return true; } },
       ]),
       EditorView.lineWrapping,
+      codeBlockDecorationsField,
       liveDecorationsPlugin,
       EditorView.updateListener.of((u) => {
         if (u.docChanged) opts.onDocChange(u.state.doc.toString());
