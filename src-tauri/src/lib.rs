@@ -125,14 +125,6 @@ fn create_todo_win(app: &tauri::AppHandle, id: &str) -> tauri::Result<WebviewWin
         .skip_taskbar(true)
         .maximizable(false)
         .resizable(false)
-        .on_page_load(|window, payload| {
-            tracing::info!(
-                "[DEBUG-todo-boot] label={} event={:?} url={}",
-                window.label(),
-                payload.event(),
-                payload.url(),
-            );
-        })
         .build()?;
     Ok(win)
 }
@@ -231,18 +223,13 @@ async fn create_sticker_cmd(
     .map_err(|e| format!("spawn_blocking 失败: {e}"))?
     .map_err(|e| e.to_string())?;
 
-    // 窗口创建投递到主线程异步执行（避免在 IPC/async 线程同步建窗阻塞事件循环）
-    let app2 = app.clone();
+    // Windows WebView2 要求建窗发生在 async 命令的工作线程，不能进入主线程任务。
     let args = StickerWinArgs::from_new(&new, id);
     let title = args.title.clone();
-    app.run_on_main_thread(move || {
-        let win = create_sticker_win(&app2, args);
-        tracing::info!(
-            "[cmd] create_sticker_cmd id={id} title={title} win_ok={}",
-            win.is_ok()
-        );
-    })
-    .map_err(|e| format!("投递主线程失败: {e}"))?;
+    let win = create_sticker_win(&app, args)
+        .map_err(|e| format!("创建便签窗口失败: {e}"))?;
+    tracing::info!("[cmd] create_sticker_cmd id={id} title={title} win_ok=true");
+    let _ = win.set_focus();
 
     events::emit_push_update(&app, id);
     Ok(id)
@@ -451,35 +438,31 @@ fn delete_todo_block_cmd(
 }
 
 #[tauri::command]
-fn open_todo_window_cmd(
+async fn open_todo_window_cmd(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    tracing::info!("[DEBUG-todo-boot] open command received id={id}");
-    if state.with_conn(|c| commands::get_todo_block(c, &id)).map_err(|e| e.to_string())?.is_none() {
+    let state = state.inner().clone();
+    let id_for_db = id.clone();
+    let todo = state
+        .with_conn_async(move |c| commands::get_todo_block(c, &id_for_db))
+        .await
+        .map_err(|e| e.to_string())?;
+    if todo.is_none() {
         return Err("Todo 块不存在".into());
     }
     let label = format!("todo-{id}");
     if let Some(win) = app.get_webview_window(&label) {
-        tracing::info!("[DEBUG-todo-boot] reusing existing window label={label}");
         let _ = win.show();
         let _ = win.unminimize();
         return win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"));
     }
-    let app2 = app.clone();
-    let id2 = id.clone();
-    app.run_on_main_thread(move || {
-        match create_todo_win(&app2, &id2) {
-            Ok(win) => {
-                tracing::info!("[cmd] open_todo_window id={id2} 创建成功");
-                if let Err(error) = win.set_focus() {
-                    tracing::warn!("[cmd] open_todo_window id={id2} 聚焦失败: {error}");
-                }
-            }
-            Err(error) => tracing::error!("[cmd] open_todo_window id={id2} 创建失败: {error}"),
-        }
-    }).map_err(|e| format!("投递主线程失败: {e}"))?;
+    let win = create_todo_win(&app, &id)
+        .map_err(|e| format!("创建 Todo 窗口失败: {e}"))?;
+    win.set_focus()
+        .map_err(|e| format!("聚焦 Todo 窗口失败: {e}"))?;
+    tracing::info!("[cmd] open_todo_window id={id} 创建成功");
     Ok(())
 }
 
@@ -569,30 +552,20 @@ fn apply_window_state_cmd(
 /// "显示"按钮始终有效；同步清除 display 模式锁定的 min/max 尺寸
 /// （与鼠标钩子唤醒路径一致，否则 set_resizable(true) 不生效）。
 #[tauri::command]
-fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+async fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     let label = format!("sticker-{id}");
     // 先取数据库记录（含 always_on_top），窗口存在与否都要恢复置顶
-    let state = app.state::<AppState>();
+    let state = app.state::<AppState>().inner().clone();
     let s = state
-        .with_conn(|c| commands::get_sticker(c, id))
+        .with_conn_async(move |c| commands::get_sticker(c, id))
+        .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
     let win = if let Some(win) = app.get_webview_window(&label) {
         win
     } else {
-        // 已知坑：IPC 线程同步建窗会卡死，必须投递主线程（AI-DEV-GUIDE §2.2）
-        let (tx, rx) = std::sync::mpsc::channel();
-        let app2 = app.clone();
-        let s2 = s.clone();
-        app.run_on_main_thread(move || {
-            let result = create_sticker_win(&app2, StickerWinArgs::from_sticker(&s2))
-                .map_err(|e| format!("重建便签窗口失败: {e}"));
-            let _ = tx.send(result);
-        })
-        .map_err(|e| format!("投递主线程失败: {e}"))?;
-        let rebuilt = rx
-            .recv()
-            .map_err(|e| format!("等待重建窗口失败: {e}"))??;
+        let rebuilt = create_sticker_win(&app, StickerWinArgs::from_sticker(&s))
+            .map_err(|e| format!("重建便签窗口失败: {e}"))?;
         tracing::info!("[cmd] wake_sticker id={id} 窗口不存在，已按数据库记录重建");
         rebuilt
     };
