@@ -21,6 +21,22 @@ export const useSettingsStore = defineStore("settings", {
       parseInt(state.config.entries["auto_collapse_secs"] ?? "5", 10),
     autoScrollSpeed: (state) =>
       parseInt(state.config.entries["default_sticker_auto_scroll_speed"] ?? "30", 10),
+    recentSlashCommands: (state): string[] => {
+      try {
+        const value = JSON.parse(state.config.entries.recent_slash_commands ?? "[]");
+        return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 5) : [];
+      } catch {
+        return [];
+      }
+    },
+    todoPresetConfig: (state) => ({
+      remindTomorrowHour: parseInt(state.config.entries.todo_remind_tomorrow_hour ?? "9", 10),
+      remindNextWeekDow: parseInt(state.config.entries.todo_remind_next_week_dow ?? "1", 10),
+      remindNextWeekHour: parseInt(state.config.entries.todo_remind_next_week_hour ?? "9", 10),
+      dueTodayHour: parseInt(state.config.entries.todo_due_today_hour ?? "18", 10),
+      dueTomorrowHour: parseInt(state.config.entries.todo_due_tomorrow_hour ?? "9", 10),
+      dueNextWeekDow: parseInt(state.config.entries.todo_due_next_week_dow ?? "1", 10),
+    }),
   },
   actions: {
     async refresh() {

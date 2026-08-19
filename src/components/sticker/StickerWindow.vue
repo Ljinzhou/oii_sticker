@@ -6,7 +6,7 @@ import { usePrefsStore } from "../../stores/prefs";
 import { useSettingsStore } from "../../stores/settings";
 import { hexToRgba } from "../../utils/markdown";
 import { advanceAutoScroll, type AutoScrollState } from "../../utils/auto-scroll";
-import type { Sticker, StickerMode } from "../../types";
+import type { Sticker, StickerMode, TodoBlock } from "../../types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import StickerViewer from "./StickerViewer.vue";
 import StickerEditor from "./StickerEditor.vue";
@@ -21,6 +21,7 @@ const label = getCurrentWindow().label;
 const stickerId = Number(label.replace("sticker-", ""));
 
 const sticker = ref<Sticker | null>(null);
+const todoBlocks = ref<TodoBlock[]>([]);
 const mode = ref<StickerMode>("display");
 const showSettings = ref(false);
 const alertActive = ref(false);
@@ -109,6 +110,7 @@ async function load() {
       console.error("[ui] 应用窗口状态失败：", e);
     }
     await prefs.load(stickerId);
+    todoBlocks.value = await invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId });
     resetCollapseTimer();
   }
 }
@@ -221,6 +223,7 @@ async function onSaved() {
 async function onClosed() {
   // 关闭=隐藏窗口（不删除数据）；由 Rust hide_sticker_cmd 隐藏并广播
   // push-update，主控台收到后把按钮切到"显示"，点"显示"再经 wake 恢复。
+  if (mode.value === "edit") await editorRef.value?.discard();
   await invoke("hide_sticker_cmd", { id: stickerId });
 }
 
@@ -234,6 +237,13 @@ onMounted(async () => {
   unlisteners.push(
     await listen<number>("sticky://push-update", (id) => {
       if (id === stickerId) load();
+    }),
+  );
+  unlisteners.push(
+    await listen<string>("todo://updated", () => {
+      invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId }).then((items) => {
+        todoBlocks.value = items;
+      });
     }),
   );
   // 全局鼠标钩子中键+左键唤醒（display 穿透状态）→ 前端切换 interact。
@@ -306,7 +316,10 @@ onBeforeUnmount(() => {
         v-if="mode === 'display' || mode === 'interact'"
         :content="sticker?.content ?? ''"
         :interactive="mode === 'interact'"
+        :todo-blocks="todoBlocks"
         @toggle="(line) => invoke('toggle_todo_cmd', { id: stickerId, line })"
+        @open-todo="(id) => invoke('open_todo_window_cmd', { id })"
+        @toggle-todo="(id, isCompleted) => invoke('update_todo_block_cmd', { id, patch: { is_completed: isCompleted } })"
         @pointer="onInteract"
       />
       <StickerEditor

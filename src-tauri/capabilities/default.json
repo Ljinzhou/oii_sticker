@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window and sticker windows",
-  "windows": ["main", "sticker-*"],
+  "windows": ["main", "sticker-*", "todo-*"],
   "permissions": [
     "core:default",
     "notification:default",

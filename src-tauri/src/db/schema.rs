@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -38,6 +38,13 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ("default_sticker_always_on_top", "1", "新便签默认是否置顶（0 否，1 是）"),
         // v6：调试模式（默认开启，输出详细日志）。
         ("debug_mode", "1", "调试模式（0 关闭，1 开启详细操作/事件日志）"),
+        ("recent_slash_commands", "[]", "最近使用的斜杠命令 JSON 数组"),
+        ("todo_remind_tomorrow_hour", "9", "Todo 明天提醒的小时"),
+        ("todo_remind_next_week_dow", "1", "Todo 下周提醒星期（0=周日）"),
+        ("todo_remind_next_week_hour", "9", "Todo 下周提醒的小时"),
+        ("todo_due_today_hour", "18", "Todo 今天截止的小时"),
+        ("todo_due_tomorrow_hour", "9", "Todo 明天截止的小时"),
+        ("todo_due_next_week_dow", "1", "Todo 下周截止星期（0=周日）"),
     ];
 
     let mut stmt = conn
@@ -180,6 +187,39 @@ fn migrate_v5_to_v6(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v6 → v7：新增独立 Todo 块表，不影响旧 todo_items。
+fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS todo_blocks (
+                id TEXT PRIMARY KEY,
+                sticker_id INTEGER NOT NULL REFERENCES stickers(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                description TEXT,
+                is_completed INTEGER NOT NULL DEFAULT 0,
+                parent_id TEXT REFERENCES todo_blocks(id) ON DELETE CASCADE,
+                reminder_at TEXT,
+                due_at TEXT,
+                repeat_rule TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_todo_blocks_parent ON todo_blocks(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_todo_blocks_sticker ON todo_blocks(sticker_id);
+            INSERT OR IGNORE INTO system_config (key, value, description) VALUES
+                ('recent_slash_commands', '[]', '最近使用的斜杠命令 JSON 数组'),
+                ('todo_remind_tomorrow_hour', '9', 'Todo 明天提醒的小时'),
+                ('todo_remind_next_week_dow', '1', 'Todo 下周提醒星期（0=周日）'),
+                ('todo_remind_next_week_hour', '9', 'Todo 下周提醒的小时'),
+                ('todo_due_today_hour', '18', 'Todo 今天截止的小时'),
+                ('todo_due_tomorrow_hour', '9', 'Todo 明天截止的小时'),
+                ('todo_due_next_week_dow', '1', 'Todo 下周截止星期（0=周日）');",
+        )
+        .context("迁移 v6→v7 失败")?;
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -208,6 +248,9 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
     }
     if current < 6 {
         migrate_v5_to_v6(conn)?;
+    }
+    if current < 7 {
+        migrate_v6_to_v7(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -250,7 +293,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(run_migrations(&conn).unwrap(), 6);
+        assert_eq!(run_migrations(&conn).unwrap(), 7);
     }
 
     /// v2 库执行迁移：auto_scroll_speed 列应被补上；
@@ -268,13 +311,13 @@ mod tests {
         .unwrap();
 
         // 第一次迁移到 v6。
-        assert_eq!(run_migrations(&conn).unwrap(), 6);
+        assert_eq!(run_migrations(&conn).unwrap(), 7);
 
         // 模拟"迁移中途崩溃后重跑"：列已存在时再跑 v2→v3 不得报错。
         migrate_v2_to_v3(&conn).unwrap();
 
         // 再次全量迁移应为 no-op 成功。
-        assert_eq!(run_migrations(&conn).unwrap(), 6);
+        assert_eq!(run_migrations(&conn).unwrap(), 7);
 
         // 列确实存在。
         assert!(table_has_column(&conn, "sticker_prefs", "auto_scroll_speed").unwrap());
@@ -299,7 +342,7 @@ mod tests {
         // 事务已回滚：连接不在事务中，可以继续执行新语句。
         conn.execute_batch("ALTER TABLE sticker_prefs_bak RENAME TO sticker_prefs;")
             .unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 6);
+        assert_eq!(run_migrations(&conn).unwrap(), 7);
     }
 
     /// 全新库：init_schema 建全部表并写 user_version=5。
@@ -326,13 +369,14 @@ mod tests {
                 "sticker_prefs",
                 "stickers",
                 "system_config",
+                "todo_blocks",
                 "todo_items",
             ]
         );
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
     }
 
     /// v5 → v6：旧默认背景色 #CCFFCC 迁移为 #FFF4D6，其他键不受影响。
@@ -362,5 +406,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(custom, "0.9", "其他键不受影响");
+    }
+
+    #[test]
+    fn migrate_v6_to_v7_creates_todo_blocks_for_existing_database() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE stickers (id INTEGER PRIMARY KEY);
+             CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', updated_at TEXT);
+             PRAGMA user_version = 6;",
+        ).unwrap();
+        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='todo_blocks')", [], |row| row.get(0)).unwrap();
+        assert!(exists);
+        assert_eq!(
+            conn.query_row("SELECT value FROM system_config WHERE key='recent_slash_commands'", [], |row| row.get::<_, String>(0)).unwrap(),
+            "[]",
+        );
     }
 }

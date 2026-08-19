@@ -2,6 +2,7 @@
 import MarkdownIt from "markdown-it";
 import { ref } from "vue";
 import { createMathjaxInstance, mathjax } from "@mdit/plugin-mathjax";
+import type { TodoBlock } from "../types";
 
 // ═══════════════ SVG 动态字体预加载 ═══════════════
 // mdit-mathjax 的 asyncLoad 用动态 import(e) 加载字体模块（如
@@ -99,6 +100,63 @@ const md = new MarkdownIt({
   breaks: false,
 });
 
+function escapeText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function todoBlockRule(state: any, startLine: number, _endLine: number, silent: boolean) {
+  const line = state.getLines(startLine, startLine + 1, state.blkIndent, false).trim();
+  const match = /^<todo-block\s+id=["']([^"']+)["']\s*><\/todo-block>\s*$/.exec(line);
+  if (!match) return false;
+  if (!silent) {
+    const token = state.push("todo_block", "div", 0);
+    token.block = true;
+    token.meta = { id: match[1] };
+    token.map = [startLine, startLine + 1];
+  }
+  state.line = startLine + 1;
+  return true;
+}
+
+function showDoneRule(state: any, startLine: number, _endLine: number, silent: boolean) {
+  const line = state.getLines(startLine, startLine + 1, state.blkIndent, false).trim();
+  if (line !== "<show-done></show-done>") return false;
+  if (!silent) {
+    const token = state.push("show_done", "div", 0);
+    token.block = true;
+  }
+  state.line = startLine + 1;
+  return true;
+}
+
+md.block.ruler.before("paragraph", "todo_block", todoBlockRule, { alt: ["paragraph", "reference"] });
+md.block.ruler.before("paragraph", "show_done", showDoneRule, { alt: ["paragraph", "reference"] });
+md.renderer.rules.todo_block = (tokens, idx, _options, env) => {
+  const blocks = Array.isArray(env?.todoBlocks) ? env.todoBlocks as TodoBlock[] : [];
+  const id = (tokens[idx].meta as { id?: string } | null)?.id ?? "";
+  return renderTodoCard(blocks, id, Boolean(env?.interactive));
+};
+md.renderer.rules.show_done = (_tokens, _idx, _options, env) => {
+  const blocks = Array.isArray(env?.todoBlocks) ? env.todoBlocks as TodoBlock[] : [];
+  return renderDoneCard(blocks);
+};
+
+function renderTodoCard(blocks: TodoBlock[], id: string, interactive: boolean): string {
+  const root = blocks.find((block) => block.id === id);
+  if (!root) return `<div class="todo-block-card todo-block-missing" data-todo-id="${escapeText(id)}">未找到任务</div>`;
+  const children = blocks.filter((block) => block.parent_id === root.id);
+  const all = [root, ...children];
+  const done = all.filter((block) => block.is_completed).length;
+  const items = all.map((block) => `<li class="${block.is_completed ? "tb-done" : ""}${block.parent_id ? " tb-sub" : ""}"><input type="checkbox" class="todo-task-checkbox" data-todo-id="${escapeText(block.id)}"${block.is_completed ? " checked" : ""}${interactive ? "" : " disabled"}><span class="tb-name">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
+  return `<div class="todo-block-card" data-todo-id="${escapeText(root.id)}"><div class="tb-head"><span class="tb-icon">☑</span><span class="tb-title">${escapeText(root.title || "未命名任务")}</span><span class="tb-count">${done} / ${all.length}</span></div><ul class="tb-list">${items}</ul></div>`;
+}
+
+function renderDoneCard(blocks: TodoBlock[]): string {
+  const done = blocks.filter((block) => block.is_completed);
+  const items = done.map((block) => `<li><input type="checkbox" class="todo-task-checkbox" checked disabled><span class="tb-name tb-done">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
+  return `<details class="done-block-card"><summary>已完成 ${done.length}</summary><ul class="db-list">${items}</ul></details>`;
+}
+
 // 自写任务清单渲染：检测 `- [ ]` / `- [x]` / `- [X]` 标记，
 // 输出带 data-line（源行号）的 checkbox；点击由组件事件委托处理。
 const defaultListItemOpen = md.renderer.rules.list_item_open;
@@ -163,8 +221,8 @@ export function normalizeCompoundLists(md: string): string {
 
 /** 渲染 markdown → HTML（含 todo checkbox 的 data-line 与 mathjax SVG；
  *  复合编号先归一化为嵌套列表语法）。 */
-export function renderMarkdown(content: string): string {
-  return md.render(normalizeCompoundLists(content));
+export function renderMarkdown(content: string, todoBlocks: TodoBlock[] = [], interactive = false): string {
+  return md.render(normalizeCompoundLists(content), { todoBlocks, interactive });
 }
 
 /** 收集 mathjax 渲染产生的 SVG CSS 并清空缓存（渲染后调用，注入全局 style）。 */

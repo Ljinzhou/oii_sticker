@@ -6,9 +6,9 @@
 use anyhow::Result;
 use rusqlite::Connection;
 
-use crate::db::{config_repo, prefs_repo, sticker_repo, todo_repo};
+use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
 use crate::editing;
-use crate::models::{EffectivePrefs, Sticker, StickerAttrs, StickerPrefs, SystemConfig};
+use crate::models::{EffectivePrefs, Sticker, StickerAttrs, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
 
 // ── 便签 CRUD ──
 
@@ -128,6 +128,28 @@ pub fn toggle_todo_in_sticker(conn: &Connection, sticker_id: i64, line: usize) -
 /// 列出某个便签的所有 todo。
 pub fn list_todos(conn: &Connection, sticker_id: i64) -> Result<Vec<crate::models::TodoItem>> {
     todo_repo::list_by_sticker(conn, sticker_id)
+}
+
+// ── 独立 Todo 块 ──
+
+pub fn list_todo_blocks(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlock>> {
+    todo_block_repo::list_by_sticker(conn, sticker_id)
+}
+
+pub fn get_todo_block(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
+    todo_block_repo::get(conn, id)
+}
+
+pub fn create_todo_block(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Result<TodoBlock> {
+    todo_block_repo::create(conn, sticker_id, parent_id)
+}
+
+pub fn update_todo_block(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBlock> {
+    todo_block_repo::update(conn, id, patch)
+}
+
+pub fn delete_todo_block(conn: &Connection, id: &str) -> Result<Option<i64>> {
+    todo_block_repo::delete(conn, id)
 }
 
 #[cfg(test)]

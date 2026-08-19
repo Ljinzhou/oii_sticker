@@ -108,3 +108,21 @@ CREATE TABLE sticker_prefs (
 CREATE INDEX idx_attrs_remind
     ON sticker_attrs(remind_at)
     WHERE remind_at IS NOT NULL;
+
+-- 独立 Todo 块（v7）：与旧 todo_items 并存，供 <todo-block> 使用。
+CREATE TABLE todo_blocks (
+    id            TEXT PRIMARY KEY,
+    sticker_id    INTEGER NOT NULL REFERENCES stickers(id) ON DELETE CASCADE,
+    title         TEXT NOT NULL DEFAULT '',
+    description   TEXT,
+    is_completed  INTEGER NOT NULL DEFAULT 0,
+    parent_id     TEXT REFERENCES todo_blocks(id) ON DELETE CASCADE,
+    reminder_at   TEXT,
+    due_at        TEXT,
+    repeat_rule   TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX idx_todo_blocks_parent ON todo_blocks(parent_id);
+CREATE INDEX idx_todo_blocks_sticker ON todo_blocks(sticker_id);

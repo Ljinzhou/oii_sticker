@@ -15,6 +15,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   save: [];
+  slash: [query: string, from: number, to: number];
+  slashClose: [];
+  openTodo: [id: string];
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -49,6 +52,9 @@ onMounted(() => {
     fontFamily: props.fontFamily,
     onDocChange: scheduleEmit,
     onSave: () => emit("save"),
+    onSlash: (query, from, to) => emit("slash", query, from, to),
+    onSlashClose: () => emit("slashClose"),
+    onTodoOpen: (id) => emit("openTodo", id),
   });
   view.focus();
 });

@@ -44,6 +44,9 @@ function markdownSyntaxHighlight(escapedLine: string): string {
   s = s.replace(/^(\s*)(&gt;)(\s?)/, '$1<span class="md-quote">$2</span>$3');
   // 分隔线
   s = s.replace(/^(\s*)((?:-{3,}|\*{3,}|_{3,}))\s*$/, '$1<span class="md-hr">$2</span>');
+  // Todo 功能块（仅高亮受控标签，HTML 不会进入渲染器）
+  s = s.replace(/(&lt;\/?todo-block(?:\s+id=&quot;[^&]*&quot;)?\s*&gt;)/g, '<span class="md-fn">$1</span>');
+  s = s.replace(/(&lt;\/?show-done\s*&gt;)/g, '<span class="md-fn">$1</span>');
   // 行内元素（占位 → 替换 → 还原）
   s = s.replace(/`([^`\n]+)`/g, "\u0001C$1\u0001C"); // 行内代码
   s = s.replace(/\[([^\]\n]*)\]\(([^)\n]*)\)/g, "\u0001L$1\u0002$2\u0001L"); // 链接

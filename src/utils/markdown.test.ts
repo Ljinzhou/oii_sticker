@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { renderMarkdown, hexToRgba, mathInstancePromise, normalizeCompoundLists } from "./markdown";
+import type { TodoBlock } from "../types";
 
 describe("renderMarkdown", () => {
   it("渲染基础 Markdown（标题/粗体/列表）", () => {
@@ -47,6 +48,14 @@ describe("renderMarkdown", () => {
     await mathInstancePromise;
     const html = renderMarkdown("$$\n\\frac{1}{2}\n$$");
     expect(html).toContain("math-block");
+  });
+
+  it("受控 Todo 标记渲染为卡片，任意 HTML 不会透传", () => {
+    const todo: TodoBlock = { id: "t-1", sticker_id: 1, title: "购物", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const html = renderMarkdown('<todo-block id="t-1"></todo-block>\n\n<script>alert(1)</script>', [todo]);
+    expect(html).toContain('data-todo-id="t-1"');
+    expect(html).toContain("购物");
+    expect(html).not.toContain("<script>");
   });
 });
 

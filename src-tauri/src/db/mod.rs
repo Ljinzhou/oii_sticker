@@ -7,3 +7,4 @@ pub mod prefs_repo;
 pub mod schema;
 pub mod sticker_repo;
 pub mod todo_repo;
+pub mod todo_block_repo;
