@@ -15,6 +15,7 @@ const textColor = ref("#222222");
 const bodyFontSize = ref(13);
 const alwaysOnTop = ref(false);
 const autoScroll = ref(false);
+const autoScrollSpeed = ref(30);
 
 // 提醒（变更即写库）
 const remindAt = ref("");
@@ -31,6 +32,7 @@ async function load() {
     bgColor.value = e.bg_color;
     textColor.value = e.text_color;
     bodyFontSize.value = e.body_font_size;
+    autoScrollSpeed.value = Math.min(120, Math.max(5, e.auto_scroll_speed));
   }
   try {
     const attrs = await invoke<StickerAttrs | null>("get_reminder_cmd", { id: props.stickerId });
@@ -53,6 +55,7 @@ function applyPrefsSoon() {
     bg_color: bgColor.value,
     text_color: textColor.value,
     body_font_size: bodyFontSize.value,
+    auto_scroll_speed: autoScrollSpeed.value,
   });
 }
 
@@ -65,6 +68,7 @@ function commitPrefs() {
       bg_color: bgColor.value,
       text_color: textColor.value,
       body_font_size: bodyFontSize.value,
+      auto_scroll_speed: autoScrollSpeed.value,
     });
   }, 250);
 }
@@ -135,6 +139,21 @@ onMounted(load);
         <label class="row">
           <span>自动滚动</span>
           <input v-model="autoScroll" type="checkbox" @change="saveAutoScroll(autoScroll)" />
+        </label>
+        <label class="row">
+          <span>滚动速度</span>
+          <input
+            v-model.number="autoScrollSpeed"
+            data-testid="auto-scroll-speed"
+            type="range"
+            min="5"
+            max="120"
+            step="5"
+            :disabled="!autoScroll"
+            @input="applyPrefsSoon"
+            @change="commitPrefs"
+          />
+          <span class="val">{{ autoScrollSpeed }} px/s</span>
         </label>
         <button class="link" @click="resetPrefs">↺ 恢复默认偏好</button>
       </section>

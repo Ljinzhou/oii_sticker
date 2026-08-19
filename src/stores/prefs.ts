@@ -18,6 +18,7 @@ export const usePrefsStore = defineStore("prefs", {
       text_color?: string;
       title_font_size?: number;
       body_font_size?: number;
+      auto_scroll_speed?: number;
     }) {
       const e = this.effective;
       if (!e) return;
@@ -26,6 +27,7 @@ export const usePrefsStore = defineStore("prefs", {
       if (patch.text_color !== undefined) e.text_color = patch.text_color;
       if (patch.title_font_size !== undefined) e.title_font_size = patch.title_font_size;
       if (patch.body_font_size !== undefined) e.body_font_size = patch.body_font_size;
+      if (patch.auto_scroll_speed !== undefined) e.auto_scroll_speed = patch.auto_scroll_speed;
     },
     /** 持久化到后端（松手/防抖后调用）。 */
     async save(stickerId: number, prefs: Partial<StickerPrefs>) {
