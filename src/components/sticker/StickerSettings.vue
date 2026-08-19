@@ -24,6 +24,12 @@ const isRecurring = ref(false);
 
 let debounceTimer: number | undefined;
 
+function normalizeAutoScrollSpeed(value: number): number {
+  if (!Number.isFinite(value)) return 30;
+  const clamped = Math.min(120, Math.max(5, value));
+  return 5 + Math.round((clamped - 5) / 5) * 5;
+}
+
 async function load() {
   await prefs.load(props.stickerId);
   const e = prefs.effective;
@@ -32,7 +38,7 @@ async function load() {
     bgColor.value = e.bg_color;
     textColor.value = e.text_color;
     bodyFontSize.value = e.body_font_size;
-    autoScrollSpeed.value = Math.min(120, Math.max(5, e.auto_scroll_speed));
+    autoScrollSpeed.value = normalizeAutoScrollSpeed(e.auto_scroll_speed);
   }
   try {
     const attrs = await invoke<StickerAttrs | null>("get_reminder_cmd", { id: props.stickerId });
@@ -50,6 +56,7 @@ async function load() {
 
 /** 拖动/输入过程中：本地及时应用（视觉立即生效，无网络往返）。 */
 function applyPrefsSoon() {
+  autoScrollSpeed.value = normalizeAutoScrollSpeed(autoScrollSpeed.value);
   prefs.applyLocal({
     opacity: Number(opacity.value) / 100,
     bg_color: bgColor.value,
@@ -61,6 +68,7 @@ function applyPrefsSoon() {
 
 /** 松手/确认后：持久化到后端。 */
 function commitPrefs() {
+  autoScrollSpeed.value = normalizeAutoScrollSpeed(autoScrollSpeed.value);
   if (debounceTimer) window.clearTimeout(debounceTimer);
   debounceTimer = window.setTimeout(() => {
     prefs.save(props.stickerId, {
