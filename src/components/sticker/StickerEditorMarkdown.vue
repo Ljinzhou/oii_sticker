@@ -9,6 +9,7 @@ import {
   handleTabAtCursor,
   handleShiftTabAtCursor,
 } from "../../utils/edit-actions";
+import type { SlashAnchor } from "../slash/types";
 
 const props = defineProps<{
   modelValue: string;
@@ -17,7 +18,7 @@ const props = defineProps<{
   showLineNumbers: boolean;
 }>();
 
-const emit = defineEmits<{ "update:modelValue": [value: string]; slash: [query: string, from: number, to: number]; slashClose: []; openTodo: [id: string] }>();
+const emit = defineEmits<{ "update:modelValue": [value: string]; slash: [query: string, from: number, to: number, anchor: SlashAnchor]; slashClose: []; openTodo: [id: string] }>();
 
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const gutter = ref<HTMLDivElement | null>(null);
@@ -115,18 +116,44 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+function caretAnchor(el: HTMLTextAreaElement): SlashAnchor {
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const mirror = document.createElement("div");
+  const marker = document.createElement("span");
+  const copied = ["boxSizing", "width", "height", "overflowWrap", "whiteSpace", "wordBreak", "fontFamily", "fontSize", "fontWeight", "fontStyle", "letterSpacing", "lineHeight", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth"] as const;
+  for (const key of copied) mirror.style[key] = style[key];
+  mirror.style.position = "fixed";
+  mirror.style.left = `${rect.left - el.scrollLeft}px`;
+  mirror.style.top = `${rect.top - el.scrollTop}px`;
+  mirror.style.visibility = "hidden";
+  mirror.style.overflow = "hidden";
+  mirror.textContent = el.value.slice(0, el.selectionStart);
+  marker.textContent = "\u200b";
+  mirror.append(marker);
+  document.body.append(mirror);
+  const markerRect = marker.getBoundingClientRect();
+  mirror.remove();
+  return { left: Math.max(0, markerRect.left - rect.left), top: Math.max(0, markerRect.bottom - rect.top + 6) };
+}
+
+function reportSlash(el: HTMLTextAreaElement) {
+  const before = el.value.slice(0, el.selectionStart);
+  const match = /(?:^|\n)\/([^\s/]*)$/.exec(before);
+  if (match) emit("slash", match[1], el.selectionStart - match[0].length + (match[0].startsWith("\n") ? 1 : 0), el.selectionStart, caretAnchor(el));
+  else emit("slashClose");
+}
+
 function onInput(event: Event) {
   const el = event.target as HTMLTextAreaElement;
   text.value = el.value;
-  const before = el.value.slice(0, el.selectionStart);
-  const match = /(?:^|\n)\/([^\s/]*)$/.exec(before);
-  if (match) emit("slash", match[1], el.selectionStart - match[0].length + (match[0].startsWith("\n") ? 1 : 0), el.selectionStart);
-  else emit("slashClose");
+  reportSlash(el);
 }
 
 function onClick() {
   const el = textarea.value;
   if (!el) return;
+  reportSlash(el);
   const before = props.modelValue.slice(0, el.selectionStart);
   const start = before.lastIndexOf("<todo-block");
   const end = props.modelValue.indexOf("</todo-block>", start);
@@ -135,6 +162,10 @@ function onClick() {
     const id = /\bid=["']([^"']+)["']/.exec(tag)?.[1];
     if (id) emit("openTodo", id);
   }
+}
+
+function onKeyup() {
+  if (textarea.value) reportSlash(textarea.value);
 }
 </script>
 
@@ -164,6 +195,7 @@ function onClick() {
         @keydown="onKeydown"
         @scroll="syncScroll"
         @click="onClick"
+        @keyup="onKeyup"
       ></textarea>
     </div>
   </div>

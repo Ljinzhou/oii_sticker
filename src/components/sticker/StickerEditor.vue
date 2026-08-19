@@ -8,11 +8,13 @@ import { useSettingsStore } from "../../stores/settings";
 import StickerEditorMarkdown from "./StickerEditorMarkdown.vue";
 import StickerEditorLive from "./StickerEditorLive.vue";
 import SlashMenu from "../slash/SlashMenu.vue";
-import type { SlashItem } from "../../types";
+import type { SlashItem, TodoBlock } from "../../types";
+import type { SlashAnchor } from "../slash/types";
 
 const props = defineProps<{
   content: string;
   stickerId: number;
+  todoBlocks?: TodoBlock[];
 }>();
 
 const emit = defineEmits<{ saved: [] }>();
@@ -24,6 +26,7 @@ const slashItems = ref<SlashItem[]>([]);
 const slashFrom = ref(0);
 const slashTo = ref(0);
 const slashSelected = ref(0);
+const slashAnchor = ref<SlashAnchor>({ left: 16, top: 52 });
 const createdTodoIds = new Set<string>();
 
 // 编辑模式形态（system_config editor_mode：markdown | live，默认 markdown）
@@ -74,8 +77,9 @@ onMounted(() => {
   settings.refresh();
 });
 
-async function openSlash(query: string, from: number, to: number) {
+async function openSlash(query: string, from: number, to: number, anchor?: SlashAnchor) {
   slashFrom.value = from; slashTo.value = to; slashSelected.value = 0;
+  if (anchor) slashAnchor.value = anchor;
   slashItems.value = await invoke<SlashItem[]>("slash_query_cmd", { query });
 }
 
@@ -109,8 +113,8 @@ defineExpose({ save, discard });
       @slash-close="slashItems = []"
       @open-todo="(id) => invoke('open_todo_window_cmd', { id })"
     />
-    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="(id) => invoke('open_todo_window_cmd', { id })" />
-    <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" @select="selectSlash" @close="slashItems = []" />
+    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" :todo-blocks="props.todoBlocks ?? []" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="(id) => invoke('open_todo_window_cmd', { id })" />
+    <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" :anchor="slashAnchor" @select="selectSlash" @close="slashItems = []" />
   </div>
 </template>
 

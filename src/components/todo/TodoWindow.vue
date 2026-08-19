@@ -15,6 +15,7 @@ let stopClose: (() => void) | undefined;
 let patchTimer: number | undefined;
 let pendingPatch: TodoPatch = {};
 const selected = computed(() => todo.selected);
+async function startDragging(event: MouseEvent) { if (event.button !== 0) return; event.preventDefault(); try { await getCurrentWindow().startDragging(); } catch (error) { console.error("[todo] 启动窗口拖动失败：", error); } }
 async function createRoot() { await todo.create(); }
 async function createChild(id?: string) { const parentId = id ?? selected.value?.id; if (!parentId || selected.value?.parent_id) return; await todo.create(parentId); }
 function beginResize(event: MouseEvent) { const startY = event.clientY; const startHeight = upperHeight.value; const move = (e: MouseEvent) => { upperHeight.value = Math.max(120, Math.min(420, startHeight + e.clientY - startY)); }; const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); document.body.style.userSelect = ""; }; document.body.style.userSelect = "none"; document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); }
@@ -26,7 +27,7 @@ onBeforeUnmount(() => { stop?.(); stopClose?.(); void flushSelected(); });
 </script>
 
 <template>
-  <main class="todo-window"><div class="drag-bar" data-tauri-drag-region><button title="关闭" @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer></main>
+  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><button title="关闭" @mousedown.stop @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer></main>
 </template>
 
 <style scoped>

@@ -8,7 +8,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { indentWithTab } from "@codemirror/commands";
 import { tags } from "@lezer/highlight";
-import { codeBlockDecorationsField, liveDecorationsPlugin } from "./liveDecorations";
+import { liveBlockDecorationsField, liveDecorationsPlugin, liveTodoBlocksField, setLiveTodoBlocks } from "./liveDecorations";
 import { refreshLivePreview } from "./liveEffects";
 import {
   buildBackspaceTransaction,
@@ -20,6 +20,8 @@ import {
   buildWrapTransaction,
 } from "./liveTransforms";
 import { mathInstancePromise } from "../../../utils/markdown";
+import type { TodoBlock } from "../../../types";
+import type { SlashAnchor } from "../../slash/types";
 
 export interface LiveViewOptions {
   doc: string;
@@ -30,9 +32,10 @@ export interface LiveViewOptions {
   /** Ctrl+S。 */
   onSave: () => void;
   /** 及时预览内检测到 / 查询。 */
-  onSlash?: (query: string, from: number, to: number) => void;
+  onSlash?: (query: string, from: number, to: number, anchor: SlashAnchor) => void;
   onSlashClose?: () => void;
   onTodoOpen?: (id: string) => void;
+  todoBlocks?: TodoBlock[];
 }
 
 /** 便签浅色背景下的编辑器主题（透明背景、继承颜色、细行号）。 */
@@ -100,6 +103,28 @@ function fontFamilyTheme(family: string) {
   });
 }
 
+function slashAnchorAtSelection(view: EditorView): SlashAnchor {
+  const coords = view.coordsAtPos(view.state.selection.main.head);
+  const host = view.dom.getBoundingClientRect();
+  if (!coords) return { left: 6, top: 30 };
+  return {
+    left: Math.max(0, coords.left - host.left),
+    top: Math.max(0, coords.bottom - host.top + 6),
+  };
+}
+
+function reportSlash(view: EditorView, opts: LiveViewOptions): void {
+  const doc = view.state.doc.toString();
+  const head = view.state.selection.main.head;
+  const match = /(?:^|\n)\/([^\s\/]*)$/.exec(doc.slice(0, head));
+  if (!match) {
+    opts.onSlashClose?.();
+    return;
+  }
+  const from = head - match[0].length + (match[0].startsWith("\n") ? 1 : 0);
+  opts.onSlash?.(match[1], from, head, slashAnchorAtSelection(view));
+}
+
 /** 创建 CM6 编辑器实例。 */
 export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): EditorView {
   fontSizeCompartment = new Compartment();
@@ -122,20 +147,15 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         { key: "Mod-s", run: () => { opts.onSave(); return true; } },
       ]),
       EditorView.lineWrapping,
-      codeBlockDecorationsField,
+      liveTodoBlocksField.init(() => opts.todoBlocks ?? []),
+      liveBlockDecorationsField,
       liveDecorationsPlugin,
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
           const doc = u.state.doc.toString();
           opts.onDocChange(doc);
-          const head = u.state.selection.main.head;
-          const before = doc.slice(0, head);
-          const match = /(?:^|\n)\/([^\s/]*)$/.exec(before);
-          if (match) {
-            const from = head - match[0].length + (match[0].startsWith("\n") ? 1 : 0);
-            opts.onSlash?.(match[1], from, head);
-          } else opts.onSlashClose?.();
         }
+        if (u.docChanged || u.selectionSet) reportSlash(u.view, opts);
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
       fontFamilyCompartment.of(fontFamilyTheme(opts.fontFamily ?? "Microsoft YaHei")),
@@ -185,4 +205,9 @@ export function setLiveFontFamily(view: EditorView, fontFamily: string): void {
   view.dispatch({
     effects: fontFamilyCompartment.reconfigure(fontFamilyTheme(fontFamily)),
   });
+}
+
+/** 外部 Todo 更新后刷新实时预览中的受控任务卡片。 */
+export function setLiveTodoBlocksInView(view: EditorView, todoBlocks: TodoBlock[]): void {
+  view.dispatch({ effects: setLiveTodoBlocks.of(todoBlocks) });
 }

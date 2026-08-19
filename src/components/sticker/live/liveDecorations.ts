@@ -6,7 +6,7 @@
 // - 光标所在行的元素**不渲染**（显示源码，便于编辑标记），其余行渲染；
 // - 嵌套元素只渲染最外层（非重叠贪心）；
 // - 渲染用 markdown-it 片段渲染（保证嵌套/公式正确），输出为 replace widget。
-import { EditorState, Range, RangeSet, StateField } from "@codemirror/state";
+import { EditorState, Range, RangeSet, StateEffect, StateField } from "@codemirror/state";
 import { Decoration, DecorationSet, EditorView, ViewPlugin } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { refreshLivePreview } from "./liveEffects";
@@ -15,11 +15,15 @@ import {
   HrWidget,
   InlineRenderWidget,
   ListMarkWidget,
+  MathBlockWidget,
   QuoteMarkWidget,
   CodeBlockWidget,
+  DoneBlockWidget,
   renderFragment,
   TaskCheckboxWidget,
+  TodoBlockWidget,
 } from "./liveWidgets";
+import type { TodoBlock } from "../../../types";
 
 interface InlineRange {
   from: number;
@@ -30,14 +34,15 @@ interface InlineRange {
 }
 
 /** 块级渲染范围：标题标记/列表标记/引用标记/分隔线。 */
-interface BlockRange {
+export interface BlockRange {
   from: number;
   to: number;
-  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line" | "code-block";
+  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line" | "code-block" | "math-block" | "todo-block" | "done-block";
   level?: number; // heading 级别 / 复合编号嵌套深度
   ordinal?: string; // 有序列表显示编号（如 "1."、"1.1."）；无序为 "•"
   source?: string;
   language?: string;
+  todoId?: string;
 }
 
 /** 收集行内元素范围（lezer 树 + math 正则），返回非重叠列表。 */
@@ -296,6 +301,49 @@ function collectBlockRangesFromState(state: EditorState): BlockRange[] {
     },
   });
 
+  // 受控功能标签与 $$...$$ 不是 CodeMirror Markdown grammar 的原生节点，
+  // 因而在语法树遍历后按行补充。围栏代码范围始终保持源码。
+  let blockMathStart: number | null = null;
+  let lineOffset = 0;
+  for (const line of lines) {
+    const lineStart = lineOffset;
+    const lineEnd = lineStart + line.length;
+    lineOffset = lineEnd + 1;
+    if (codeRanges.some(([from, to]) => lineStart >= from && lineEnd <= to)) {
+      blockMathStart = null;
+      continue;
+    }
+    const trimmed = line.trim();
+    const todoMatch = /^<todo-block\s+id=["']([^"']+)["']\s*><\/todo-block>$/.exec(trimmed);
+    if (todoMatch) {
+      ranges.push({ from: lineStart, to: lineEnd, kind: "todo-block", source: line, todoId: todoMatch[1] });
+      continue;
+    }
+    if (trimmed === "<show-done></show-done>") {
+      ranges.push({ from: lineStart, to: lineEnd, kind: "done-block", source: line });
+      continue;
+    }
+    if (blockMathStart !== null) {
+      if (trimmed.endsWith("$$")) {
+        ranges.push({
+          from: blockMathStart,
+          to: lineEnd,
+          kind: "math-block",
+          source: text.slice(blockMathStart, lineEnd),
+        });
+        blockMathStart = null;
+      }
+      continue;
+    }
+    if (!trimmed.startsWith("$$")) continue;
+    const rest = trimmed.slice(2).trim();
+    if (rest.endsWith("$$") && rest.length > 2) {
+      ranges.push({ from: lineStart, to: lineEnd, kind: "math-block", source: line });
+    } else {
+      blockMathStart = lineStart;
+    }
+  }
+
   // 复合编号行输出（跳过代码块范围）：编号 replace 为列表标记（保持源码编号），
   // 整行加缩进 padding（mark class 按嵌套深度，模拟 Obsidian 层级）。
   for (const c of compoundMarks) {
@@ -323,7 +371,7 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
 }
 
 /** 块级范围 → Decoration。 */
-function blockDecoration(r: BlockRange): Decoration {
+function blockDecoration(r: BlockRange, todoBlocks: TodoBlock[] = []): Decoration {
   switch (r.kind) {
     case "code-block": {
       const source = r.source ?? "";
@@ -334,6 +382,12 @@ function blockDecoration(r: BlockRange): Decoration {
         : "";
       return Decoration.replace({ block: true, widget: new CodeBlockWidget(code, r.language) });
     }
+    case "math-block":
+      return Decoration.replace({ block: true, widget: new MathBlockWidget(r.source ?? "") });
+    case "todo-block":
+      return Decoration.replace({ block: true, widget: new TodoBlockWidget(r.source ?? "", todoBlocks) });
+    case "done-block":
+      return Decoration.replace({ block: true, widget: new DoneBlockWidget(r.source ?? "", todoBlocks) });
     case "heading-mark":
       return Decoration.replace({ widget: new HeadingMarkWidget() });
     case "heading-line":
@@ -382,6 +436,41 @@ export const codeBlockDecorationsField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/** Todo 数据在 EditorState 内保存，避免不同便签窗口之间共享模块级状态。 */
+export const setLiveTodoBlocks = StateEffect.define<TodoBlock[]>();
+
+export const liveTodoBlocksField = StateField.define<TodoBlock[]>({
+  create: () => [],
+  update(todoBlocks, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setLiveTodoBlocks)) return effect.value;
+    }
+    return todoBlocks;
+  },
+});
+
+/** 需要占据独立行高的所有 Live Preview 块，由 StateField 提供 decoration。 */
+export function buildLiveBlockDecorations(state: EditorState): DecorationSet {
+  const todoBlocks = state.field(liveTodoBlocksField, false) ?? [];
+  const decorations = collectBlockRangesFromState(state)
+    .filter((range) => range.kind === "code-block" || range.kind === "math-block" || range.kind === "todo-block" || range.kind === "done-block")
+    .filter((range) => !selectionTouchesRange(state, range.from, range.to))
+    .map((range) => blockDecoration(range, todoBlocks).range(range.from, range.to));
+  return Decoration.set(decorations, true);
+}
+
+export const liveBlockDecorationsField = StateField.define<DecorationSet>({
+  create: buildLiveBlockDecorations,
+  update(decorations, transaction) {
+    const refresh = transaction.effects.some((effect) => effect.is(refreshLivePreview) || effect.is(setLiveTodoBlocks));
+    if (transaction.docChanged || transaction.selection || refresh) {
+      return buildLiveBlockDecorations(transaction.state);
+    }
+    return decorations;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
 /** 构建 decoration 集：光标所在行不渲染（显示源码）。
  *  mark 类（标题整行样式）可与任何 decoration 重叠；replace 类做非重叠贪心。 */
 export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
@@ -414,8 +503,8 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false, isBlock: false });
   }
   for (const r of collectBlockRanges(view)) {
-    if (r.kind === "code-block") {
-      // 影响垂直布局的 fenced block 由 codeBlockDecorationsField 直接提供。
+    if (r.kind === "code-block" || r.kind === "math-block" || r.kind === "todo-block" || r.kind === "done-block") {
+      // 影响垂直布局的 block 均由 liveBlockDecorationsField 直接提供。
       continue;
     }
     ranges.push({

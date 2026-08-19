@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import StickerEditor from "./StickerEditor.vue";
 import StickerEditorMarkdown from "./StickerEditorMarkdown.vue";
 import StickerEditorLive from "./StickerEditorLive.vue";
+import SlashMenu from "../slash/SlashMenu.vue";
 import { useSettingsStore } from "../../stores/settings";
 
 // —— mock Tauri IPC 层 ——
@@ -62,6 +63,30 @@ describe("StickerEditor（容器路由）", () => {
       id: 7,
       patch: { title: "我的标题", content: "# 我的标题\n\n正文" },
     });
+  });
+
+  it("及时预览将 Todo 数据向下传递给实时渲染器", () => {
+    const store = useSettingsStore();
+    store.config = { entries: { editor_mode: "live" } };
+    const todoBlocks = [{
+      id: "t-1", sticker_id: 7, title: "任务", description: null, is_completed: false,
+      parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
+    }];
+    const wrapper = shallowMount(StickerEditor, {
+      props: { content: '<todo-block id="t-1"></todo-block>', stickerId: 7, todoBlocks },
+    });
+    expect(wrapper.findComponent(StickerEditorLive).props("todoBlocks")).toEqual(todoBlocks);
+  });
+
+  it("斜杠菜单使用编辑器上报的光标锚点", async () => {
+    const wrapper = shallowMount(StickerEditor, {
+      props: { content: "/", stickerId: 7, todoBlocks: [] },
+    });
+    mocks.invokeMock.mockResolvedValueOnce([{ id: "heading", name: "标题", category: "Markdown", hint: "#", template: "# " }]);
+    const markdown = wrapper.findComponent(StickerEditorMarkdown);
+    await markdown.vm.$emit("slash", "", 0, 1, { left: 42, top: 36 });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.findComponent(SlashMenu).props("anchor")).toEqual({ left: 42, top: 36 });
   });
 });
 

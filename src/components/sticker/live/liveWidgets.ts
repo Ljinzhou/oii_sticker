@@ -1,5 +1,7 @@
 import { EditorView, WidgetType } from "@codemirror/view";
+import { renderMarkdown } from "../../../utils/markdown";
 import { renderMarkdownEditable } from "../../../utils/markdown-editable";
+import type { TodoBlock } from "../../../types";
 
 /** 渲染 markdown-it 片段并提取行内 HTML。 */
 export function renderFragment(src: string): string {
@@ -27,6 +29,72 @@ export class CodeBlockWidget extends WidgetType {
     code.textContent = this.code;
     pre.append(code);
     wrapper.append(pre);
+    return wrapper;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** 将 $$...$$ 块替换为 MathJax 输出。 */
+export class MathBlockWidget extends WidgetType {
+  constructor(readonly source: string) {
+    super();
+  }
+
+  eq(other: MathBlockWidget) {
+    return other.source === this.source;
+  }
+
+  toDOM() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "live-math-block";
+    wrapper.innerHTML = renderMarkdownEditable(this.source);
+    return wrapper;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** 将受控 Todo 标签替换为与展示模式一致的任务卡片。 */
+export class TodoBlockWidget extends WidgetType {
+  constructor(readonly source: string, readonly todoBlocks: TodoBlock[]) {
+    super();
+  }
+
+  eq(other: TodoBlockWidget) {
+    return other.source === this.source && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks);
+  }
+
+  toDOM() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "live-todo-block";
+    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false);
+    return wrapper;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
+/** 将“已完成”功能标签替换为已完成任务列表。 */
+export class DoneBlockWidget extends WidgetType {
+  constructor(readonly source: string, readonly todoBlocks: TodoBlock[]) {
+    super();
+  }
+
+  eq(other: DoneBlockWidget) {
+    return other.source === this.source && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks);
+  }
+
+  toDOM() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "live-done-block";
+    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false);
     return wrapper;
   }
 
