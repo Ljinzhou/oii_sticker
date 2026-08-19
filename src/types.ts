@@ -87,10 +87,45 @@ export interface SystemConfig {
   entries: Record<string, string>;
 }
 
+export interface TodoBlock {
+  id: string;
+  sticker_id: number;
+  title: string;
+  description: string | null;
+  is_completed: boolean;
+  parent_id: string | null;
+  reminder_at: string | null;
+  due_at: string | null;
+  repeat_rule: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TodoPatch {
+  title?: string;
+  description?: string;
+  is_completed?: boolean;
+  reminder_at?: string;
+  due_at?: string;
+  repeat_rule?: string;
+}
+
 export interface SlashItem {
   id: string;
   name: string;
   category: string;
   hint: string;
   template: string;
+  pinyin?: string;
+  alias?: string;
+  isFunction?: boolean;
+  iconId?: string;
+}
+
+export type SlashSection = "recent" | "function" | "markdown";
+
+export interface SlashGroup {
+  section: SlashSection;
+  title: string;
+  items: SlashItem[];
 }

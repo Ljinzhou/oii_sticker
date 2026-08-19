@@ -18,6 +18,17 @@ pub fn builtin_commands() -> Vec<SlashCommand> {
             hint: "# ",
             insert: |_| Some("# ".to_string()),
         },
+        // ── 功能 ──
+        SlashCommand {
+            id: "todo-block", name: "添加 Todo 块", pinyin: "tian jia todo kuai",
+            alias: "todo, task, 待办, 任务", category: "功能", hint: "/todo",
+            insert: |_| Some(String::new()),
+        },
+        SlashCommand {
+            id: "show-done", name: "显示已完成任务", pinyin: "xian shi yi wan cheng ren wu",
+            alias: "done, completed, 已完成", category: "功能", hint: "/show-done",
+            insert: |_| Some(String::new()),
+        },
         SlashCommand {
             id: "heading2",
             name: "二级标题",

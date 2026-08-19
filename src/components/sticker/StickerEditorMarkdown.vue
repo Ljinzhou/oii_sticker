@@ -17,7 +17,7 @@ const props = defineProps<{
   showLineNumbers: boolean;
 }>();
 
-const emit = defineEmits<{ "update:modelValue": [value: string] }>();
+const emit = defineEmits<{ "update:modelValue": [value: string]; slash: [query: string, from: number, to: number]; slashClose: []; openTodo: [id: string] }>();
 
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const gutter = ref<HTMLDivElement | null>(null);
@@ -114,6 +114,28 @@ function onKeydown(e: KeyboardEvent) {
     }
   }
 }
+
+function onInput(event: Event) {
+  const el = event.target as HTMLTextAreaElement;
+  text.value = el.value;
+  const before = el.value.slice(0, el.selectionStart);
+  const match = /(?:^|\n)\/([^\s/]*)$/.exec(before);
+  if (match) emit("slash", match[1], el.selectionStart - match[0].length + (match[0].startsWith("\n") ? 1 : 0), el.selectionStart);
+  else emit("slashClose");
+}
+
+function onClick() {
+  const el = textarea.value;
+  if (!el) return;
+  const before = props.modelValue.slice(0, el.selectionStart);
+  const start = before.lastIndexOf("<todo-block");
+  const end = props.modelValue.indexOf("</todo-block>", start);
+  if (start >= 0 && end >= el.selectionStart) {
+    const tag = props.modelValue.slice(start, end + "</todo-block>".length);
+    const id = /\bid=["']([^"']+)["']/.exec(tag)?.[1];
+    if (id) emit("openTodo", id);
+  }
+}
 </script>
 
 <template>
@@ -138,9 +160,10 @@ function onKeydown(e: KeyboardEvent) {
         class="src"
         :style="{ fontSize: fontSize + 'px', fontFamily }"
         spellcheck="false"
-        @input="text = ($event.target as HTMLTextAreaElement).value"
+        @input="onInput"
         @keydown="onKeydown"
         @scroll="syncScroll"
+        @click="onClick"
       ></textarea>
     </div>
   </div>
@@ -275,4 +298,6 @@ function onKeydown(e: KeyboardEvent) {
 .hl-layer :deep(.md-math) {
   color: #7c3aed;
 }
+
+.hl-layer :deep(.md-fn) { color: #7c3aed; font-weight: 600; }
 </style>

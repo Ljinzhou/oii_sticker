@@ -2,19 +2,21 @@
 import { computed, ref, watch, nextTick } from "vue";
 import hljs from "highlight.js";
 import { renderMarkdown, collectMathStyle, mathVersion } from "../../utils/markdown";
+import type { TodoBlock } from "../../types";
 
 const props = defineProps<{
   content: string;
   interactive: boolean;
+  todoBlocks?: TodoBlock[];
 }>();
 
-const emit = defineEmits<{ toggle: [line: number] }>();
+const emit = defineEmits<{ toggle: [line: number]; openTodo: [id: string]; toggleTodo: [id: string, checked: boolean] }>();
 
 const root = ref<HTMLDivElement | null>(null);
 
 const html = computed(() => {
   void mathVersion.value;
-  return renderMarkdown(props.content);
+  return renderMarkdown(props.content, props.todoBlocks ?? [], props.interactive);
 });
 
 /** 渲染后：注入 mathjax SVG CSS + 代码块语法高亮（仅带 language-* 标记的）。 */
@@ -50,6 +52,19 @@ watch(
 
 function onContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
+  const todoCheckbox = target.closest(".todo-task-checkbox") as HTMLInputElement | null;
+  if (todoCheckbox) {
+    e.stopPropagation();
+    if (props.interactive && todoCheckbox.dataset.todoId) {
+      emit("toggleTodo", todoCheckbox.dataset.todoId, todoCheckbox.checked);
+    }
+    return;
+  }
+  const card = target.closest(".todo-block-card") as HTMLElement | null;
+  if (card?.dataset.todoId) {
+    emit("openTodo", card.dataset.todoId);
+    return;
+  }
   if (target.classList.contains("task-checkbox") && props.interactive) {
     const line = Number(target.dataset.line ?? "-1");
     if (line >= 0) {
@@ -204,13 +219,28 @@ function onContainerClick(e: MouseEvent) {
 }
 
 .markdown :deep(.task-checkbox) {
-  margin-right: 8px;
-  accent-color: #4f7cff;
+  appearance:none;
+  -webkit-appearance:none;
+  width:14px;
+  height:14px;
+  flex:none;
+  margin:0 8px 0 0;
+  border:1.2px solid rgba(0,0,0,.18);
+  border-radius:3.5px;
+  background:rgba(255,255,255,.75);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.04);
   cursor: pointer;
-  vertical-align: middle;
+  position:relative;
 }
+.markdown :deep(.task-checkbox:checked) { background:#4f7cff; border-color:#4f7cff; }
+.markdown :deep(.task-checkbox:checked::after) { content:""; position:absolute; left:4px; top:1px; width:3.5px; height:7px; border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }
 
 .markdown :deep(.task-checkbox:disabled) {
   cursor: default;
 }
+
+.markdown :deep(.todo-block-card), .markdown :deep(.done-block-card) { margin:10px 0; border:1px solid rgba(0,0,0,.08); border-radius:8px; background:rgba(255,255,255,.42); overflow:hidden; cursor:pointer; }
+.markdown :deep(.tb-head) { display:flex; align-items:center; gap:7px; padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.05); }
+.markdown :deep(.tb-title) { flex:1 1 0%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }.markdown :deep(.tb-count) { color:#888; font-size:12px; white-space:nowrap; }.markdown :deep(.tb-list), .markdown :deep(.db-list) { list-style:none; margin:0; padding:6px 10px; }.markdown :deep(.tb-list li), .markdown :deep(.db-list li) { display:flex; align-items:center; gap:8px; min-height:24px; }.markdown :deep(.tb-sub) { padding-left:22px; }.markdown :deep(.tb-name) { flex:1 1 0%; min-width:0; }.markdown :deep(.tb-done) { color:#999; text-decoration:line-through; }.markdown :deep(.done-block-card) { padding:7px 10px; cursor:pointer; }.markdown :deep(.done-block-card summary) { color:#777; font-size:12px; }
+.markdown :deep(.todo-task-checkbox) { appearance:none; -webkit-appearance:none; width:14px; height:14px; flex:none; margin:0; border:1.2px solid rgba(0,0,0,.18); border-radius:3.5px; background:rgba(255,255,255,.75); position:relative; cursor:pointer; }.markdown :deep(.todo-task-checkbox:checked) { background:#4f7cff; border-color:#4f7cff; }.markdown :deep(.todo-task-checkbox:checked::after) { content:""; position:absolute; left:4px; top:1px; width:3.5px; height:7px; border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }.markdown :deep(.todo-task-checkbox:disabled) { cursor:default; opacity:.85; }.markdown :deep(.todo-task-checkbox:checked:disabled) { background:#a8bfff; border-color:#a8bfff; }
 </style>

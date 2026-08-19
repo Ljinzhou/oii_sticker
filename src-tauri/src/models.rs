@@ -166,6 +166,33 @@ pub struct TodoItem {
     pub is_recurring: bool,
 }
 
+/// 独立 Todo 块，对应 v7 `todo_blocks`。与旧 TodoItem 并存。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoBlock {
+    pub id: String,
+    pub sticker_id: i64,
+    pub title: String,
+    pub description: Option<String>,
+    pub is_completed: bool,
+    pub parent_id: Option<String>,
+    pub reminder_at: Option<String>,
+    pub due_at: Option<String>,
+    pub repeat_rule: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Todo 块局部更新。None 表示保持原值。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TodoPatch {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub is_completed: Option<bool>,
+    pub reminder_at: Option<String>,
+    pub due_at: Option<String>,
+    pub repeat_rule: Option<String>,
+}
+
 /// `system_config` 表条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigEntry {

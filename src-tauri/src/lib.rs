@@ -113,6 +113,22 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
     Ok(win)
 }
 
+/// 创建独立 Todo 窗口。OS 关闭请求隐藏窗口，数据持续由 SQLite 保存。
+fn create_todo_win(app: &tauri::AppHandle, id: &str) -> tauri::Result<WebviewWindow> {
+    let label = format!("todo-{id}");
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+        .title("任务")
+        .inner_size(440.0, 620.0)
+        .min_inner_size(440.0, 620.0)
+        .max_inner_size(440.0, 620.0)
+        .decorations(false)
+        .skip_taskbar(true)
+        .maximizable(false)
+        .resizable(false)
+        .build()?;
+    Ok(win)
+}
+
 /// 显示主控台窗口（不存在则创建）。
 fn show_main(app: &tauri::AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
@@ -370,6 +386,94 @@ fn toggle_todo_cmd(
         events::emit_push_update(&app, id);
     }
     Ok(changed)
+}
+
+#[tauri::command]
+fn get_todo_block_cmd(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<models::TodoBlock>, String> {
+    state.with_conn(|c| commands::get_todo_block(c, &id)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_todo_for_sticker_cmd(
+    state: State<'_, AppState>,
+    sticker_id: i64,
+) -> Result<Vec<models::TodoBlock>, String> {
+    state.with_conn(|c| commands::list_todo_blocks(c, sticker_id)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_todo_block_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    sticker_id: i64,
+    parent_id: Option<String>,
+) -> Result<models::TodoBlock, String> {
+    let block = state
+        .with_conn(|c| commands::create_todo_block(c, sticker_id, parent_id.as_deref()))
+        .map_err(|e| e.to_string())?;
+    events::emit_todo_updated(&app, block.sticker_id, &block.id);
+    Ok(block)
+}
+
+#[tauri::command]
+fn update_todo_block_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    patch: models::TodoPatch,
+) -> Result<models::TodoBlock, String> {
+    let block = state.with_conn(|c| commands::update_todo_block(c, &id, &patch)).map_err(|e| e.to_string())?;
+    events::emit_todo_updated(&app, block.sticker_id, &block.id);
+    Ok(block)
+}
+
+#[tauri::command]
+fn delete_todo_block_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if let Some(sticker_id) = state.with_conn(|c| commands::delete_todo_block(c, &id)).map_err(|e| e.to_string())? {
+        events::emit_todo_updated(&app, sticker_id, &id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_todo_window_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    if state.with_conn(|c| commands::get_todo_block(c, &id)).map_err(|e| e.to_string())?.is_none() {
+        return Err("Todo 块不存在".into());
+    }
+    let label = format!("todo-{id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        return win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"));
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let app2 = app.clone();
+    let id2 = id.clone();
+    app.run_on_main_thread(move || {
+        let result = create_todo_win(&app2, &id2).map_err(|e| format!("创建 Todo 窗口失败: {e}"));
+        let _ = tx.send(result);
+    }).map_err(|e| format!("投递主线程失败: {e}"))?;
+    let win = rx.recv().map_err(|e| format!("等待 Todo 窗口失败: {e}"))??;
+    win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"))
+}
+
+#[tauri::command]
+fn close_todo_window_cmd(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(&format!("todo-{id}")) {
+        win.hide().map_err(|e| format!("隐藏 Todo 窗口失败: {e}"))?;
+    }
+    Ok(())
 }
 
 /// 斜杠命令查询结果（前端浮层展示 + 插入模板）。
@@ -656,6 +760,13 @@ pub fn run() {
             reset_sticker_prefs_cmd,
             effective_prefs_cmd,
             toggle_todo_cmd,
+            get_todo_block_cmd,
+            list_todo_for_sticker_cmd,
+            create_todo_block_cmd,
+            update_todo_block_cmd,
+            delete_todo_block_cmd,
+            open_todo_window_cmd,
+            close_todo_window_cmd,
             debug_notify_cmd,
             main_close_cmd,
             apply_window_state_cmd,

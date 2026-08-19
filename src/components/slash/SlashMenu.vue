@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { SlashItem } from "../../types";
 
-defineProps<{
+const props = defineProps<{
   items: SlashItem[];
   selected: number;
+  recentIds?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -19,14 +20,34 @@ function categories(items: SlashItem[]): string[] {
   }
   return seen;
 }
+
+function isFunction(item: SlashItem) {
+  return item.category === "功能" || item.id === "todo-block" || item.id === "show-done";
+}
+
+function recentItems() {
+  return (props.recentIds ?? []).map((id) => props.items.find((item) => item.id === id)).filter((item): item is SlashItem => Boolean(item));
+}
 </script>
 
 <template>
   <div class="slash-menu" @mousedown.prevent>
-    <template v-for="cat in categories(items)" :key="cat">
+    <template v-if="recentItems().length">
+      <div class="cat">最近用过的标签</div>
+      <button v-for="item in recentItems()" :key="`recent-${item.id}`" class="item" @click="emit('select', item)"><span class="name">{{ item.name }}</span><span class="hint">{{ item.hint }}</span></button>
+      <div class="divider"></div>
+    </template>
+    <template v-if="items.some(isFunction)">
+      <div class="cat cat-fn">功能标签</div>
+      <button v-for="item in items.filter(isFunction)" :key="item.id" class="item item-fn" :class="{ active: items.indexOf(item) === selected }" @click="emit('select', item)">
+        <span class="name"><span class="ic-fn">{{ item.id === 'todo-block' ? '☑' : '◉' }}</span>{{ item.name }}</span><span class="hint">{{ item.hint }}</span>
+      </button>
+      <div class="divider"></div>
+    </template>
+    <template v-for="cat in categories(items.filter((item) => !isFunction(item)))" :key="cat">
       <div class="cat">{{ cat }}</div>
       <button
-        v-for="item in items.filter((x) => x.category === cat)"
+        v-for="item in items.filter((x) => x.category === cat && !isFunction(x))"
         :key="item.id"
         class="item"
         :class="{ active: items.indexOf(item) === selected }"
@@ -44,8 +65,8 @@ function categories(items: SlashItem[]): string[] {
   position: absolute;
   left: 16px;
   top: 52px;
-  width: 240px;
-  max-height: 280px;
+  width: 260px;
+  max-height: 360px;
   overflow-y: auto;
   background: #fff;
   border-radius: 10px;
@@ -59,6 +80,8 @@ function categories(items: SlashItem[]): string[] {
   color: #999;
   padding: 6px 10px 2px;
 }
+.cat-fn { color: #7c3aed; }
+.divider { height: 1px; margin: 5px 4px; background: rgba(0,0,0,.08); }
 
 .item {
   display: flex;
@@ -86,4 +109,5 @@ function categories(items: SlashItem[]): string[] {
   color: #aaa;
   font-family: Consolas, monospace;
 }
+.name { display:flex; align-items:center; gap:6px; }.ic-fn { color:#7c3aed; font-size:14px; }.item-fn:hover,.item-fn.active { color:#7c3aed; }
 </style>

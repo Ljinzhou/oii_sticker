@@ -7,6 +7,8 @@ import { invoke } from "../../composables/useTauri";
 import { useSettingsStore } from "../../stores/settings";
 import StickerEditorMarkdown from "./StickerEditorMarkdown.vue";
 import StickerEditorLive from "./StickerEditorLive.vue";
+import SlashMenu from "../slash/SlashMenu.vue";
+import type { SlashItem } from "../../types";
 
 const props = defineProps<{
   content: string;
@@ -18,6 +20,11 @@ const emit = defineEmits<{ saved: [] }>();
 const settings = useSettingsStore();
 const draft = ref(props.content);
 const liveRef = ref<InstanceType<typeof StickerEditorLive> | null>(null);
+const slashItems = ref<SlashItem[]>([]);
+const slashFrom = ref(0);
+const slashTo = ref(0);
+const slashSelected = ref(0);
+const createdTodoIds = new Set<string>();
 
 // 编辑模式形态（system_config editor_mode：markdown | live，默认 markdown）
 const editorMode = computed(() => settings.get("editor_mode", "markdown"));
@@ -54,14 +61,40 @@ async function save() {
     console.error("[ui] 保存失败：", e);
     return;
   }
+  createdTodoIds.clear();
   emit("saved");
+}
+
+async function discard() {
+  await Promise.all([...createdTodoIds].map((id) => invoke("delete_todo_block_cmd", { id })));
+  createdTodoIds.clear();
 }
 
 onMounted(() => {
   settings.refresh();
 });
 
-defineExpose({ save });
+async function openSlash(query: string, from: number, to: number) {
+  slashFrom.value = from; slashTo.value = to; slashSelected.value = 0;
+  slashItems.value = await invoke<SlashItem[]>("slash_query_cmd", { query });
+}
+
+async function selectSlash(item: SlashItem) {
+  if (item.id === "todo-block") {
+    const block = await invoke<{ id: string }>("create_todo_block_cmd", { stickerId: props.stickerId, parentId: null });
+    createdTodoIds.add(block.id);
+    draft.value = `${draft.value.slice(0, slashFrom.value)}<todo-block id="${block.id}"></todo-block>${draft.value.slice(slashTo.value)}`;
+  } else if (item.id === "show-done") {
+    draft.value = `${draft.value.slice(0, slashFrom.value)}<show-done></show-done>${draft.value.slice(slashTo.value)}`;
+  } else {
+    draft.value = `${draft.value.slice(0, slashFrom.value)}${item.template}${draft.value.slice(slashTo.value)}`;
+    const prior = settings.recentSlashCommands.filter((id) => id !== item.id);
+    await settings.set("recent_slash_commands", JSON.stringify([item.id, ...prior].slice(0, 5)));
+  }
+  slashItems.value = [];
+}
+
+defineExpose({ save, discard });
 </script>
 
 <template>
@@ -72,8 +105,12 @@ defineExpose({ save });
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
+      @slash="openSlash"
+      @slash-close="slashItems = []"
+      @open-todo="(id) => invoke('open_todo_window_cmd', { id })"
     />
-    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" @save="save" />
+    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="(id) => invoke('open_todo_window_cmd', { id })" />
+    <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" @select="selectSlash" @close="slashItems = []" />
   </div>
 </template>
 
@@ -81,5 +118,6 @@ defineExpose({ save });
 .editor-root {
   width: 100%;
   height: 100%;
+  position: relative;
 }
 </style>

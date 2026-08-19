@@ -29,6 +29,10 @@ export interface LiveViewOptions {
   onDocChange: (doc: string) => void;
   /** Ctrl+S。 */
   onSave: () => void;
+  /** 及时预览内检测到 / 查询。 */
+  onSlash?: (query: string, from: number, to: number) => void;
+  onSlashClose?: () => void;
+  onTodoOpen?: (id: string) => void;
 }
 
 /** 便签浅色背景下的编辑器主题（透明背景、继承颜色、细行号）。 */
@@ -121,7 +125,17 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
       codeBlockDecorationsField,
       liveDecorationsPlugin,
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) opts.onDocChange(u.state.doc.toString());
+        if (u.docChanged) {
+          const doc = u.state.doc.toString();
+          opts.onDocChange(doc);
+          const head = u.state.selection.main.head;
+          const before = doc.slice(0, head);
+          const match = /(?:^|\n)\/([^\s/]*)$/.exec(before);
+          if (match) {
+            const from = head - match[0].length + (match[0].startsWith("\n") ? 1 : 0);
+            opts.onSlash?.(match[1], from, head);
+          } else opts.onSlashClose?.();
+        }
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
       fontFamilyCompartment.of(fontFamilyTheme(opts.fontFamily ?? "Microsoft YaHei")),
@@ -129,6 +143,16 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     ],
   });
   const view = new EditorView({ state, parent });
+  view.dom.addEventListener("click", (event) => {
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos === null) return;
+    const doc = view.state.doc.toString();
+    const start = doc.lastIndexOf("<todo-block", pos);
+    const end = doc.indexOf("</todo-block>", start);
+    if (start < 0 || end < pos) return;
+    const id = /\bid=["']([^"']+)["']/.exec(doc.slice(start, end + "</todo-block>".length))?.[1];
+    if (id) opts.onTodoOpen?.(id);
+  });
   void mathInstancePromise.then(() => {
     if (view.dom.isConnected) {
       try {
