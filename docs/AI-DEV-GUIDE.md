@@ -32,7 +32,7 @@
 |---|---|
 | **Tauri 2 invoke 参数 camelCase** | Rust 命令参数 `is_display` 在前端必须传 `isDisplay`（否则报 `missing required key isDisplay` 且被 catch 静默吞掉）。**所有多词参数命令都要检查**。 |
 | **事件 payload 类型匹配** | `emit_to(label, event, payload)` 的 payload 与前端 `listen<T>` 的 T 必须一致；payload 为 `()` 时前端不能解构 id。 |
-| **Tauri 命令中同步建窗会卡死** | 创建窗口用 `run_on_main_thread` 异步投递（`create_sticker_cmd` 已示范），不要在 IPC/async 线程同步 `WebviewWindowBuilder::build`。 |
+| **Windows 上 Tauri 同步建窗会卡死** | `WebviewWindowBuilder::build` 不可在同步命令或 `run_on_main_thread` 的主线程任务内调用；命令必须声明为 `async`，并在其工作线程中建窗（Tauri 2 / WebView2 官方建议）。数据库访问使用 `with_conn_async`。 |
 | **`webview_windows()` 含隐藏窗口** | 判断"窗口是否打开"要用 `win.is_visible()`，否则隐藏的便签仍被判为打开。 |
 | **display 穿透与窗口内事件互斥** | `set_ignore_cursor_events(true)` 后窗口收不到任何鼠标事件；唤醒必须走全局鼠标钩子（中键武装 + 左键点击）。 |
 | **display 锁尺寸双保险** | 展示模式除 `set_resizable(false)` 外，还要 `set_min_size/max_size` 锁死当前尺寸（防边缘拖拽）。 |
