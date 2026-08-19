@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// 即时预览编辑模式（Typora/Obsidian 式）：CodeMirror 6 内核。
+// 及时预览编辑模式（Typora/Obsidian 式）：CodeMirror 6 内核。
 // Phase A：基础编辑（行号/折行/缩进/语法高亮）+ 防抖回写 + flush（保存前强制回写）。
 // 后续阶段（B-E）：行内渲染 decoration、光标穿越、块级交互、斜杠菜单、工具栏等。
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { EditorView } from "@codemirror/view";
-import { createLiveView, setLiveDoc, setLiveFontSize } from "./live/LiveEditorView";
+import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize } from "./live/LiveEditorView";
 
 const props = defineProps<{
   modelValue: string;
   fontSize: number;
+  fontFamily: string;
 }>();
 
 const emit = defineEmits<{
@@ -45,6 +46,7 @@ onMounted(() => {
   view = createLiveView(host.value, {
     doc: props.modelValue,
     fontSize: props.fontSize,
+    fontFamily: props.fontFamily,
     onDocChange: scheduleEmit,
     onSave: () => emit("save"),
   });
@@ -64,6 +66,13 @@ watch(
   () => props.fontSize,
   (v) => {
     if (view) setLiveFontSize(view, v);
+  },
+);
+
+watch(
+  () => props.fontFamily,
+  (v) => {
+    if (view) setLiveFontFamily(view, v);
   },
 );
 
@@ -110,7 +119,7 @@ defineExpose({ flush });
   background: rgba(0, 0, 0, 0.06);
   border-radius: 4px;
   padding: 1px 5px;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: inherit;
   font-size: 0.92em;
 }
 .live-host :deep(.live-render.live-link a) {
@@ -135,25 +144,32 @@ defineExpose({ flush });
   font-size: 1.5em;
   font-weight: 700;
   line-height: 1.3;
+  text-decoration: none !important;
 }
 .live-host :deep(.cm-live-h2) {
   font-size: 1.3em;
   font-weight: 700;
   line-height: 1.3;
+  text-decoration: none !important;
 }
 .live-host :deep(.cm-live-h3) {
   font-size: 1.15em;
   font-weight: 700;
+  text-decoration: none !important;
 }
 .live-host :deep(.cm-live-h4),
 .live-host :deep(.cm-live-h5),
 .live-host :deep(.cm-live-h6) {
   font-weight: 700;
+  text-decoration: none !important;
 }
 
 .live-host :deep(.live-listmark) {
-  color: #4f7cff;
-  font-weight: 600;
+  color: inherit;
+  font-weight: inherit;
+  display: inline-block;
+  min-width: 2.2ch;
+  text-align: right;
   margin-right: 4px;
 }
 

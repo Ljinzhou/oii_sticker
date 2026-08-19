@@ -8,7 +8,7 @@ const props = defineProps<{ stickerId: number }>();
 const emit = defineEmits<{ close: [] }>();
 const prefs = usePrefsStore();
 
-// 偏好（即时生效，无保存按钮）
+// 偏好（及时生效，无保存按钮）
 const opacity = ref(85);
 const bgColor = ref("#FFF4D6");
 const textColor = ref("#222222");
@@ -46,7 +46,7 @@ async function load() {
   autoScroll.value = (await invoke<{ always_on_top: boolean; auto_scroll: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.auto_scroll ?? false;
 }
 
-/** 拖动/输入过程中：本地即时应用（视觉立即生效，无网络往返）。 */
+/** 拖动/输入过程中：本地及时应用（视觉立即生效，无网络往返）。 */
 function applyPrefsSoon() {
   prefs.applyLocal({
     opacity: Number(opacity.value) / 100,
@@ -110,7 +110,7 @@ onMounted(load);
       </header>
 
       <section class="group">
-        <h3>外观（修改即时生效）</h3>
+        <h3>外观（修改及时生效）</h3>
         <label class="row">
           <span>背景透明度</span>
           <input v-model.number="opacity" type="range" min="15" max="100" @input="applyPrefsSoon" @change="commitPrefs" />

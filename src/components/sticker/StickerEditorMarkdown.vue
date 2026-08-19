@@ -13,6 +13,7 @@ import {
 const props = defineProps<{
   modelValue: string;
   fontSize: number;
+  fontFamily: string;
   showLineNumbers: boolean;
 }>();
 
@@ -118,7 +119,7 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <div class="editor">
     <!-- 行号区 -->
-    <div v-if="showLineNumbers" ref="gutter" class="gutter" :style="{ fontSize: fontSize + 'px' }">
+    <div v-if="showLineNumbers" ref="gutter" class="gutter" :style="{ fontSize: fontSize + 'px', fontFamily }">
       <div v-for="n in lineCount" :key="n" class="ln">{{ n }}</div>
     </div>
 
@@ -127,7 +128,7 @@ function onKeydown(e: KeyboardEvent) {
       <pre
         ref="hlLayer"
         class="hl-layer"
-        :style="{ fontSize: fontSize + 'px' }"
+        :style="{ fontSize: fontSize + 'px', fontFamily }"
         aria-hidden="true"
         v-html="hlHtml"
       ></pre>
@@ -135,7 +136,7 @@ function onKeydown(e: KeyboardEvent) {
         ref="textarea"
         :value="props.modelValue"
         class="src"
-        :style="{ fontSize: fontSize + 'px' }"
+        :style="{ fontSize: fontSize + 'px', fontFamily }"
         spellcheck="false"
         @input="text = ($event.target as HTMLTextAreaElement).value"
         @keydown="onKeydown"
@@ -163,7 +164,7 @@ function onKeydown(e: KeyboardEvent) {
   line-height: 1.7;
   text-align: right;
   color: rgba(0, 0, 0, 0.3);
-  font-family: Consolas, "Courier New", monospace;
+  font-family: inherit;
 }
 
 .ln {
@@ -191,7 +192,7 @@ function onKeydown(e: KeyboardEvent) {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: inherit;
   color: #333;
 }
 
@@ -212,7 +213,7 @@ function onKeydown(e: KeyboardEvent) {
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: inherit;
 }
 
 .src:focus {
@@ -254,7 +255,7 @@ function onKeydown(e: KeyboardEvent) {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 3px;
   padding: 0 2px;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: inherit;
 }
 
 .hl-layer :deep(.md-strong) {

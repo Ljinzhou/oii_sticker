@@ -33,7 +33,7 @@ describe("StickerEditor（容器路由）", () => {
     expect(wrapper.findComponent(StickerEditorLive).exists()).toBe(false);
   });
 
-  it("editor_mode=live 时渲染 StickerEditorLive（即时预览）", () => {
+  it("editor_mode=live 时渲染 StickerEditorLive（及时预览）", () => {
     const store = useSettingsStore();
     store.config = { entries: { editor_mode: "live" } };
     const wrapper = shallowMount(StickerEditor, {
@@ -41,6 +41,15 @@ describe("StickerEditor（容器路由）", () => {
     });
     expect(wrapper.findComponent(StickerEditorLive).exists()).toBe(true);
     expect(wrapper.findComponent(StickerEditorMarkdown).exists()).toBe(false);
+  });
+
+  it("编辑模式默认使用微软雅黑，并把字体设置传给编辑器", () => {
+    const store = useSettingsStore();
+    store.config = { entries: { editor_mode: "live" } };
+    const wrapper = shallowMount(StickerEditor, {
+      props: { content: "# 标题", stickerId: 7 },
+    });
+    expect(wrapper.findComponent(StickerEditorLive).props("fontFamily")).toBe("Microsoft YaHei");
   });
 
   it("保存调用 update_sticker_cmd（标题取首行 #）", async () => {
@@ -59,8 +68,9 @@ describe("StickerEditor（容器路由）", () => {
 describe("StickerEditor settings store", () => {
   it("settings.get 读取配置快照", () => {
     const store = useSettingsStore();
-    store.config = { entries: { editor_mode: "live", edit_font_size: "20" } };
+    store.config = { entries: { editor_mode: "live", edit_font_size: "20", edit_font_family: "Segoe UI" } };
     expect(store.get("editor_mode", "markdown")).toBe("live");
     expect(store.get("edit_font_size", "14")).toBe("20");
+    expect(store.editFontFamily).toBe("Segoe UI");
   });
 });

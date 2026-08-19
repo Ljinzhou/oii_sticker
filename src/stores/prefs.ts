@@ -11,7 +11,7 @@ export const usePrefsStore = defineStore("prefs", {
     async load(stickerId: number) {
       this.effective = await invoke<EffectivePrefs>("effective_prefs_cmd", { id: stickerId });
     },
-    /** 本地即时应用偏好（视觉立即生效，不做网络往返）——滑块拖动时调用。 */
+    /** 本地及时应用偏好（视觉立即生效，不做网络往返）——滑块拖动时调用。 */
     applyLocal(patch: {
       opacity?: number;
       bg_color?: string;

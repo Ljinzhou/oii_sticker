@@ -76,7 +76,7 @@ type RendererRule = (tokens: any[], idx: number, options: any, env: any, self: a
 
 /**
  * 包裹 math 渲染规则：外层加 span/div（class=math-inline|math-block、
- * contenteditable=false、data-tex 保留 tex 源），供即时预览编辑与 turndown 回写。
+ * contenteditable=false、data-tex 保留 tex 源），供及时预览编辑与 turndown 回写。
  */
 export function wrapMathRule(
   rule: RendererRule | undefined,

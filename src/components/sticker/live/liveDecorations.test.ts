@@ -71,6 +71,12 @@ describe("collectInlineRanges", () => {
     expect(renders.length).toBe(0);
     view.destroy();
   });
+
+  it("未闭合的 Markdown 标记保持源码，不创建渲染 widget", () => {
+    const view = makeView("这是 **未闭合标记");
+    expect(collectInlineRanges(view).filter((r) => r.kind === "render")).toHaveLength(0);
+    view.destroy();
+  });
 });
 
 describe("collectBlockRanges（块级渲染）", () => {
@@ -79,6 +85,8 @@ describe("collectBlockRanges（块级渲染）", () => {
     const blocks = collectBlockRanges(view);
     const marks = blocks.filter((b) => b.kind === "heading-mark");
     expect(marks.map((m) => m.level)).toEqual([1, 2]);
+    expect(view.state.doc.sliceString(marks[0].from, marks[0].to)).toBe("# ");
+    expect(view.state.doc.sliceString(marks[1].from, marks[1].to)).toBe("## ");
     const lines = blocks.filter((b) => b.kind === "heading-line");
     expect(lines.length).toBe(2);
     view.destroy();
@@ -123,6 +131,7 @@ describe("collectBlockRanges（块级渲染）", () => {
     expect(marks.length).toBe(0);
     view.destroy();
   });
+
 
   it("引用标记与引用行范围、分隔线", () => {
     const view = makeView("> 引用\n\n---");

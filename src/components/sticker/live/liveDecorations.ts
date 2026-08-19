@@ -1,4 +1,4 @@
-// 即时预览的行内渲染 decoration（Live Preview 核心）。
+// 及时预览的行内渲染 decoration（Live Preview 核心）。
 // 机制（Obsidian Live Preview 同思路）：
 // - 用 lezer 语法树（@codemirror/lang-markdown 自带）提取行内元素
 //   （StrongEmphasis/Emphasis/Strikethrough/InlineCode/Link），
@@ -6,129 +6,25 @@
 // - 光标所在行的元素**不渲染**（显示源码，便于编辑标记），其余行渲染；
 // - 嵌套元素只渲染最外层（非重叠贪心）；
 // - 渲染用 markdown-it 片段渲染（保证嵌套/公式正确），输出为 replace widget。
-import { RangeSet, RangeSetBuilder } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType } from "@codemirror/view";
+import { Range, RangeSet } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { renderMarkdownEditable } from "../../../utils/markdown-editable";
-
-/** 渲染 widget：把行内元素片段替换为渲染 DOM。 */
-class InlineRenderWidget extends WidgetType {
-  constructor(
-    readonly html: string,
-    readonly cls: string,
-  ) {
-    super();
-  }
-
-  eq(other: InlineRenderWidget) {
-    return other.html === this.html && other.cls === this.cls;
-  }
-
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = `live-render ${this.cls}`;
-    span.innerHTML = this.html;
-    return span;
-  }
-
-  ignoreEvent() {
-    return false;
-  }
-}
-
-/** 任务 checkbox widget：点击切换 [ ] ↔ [x]（直接改文档，保存链路自动落库）。 */
-class TaskCheckboxWidget extends WidgetType {
-  constructor(
-    readonly checked: boolean,
-    readonly view: EditorView,
-  ) {
-    super();
-  }
-
-  eq(other: TaskCheckboxWidget) {
-    return other.checked === this.checked;
-  }
-
-  toDOM() {
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.className = "live-task-checkbox";
-    cb.checked = this.checked;
-    cb.addEventListener("click", (e) => {
-      e.preventDefault();
-      const from = this.view.state.selection.main.from;
-      const line = this.view.state.doc.lineAt(from);
-      // 定位当前行任务标记并翻转
-      const m = /^(\s*[-*+]\s+)\[([ xX])\]/.exec(line.text);
-      if (!m) return;
-      const marker = m[2] === " " ? "[x]" : "[ ]";
-      this.view.dispatch({
-        changes: {
-          from: line.from + m[0].length - 3,
-          to: line.from + m[0].length,
-          insert: marker,
-        },
-      });
-      this.view.focus();
-    });
-    return cb;
-  }
-
-  ignoreEvent() {
-    return false;
-  }
-}
-
-/** 列表标记 widget：无序显示圆点，有序显示计算编号（支持 1. / 1.1. 嵌套）。 */
-class ListMarkWidget extends WidgetType {
-  constructor(readonly text: string) {
-    super();
-  }
-
-  eq(other: ListMarkWidget) {
-    return other.text === this.text;
-  }
-
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = "live-listmark";
-    span.textContent = this.text;
-    return span;
-  }
-
-  ignoreEvent() {
-    return false;
-  }
-}
-
-/** 分隔线 widget。 */
-class HrWidget extends WidgetType {
-  eq() {
-    return true;
-  }
-
-  toDOM() {
-    const div = document.createElement("div");
-    div.className = "live-hr";
-    return div;
-  }
-
-  ignoreEvent() {
-    return false;
-  }
-}
-
-/** 从 markdown-it 片段渲染提取 <p> 内 HTML。 */
-function renderFragment(src: string): string {
-  const html = renderMarkdownEditable(src);
-  const m = /<p>(.*?)<\/p>\s*$/s.exec(html);
-  return m ? m[1] : html;
-}
+import { refreshLivePreview } from "./liveEffects";
+import {
+  HeadingMarkWidget,
+  HrWidget,
+  InlineRenderWidget,
+  ListMarkWidget,
+  QuoteMarkWidget,
+  renderFragment,
+  TaskCheckboxWidget,
+} from "./liveWidgets";
 
 interface InlineRange {
   from: number;
   to: number;
   kind: "render" | "task" | "math";
+  className?: string;
   checked?: boolean;
 }
 
@@ -183,7 +79,17 @@ export function collectInlineRanges(view: EditorView): InlineRange[] {
         ranges.push(
           kind === "task"
             ? { from, to, kind, checked: /\[[xX]\]/.test(slice) }
-            : { from, to, kind },
+            : {
+                from,
+                to,
+                kind,
+                className: {
+                  StrongEmphasis: "live-strong",
+                  Emphasis: "live-em",
+                  Strikethrough: "live-del",
+                  Link: "live-link",
+                }[name],
+              },
         );
       }
     },
@@ -200,6 +106,7 @@ export function collectInlineRanges(view: EditorView): InlineRange[] {
   }
 
   // 排序 + 非重叠贪心（外层优先；跳过与已接受重叠的嵌套内层）
+  // 同起点时外层范围优先，嵌套元素随后被非重叠贪心规则跳过。
   ranges.sort((a, b) => a.from - b.from || b.to - a.to);
   const accepted: InlineRange[] = [];
   for (const r of ranges) {
@@ -215,7 +122,7 @@ function inlineDecoration(view: EditorView, r: InlineRange): Decoration {
   const text = view.state.doc.sliceString(r.from, r.to);
   if (r.kind === "task") {
     return Decoration.replace({
-      widget: new TaskCheckboxWidget(r.checked ?? false, view),
+      widget: new TaskCheckboxWidget(r.checked ?? false, view, r.from, r.to),
     });
   }
   if (r.kind === "math") {
@@ -223,13 +130,7 @@ function inlineDecoration(view: EditorView, r: InlineRange): Decoration {
       widget: new InlineRenderWidget(renderFragment(text), "live-math"),
     });
   }
-  const clsMap: Record<string, string> = {
-    StrongEmphasis: "live-strong",
-    Emphasis: "live-em",
-    Strikethrough: "live-del",
-    Link: "live-link",
-  };
-  const cls = clsMap[r.kind] ?? "";
+  const cls = r.className ?? "";
   return Decoration.replace({
     widget: new InlineRenderWidget(renderFragment(text), cls),
   });
@@ -326,9 +227,13 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
         // 标题级别：行首 # 数量（setext 标题按所在行前缀推断）
         const line = doc.lineAt(from);
         const m = /^\s*(#{1,6})/.exec(line.text);
+        let markTo = to;
+        while (markTo < line.to && /[ \t]/.test(doc.sliceString(markTo, markTo + 1))) {
+          markTo++;
+        }
         ranges.push({
           from,
-          to,
+          to: markTo,
           kind: "heading-mark",
           level: m ? m[1].length : 1,
         });
@@ -394,37 +299,6 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
   return ranges;
 }
 
-/** 标题标记 widget（隐藏 # 符号，占位保持行内布局）。 */
-class HeadingMarkWidget extends WidgetType {
-  eq() {
-    return true;
-  }
-  toDOM() {
-    const s = document.createElement("span");
-    s.className = "live-heading-mark";
-    return s;
-  }
-  ignoreEvent() {
-    return true;
-  }
-}
-
-/** 引用标记 widget（隐藏 > 符号）。 */
-class QuoteMarkWidget extends WidgetType {
-  eq() {
-    return true;
-  }
-  toDOM() {
-    const s = document.createElement("span");
-    s.className = "live-quote-mark";
-    s.textContent = " ";
-    return s;
-  }
-  ignoreEvent() {
-    return true;
-  }
-}
-
 /** 块级范围 → Decoration。 */
 function blockDecoration(r: BlockRange): Decoration {
   switch (r.kind) {
@@ -450,7 +324,6 @@ function blockDecoration(r: BlockRange): Decoration {
 /** 构建 decoration 集：光标所在行不渲染（显示源码）。
  *  mark 类（标题整行样式）可与任何 decoration 重叠；replace 类做非重叠贪心。 */
 export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
-  const builder = new RangeSetBuilder<Decoration>();
   const doc = view.state.doc;
   const head = view.state.selection.main.head;
   const curLine = doc.lineAt(head);
@@ -463,6 +336,7 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     isBlock: boolean;
   }
   const ranges: Item[] = [];
+  const decorations: Range<Decoration>[] = [];
   // Obsidian 精确行为：行内元素只在「光标位于该元素内（含边界）或选区跨越」时
   // 显示源码标记，其余元素始终渲染（同行其他元素不受影响）；
   // 块级标记/任务 checkbox 按「光标所在行」显示源码。
@@ -494,16 +368,16 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     // 块级标记：光标所在行显示源码（行内元素已按 Obsidian 元素级规则判断过）
     if (r.isBlock && r.from < curLine.to && r.to > curLine.from) continue;
     if (r.isMark) {
-      builder.add(r.from, r.to, r.deco);
+      decorations.push(r.deco.range(r.from, r.to));
       continue;
     }
     // replace 类：非重叠贪心（外层优先，嵌套内层丢弃）
     const prev = replaceAccepted[replaceAccepted.length - 1];
     if (prev && r.from < prev.to) continue;
     replaceAccepted.push(r);
-    builder.add(r.from, r.to, r.deco);
+    decorations.push(r.deco.range(r.from, r.to));
   }
-  return builder.finish();
+  return RangeSet.of(decorations, true);
 }
 
 /** 编辑器扩展：doc/selection 变化时重算 decoration（ViewPlugin 持有真实 view，
@@ -517,7 +391,10 @@ export const liveDecorationsPlugin = ViewPlugin.fromClass(
     }
 
     update(update: import("@codemirror/view").ViewUpdate) {
-      if (update.docChanged || update.selectionSet || update.viewportChanged) {
+      const rendererReady = update.transactions.some((transaction) =>
+        transaction.effects.some((effect) => effect.is(refreshLivePreview)),
+      );
+      if (update.docChanged || update.selectionSet || update.viewportChanged || rendererReady) {
         this.decorations = buildLiveDecorations(update.view);
       }
     }

@@ -196,6 +196,14 @@ onMounted(async () => {
           />
         </label>
         <label class="row">
+          <span>编辑模式字体</span>
+          <input
+            type="text"
+            :value="settings.get('edit_font_family', 'Microsoft YaHei')"
+            @change="(e) => settings.set('edit_font_family', (e.target as HTMLInputElement).value.trim() || 'Microsoft YaHei')"
+          />
+        </label>
+        <label class="row">
           <span>编辑模式显示行号</span>
           <input
             type="checkbox"
@@ -207,12 +215,12 @@ onMounted(async () => {
           <span>编辑模式默认形态</span>
           <select :value="settings.get('editor_mode', 'markdown')" @change="(e) => settings.set('editor_mode', (e.target as HTMLSelectElement).value)">
             <option value="markdown">Markdown（原生文本）</option>
-            <option value="live">即时预览（渲染即编辑）</option>
+            <option value="live">及时预览（渲染即编辑）</option>
           </select>
         </label>
         <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
         <p class="hint">开启后在编辑模式左侧显示 Markdown 文本的行号。</p>
-        <p class="hint">可在便签编辑模式左上角开关即时切换，此处为全局默认。</p>
+        <p class="hint">可在便签编辑模式左上角开关及时切换，此处为全局默认。</p>
       </div>
 
       <!-- Debug -->
@@ -355,6 +363,14 @@ h3 {
   border: 1px solid rgba(0, 0, 0, 0.15);
   border-radius: 6px;
   padding: 4px 6px;
+}
+
+.row input[type="text"] {
+  width: 180px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 13px;
 }
 
 .hint {
