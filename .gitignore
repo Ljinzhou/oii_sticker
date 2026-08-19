@@ -33,3 +33,5 @@ src-tauri/target
 # 敏感文件（勿提交）
 docs/test.jpg
 .env
+
+.pnpm-store
