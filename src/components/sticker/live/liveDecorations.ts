@@ -355,7 +355,7 @@ function blockDecoration(r: BlockRange): Decoration {
 
 function selectionTouchesRange(state: EditorState, from: number, to: number): boolean {
   return state.selection.ranges.some((selection) => {
-    if (selection.empty) return selection.from >= from && selection.from <= to;
+    if (selection.empty) return selection.from >= from && selection.from < to;
     return selection.from < to && selection.to > from;
   });
 }
