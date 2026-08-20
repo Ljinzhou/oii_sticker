@@ -23,7 +23,7 @@ export function reminderPreset(key: "hour" | "tomorrow" | "next-week", config: T
 
 export function duePreset(key: "today" | "tomorrow" | "next-week", config: TodoPresetConfig): string {
   const now = dayjs();
-  if (key === "today") return toIso(now.hour(config.dueTodayHour).minute(0));
+  if (key === "today") return toIso(now.add(1, "day").startOf("day"));
   if (key === "tomorrow") return toIso(now.add(1, "day").hour(config.dueTomorrowHour).minute(0));
   const days = (7 + config.dueNextWeekDow - now.day()) % 7 || 7;
   return toIso(now.add(days, "day").hour(config.dueTomorrowHour).minute(0));
@@ -31,5 +31,25 @@ export function duePreset(key: "today" | "tomorrow" | "next-week", config: TodoP
 
 export function formatTodoDate(value: string | null, withTime = true) {
   if (!value) return "未设置";
-  return dayjs(value).format(withTime ? "M月D日 HH:mm" : "M月D日");
+  return dayjs(value).format(withTime ? "YYYY年M月D日 HH:mm" : "YYYY年M月D日");
+}
+
+export function formatTodoRepeat(value: string | null) {
+  if (!value) return "未设置";
+  try {
+    const rule = JSON.parse(value) as { unit?: string; interval?: number; weekdays?: number[] };
+    const unit = { day: "天", week: "周", month: "月", year: "年" }[rule.unit ?? ""];
+    if (!unit) return "未设置";
+    const interval = rule.interval ?? 1;
+    if (rule.unit === "week" && rule.weekdays?.length) {
+      const weekdayNames = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+      const weekdays = [...rule.weekdays].sort((a, b) =>
+        [1, 2, 3, 4, 5, 6, 0].indexOf(a) - [1, 2, 3, 4, 5, 6, 0].indexOf(b),
+      );
+      return `每 ${interval} ${unit}的 ${weekdays.map((day) => weekdayNames[day === 0 ? 6 : day - 1]).join("、")}`;
+    }
+    return `每 ${interval} ${unit}`;
+  } catch {
+    return "未设置";
+  }
 }
