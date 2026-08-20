@@ -442,6 +442,15 @@ mod tests {
             conn.query_row("SELECT value FROM system_config WHERE key='recent_slash_commands'", [], |row| row.get::<_, String>(0)).unwrap(),
             "[]",
         );
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM system_config WHERE key='default_todo_always_on_top'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+            "1",
+        );
     }
 
     #[test]

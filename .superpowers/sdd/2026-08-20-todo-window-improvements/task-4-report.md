@@ -100,8 +100,8 @@ EXIT_CODE=0
 
 ## Concerns
 
-- `pnpm build` cannot complete in this environment because registry access returns `EACCES`.
-- `vue-tsc --noEmit` remains blocked by the unrelated existing unused import in `src/components/todo/TodoDetail.test.ts`; that file was intentionally not modified.
+- Initial Task 4 verification: `pnpm build` could not complete because registry access returned `EACCES`.
+- Initial Task 4 verification: `vue-tsc --noEmit` was blocked by the unused import in `src/components/todo/TodoDetail.test.ts`; the review follow-up below removes it.
 - Direct Vite bundling passed, and Rust tests/checks passed. Windows linker output contains the existing `linker_messages` warning.
 
 ## Commit
@@ -109,3 +109,58 @@ EXIT_CODE=0
 Commit message: `feat: add todo window topmost setting`.
 
 The final commit ID is reported in the task handoff because amending this report changes the commit hash.
+
+## Review Follow-up
+
+Original Task 4 commit: `271b1836f24736d91675567d22ea237e74ad2264`.
+
+### Fixes
+
+- Removed the unused `TodoDatePicker` import from `src/components/todo/TodoDetail.test.ts`, resolving the `TS6133` blocker found by `vue-tsc`.
+- Extended `migrate_v6_to_v7_creates_todo_blocks_for_existing_database` to assert that its current=6 to v8 migration chain inserts `default_todo_always_on_top` with value `1`.
+
+### Verification Commands and Output
+
+```text
+cargo test schema::tests --manifest-path src-tauri/Cargo.toml
+
+running 7 tests
+test db::schema::tests::migrate_v5_to_v6_fixes_bg_color_default ... ok
+test db::schema::tests::migrate_v7_to_v8_adds_todo_window_topmost_default ... ok
+test db::schema::tests::migrate_v6_to_v7_creates_todo_blocks_for_existing_database ... ok
+test db::schema::tests::run_migrations_upgrades_v4_to_v5 ... ok
+test db::schema::tests::init_schema_creates_all_tables ... ok
+test db::schema::tests::migrate_v2_to_v3_idempotent ... ok
+test db::schema::tests::migrate_failure_rolls_back ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 98 filtered out
+```
+
+```text
+cargo test --manifest-path src-tauri/Cargo.toml
+test result: ok. 105 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+Doc-tests oii_sticker_lib: 0 passed; 0 failed
+```
+
+```text
+cargo check --manifest-path src-tauri/Cargo.toml
+Finished `dev` profile [unoptimized + debuginfo]
+EXIT_CODE=0
+```
+
+`pnpm build` was attempted first. It could not finish because the configured registry repeatedly returned `EACCES` while pnpm tried to fetch packages. Existing local entry points were used instead:
+
+```text
+node node_modules/.pnpm/vue-tsc@2.2.12_typescript@5.6.3/node_modules/vue-tsc/bin/vue-tsc.js --noEmit
+EXIT_CODE=0
+
+node node_modules/.pnpm/vite@6.4.3_sass@1.102.0_yaml@2.9.0/node_modules/vite/bin/vite.js build
+✓ 746 modules transformed.
+✓ built in 5.82s
+VITE_BUILD_EXIT=0
+```
+
+```text
+git diff --check
+EXIT_CODE=0
+```
