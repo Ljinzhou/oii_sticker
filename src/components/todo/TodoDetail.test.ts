@@ -72,9 +72,9 @@ describe("TodoDetail preset selections", () => {
     const wrapper = mountDetail();
 
     await button(wrapper, "今天").trigger("click");
-    await wrapper.setProps({ item: makeTodo({ due_at: "2026-08-21T00:00:00.000Z" }) });
+    await wrapper.setProps({ item: makeTodo({ due_at: "2026-08-21T00:00:00+08:00" }) });
     expect(button(wrapper, "今天").classes()).toContain("active");
-    expect(wrapper.text()).toContain("截至时间 - 2026年8月21日");
+    expect(wrapper.text()).toContain("截至时间 - 2026年8月21日 00:00");
 
     await fieldButton(wrapper, "设置任务重复", "自定义").trigger("click");
     wrapper.getComponent(RepeatPicker).vm.$emit("save", JSON.stringify({ unit: "week", interval: 2, weekdays: [2, 1] }));
@@ -94,5 +94,24 @@ describe("TodoDetail preset selections", () => {
 
     expect(button(wrapper, "1小时后").classes()).toContain("active");
     expect(fieldButton(wrapper, "提醒时间", "自定义").classes()).not.toContain("active");
+  });
+
+  it("preserves due and repeat presets for same-task patches and resets another task's stored values to custom", async () => {
+    const wrapper = mountDetail();
+
+    await button(wrapper, "今天").trigger("click");
+    await wrapper.setProps({ item: makeTodo({ due_at: "2026-08-21T00:00:00+08:00" }) });
+    await button(wrapper, "每周").trigger("click");
+    await wrapper.setProps({ item: makeTodo({ due_at: "2026-08-21T00:00:00+08:00", repeat_rule: JSON.stringify({ unit: "week", interval: 1 }) }) });
+
+    expect(button(wrapper, "今天").classes()).toContain("active");
+    expect(button(wrapper, "每周").classes()).toContain("active");
+
+    await wrapper.setProps({ item: makeTodo({ id: "todo-2", due_at: "2026-08-22T00:00:00+08:00", repeat_rule: JSON.stringify({ unit: "day", interval: 1 }) }) });
+
+    expect(fieldButton(wrapper, "截至时间", "自定义").classes()).toContain("active");
+    expect(fieldButton(wrapper, "设置任务重复", "自定义").classes()).toContain("active");
+    expect(button(wrapper, "今天").classes()).not.toContain("active");
+    expect(button(wrapper, "每周").classes()).not.toContain("active");
   });
 });
