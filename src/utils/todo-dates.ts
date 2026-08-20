@@ -40,7 +40,7 @@ export function formatTodoRepeat(value: string | null) {
     const rule = JSON.parse(value) as { unit?: string; interval?: unknown; weekdays?: unknown };
     const unit = { day: "天", week: "周", month: "月", year: "年" }[rule.unit ?? ""];
     if (!unit) return "未设置";
-    const interval = rule.interval ?? 1;
+    const interval = Object.prototype.hasOwnProperty.call(rule, "interval") ? rule.interval : 1;
     if (typeof interval !== "number" || !Number.isFinite(interval) || !Number.isInteger(interval) || interval <= 0) return "未设置";
     if (rule.weekdays !== undefined) {
       if (!Array.isArray(rule.weekdays) || new Set(rule.weekdays).size !== rule.weekdays.length || rule.weekdays.some((day) => typeof day !== "number" || !Number.isInteger(day) || day < 0 || day > 6)) return "未设置";
