@@ -17,7 +17,7 @@ const dueSource = ref<DueSource>("empty");
 const repeatSource = ref<RepeatSource>("empty");
 const isChild = computed(() => Boolean(props.item?.parent_id));
 const reminderTitle = computed(() => props.item?.reminder_at ? `提醒时间 - ${formatTodoDate(props.item.reminder_at)}` : "提醒时间");
-const dueTitle = computed(() => props.item?.due_at ? `截至时间 - ${formatTodoDate(props.item.due_at, false)}` : "截至时间");
+const dueTitle = computed(() => props.item?.due_at ? `截至时间 - ${formatTodoDate(props.item.due_at)}` : "截至时间");
 const repeatTitle = computed(() => props.item?.repeat_rule ? `设置任务重复 - ${formatTodoRepeat(props.item.repeat_rule)}` : "设置任务重复");
 watch(() => props.item?.id, () => {
   const item = props.item;
