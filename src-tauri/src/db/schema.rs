@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -36,6 +36,7 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ("default_sticker_auto_scroll_speed", "30", "新便签默认自动滚动速度（px/s）"),
         // v4：窗口置顶默认参数。
         ("default_sticker_always_on_top", "1", "新便签默认是否置顶（0 否，1 是）"),
+        ("default_todo_always_on_top", "1", "Todo 窗口默认是否置顶"),
         // v6：调试模式（默认开启，输出详细日志）。
         ("debug_mode", "1", "调试模式（0 关闭，1 开启详细操作/事件日志）"),
         ("recent_slash_commands", "[]", "最近使用的斜杠命令 JSON 数组"),
@@ -220,6 +221,19 @@ fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v7 → v8：新增 Todo 窗口默认置顶配置，不覆盖已有用户值。
+fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute(
+            "INSERT OR IGNORE INTO system_config (key, value, description)
+             VALUES ('default_todo_always_on_top', '1', 'Todo 窗口默认是否置顶')",
+            [],
+        )
+        .context("迁移 v7→v8 失败")?;
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -251,6 +265,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
     }
     if current < 7 {
         migrate_v6_to_v7(conn)?;
+    }
+
+    if current < 8 {
+        migrate_v7_to_v8(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -293,7 +311,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        assert_eq!(run_migrations(&conn).unwrap(), 8);
     }
 
     /// v2 库执行迁移：auto_scroll_speed 列应被补上；
@@ -311,13 +329,13 @@ mod tests {
         .unwrap();
 
         // 第一次迁移到 v6。
-        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        assert_eq!(run_migrations(&conn).unwrap(), 8);
 
         // 模拟"迁移中途崩溃后重跑"：列已存在时再跑 v2→v3 不得报错。
         migrate_v2_to_v3(&conn).unwrap();
 
         // 再次全量迁移应为 no-op 成功。
-        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        assert_eq!(run_migrations(&conn).unwrap(), 8);
 
         // 列确实存在。
         assert!(table_has_column(&conn, "sticker_prefs", "auto_scroll_speed").unwrap());
@@ -342,7 +360,7 @@ mod tests {
         // 事务已回滚：连接不在事务中，可以继续执行新语句。
         conn.execute_batch("ALTER TABLE sticker_prefs_bak RENAME TO sticker_prefs;")
             .unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        assert_eq!(run_migrations(&conn).unwrap(), 8);
     }
 
     /// 全新库：init_schema 建全部表并写 user_version=5。
@@ -376,7 +394,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
     }
 
     /// v5 → v6：旧默认背景色 #CCFFCC 迁移为 #FFF4D6，其他键不受影响。
@@ -417,12 +435,57 @@ mod tests {
              CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', updated_at TEXT);
              PRAGMA user_version = 6;",
         ).unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 7);
+        assert_eq!(run_migrations(&conn).unwrap(), 8);
         let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='todo_blocks')", [], |row| row.get(0)).unwrap();
         assert!(exists);
         assert_eq!(
             conn.query_row("SELECT value FROM system_config WHERE key='recent_slash_commands'", [], |row| row.get::<_, String>(0)).unwrap(),
             "[]",
+        );
+    }
+
+    #[test]
+    fn migrate_v7_to_v8_adds_todo_window_topmost_default() {
+        let existing = Connection::open_in_memory().unwrap();
+        existing
+            .execute_batch(
+                "CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT);
+                 INSERT INTO system_config VALUES ('default_todo_always_on_top', '0', '用户值');
+                 PRAGMA user_version = 7;",
+            )
+            .unwrap();
+
+        assert_eq!(run_migrations(&existing).unwrap(), 8);
+        assert_eq!(
+            existing
+                .query_row(
+                    "SELECT value FROM system_config WHERE key = 'default_todo_always_on_top'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "0",
+            "迁移不得覆盖已有用户值",
+        );
+
+        let missing = Connection::open_in_memory().unwrap();
+        missing
+            .execute_batch(
+                "CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT);
+                 PRAGMA user_version = 7;",
+            )
+            .unwrap();
+
+        assert_eq!(run_migrations(&missing).unwrap(), 8);
+        assert_eq!(
+            missing
+                .query_row(
+                    "SELECT value FROM system_config WHERE key = 'default_todo_always_on_top'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "1",
         );
     }
 }
