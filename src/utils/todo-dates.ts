@@ -37,11 +37,15 @@ export function formatTodoDate(value: string | null, withTime = true) {
 export function formatTodoRepeat(value: string | null) {
   if (!value) return "未设置";
   try {
-    const rule = JSON.parse(value) as { unit?: string; interval?: number; weekdays?: number[] };
+    const rule = JSON.parse(value) as { unit?: string; interval?: unknown; weekdays?: unknown };
     const unit = { day: "天", week: "周", month: "月", year: "年" }[rule.unit ?? ""];
     if (!unit) return "未设置";
     const interval = rule.interval ?? 1;
-    if (rule.unit === "week" && rule.weekdays?.length) {
+    if (typeof interval !== "number" || !Number.isFinite(interval) || !Number.isInteger(interval) || interval <= 0) return "未设置";
+    if (rule.weekdays !== undefined) {
+      if (!Array.isArray(rule.weekdays) || new Set(rule.weekdays).size !== rule.weekdays.length || rule.weekdays.some((day) => typeof day !== "number" || !Number.isInteger(day) || day < 0 || day > 6)) return "未设置";
+    }
+    if (rule.unit === "week" && Array.isArray(rule.weekdays) && rule.weekdays.length) {
       const weekdayNames = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
       const weekdays = [...rule.weekdays].sort((a, b) =>
         [1, 2, 3, 4, 5, 6, 0].indexOf(a) - [1, 2, 3, 4, 5, 6, 0].indexOf(b),
