@@ -1,27 +1,37 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import type { TodoBlock } from "../../types";
 
 const props = defineProps<{ items: TodoBlock[]; selectedId: string | null; height: number }>();
 const emit = defineEmits<{ select: [id: string]; createRoot: []; createChild: [id: string]; toggle: [id: string, checked: boolean] }>();
 
-const roots = () => props.items.filter((item) => !item.parent_id);
-const childOf = (parentId: string) => props.items.find((item) => item.parent_id === parentId);
+const roots = computed(() => props.items.filter((item) => !item.parent_id));
+const childrenByParent = computed(() => {
+  const children = new Map<string, TodoBlock[]>();
+  for (const item of props.items) {
+    if (!item.parent_id) continue;
+    const siblings = children.get(item.parent_id) ?? [];
+    siblings.push(item);
+    children.set(item.parent_id, siblings);
+  }
+  return children;
+});
 </script>
 
 <template>
   <section class="todo-upper" :style="{ height: height + 'px' }">
     <header><strong>任务列表</strong><button @click="emit('createRoot')">+ 新建</button></header>
     <ul class="todo-list">
-      <template v-for="item in roots()" :key="item.id">
+      <template v-for="item in roots" :key="item.id">
         <li :class="{ selected: item.id === selectedId, done: item.is_completed }" @click="emit('select', item.id)">
           <input class="wb-checkbox" type="checkbox" :checked="item.is_completed" @click.stop @change="emit('toggle', item.id, ($event.target as HTMLInputElement).checked)" />
           <span class="label">{{ item.title || '未命名任务' }}</span>
         </li>
-        <li v-if="childOf(item.id)" class="sub-task" :class="{ selected: childOf(item.id)?.id === selectedId, done: childOf(item.id)?.is_completed }" @click="emit('select', childOf(item.id)!.id)">
-          <input class="wb-checkbox" type="checkbox" :checked="childOf(item.id)?.is_completed" @click.stop @change="emit('toggle', childOf(item.id)!.id, ($event.target as HTMLInputElement).checked)" />
-          <span class="label">{{ childOf(item.id)?.title || '未命名子任务' }}</span>
+        <li v-for="child in childrenByParent.get(item.id) ?? []" :key="child.id" class="sub-task" :class="{ selected: child.id === selectedId, done: child.is_completed }" @click="emit('select', child.id)">
+          <input class="wb-checkbox" type="checkbox" :checked="child.is_completed" @click.stop @change="emit('toggle', child.id, ($event.target as HTMLInputElement).checked)" />
+          <span class="label">{{ child.title || '未命名子任务' }}</span>
         </li>
-        <li v-else-if="item.id === selectedId" class="add-child" @click="emit('createChild', item.id)">└ + 添加子任务</li>
+        <li class="add-child" @click.stop="emit('createChild', item.id)">└ + 添加子任务</li>
       </template>
     </ul>
   </section>

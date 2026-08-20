@@ -21,11 +21,6 @@ pub fn create(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Re
         if parent.sticker_id != sticker_id || parent.parent_id.is_some() {
             bail!("子任务必须属于同一便签且只能嵌套一层");
         }
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM todo_blocks WHERE parent_id = ?1)",
-            params![parent_id], |r| r.get(0),
-        )?;
-        if exists { bail!("一个父任务最多只能有一个子任务"); }
     }
     let id = next_id();
     conn.execute(
@@ -105,14 +100,15 @@ mod tests {
     }
 
     #[test]
-    fn creates_parent_and_only_one_direct_child() {
+    fn creates_parent_and_multiple_direct_children() {
         let conn = conn();
         let sticker_id = sticker(&conn);
         let parent = create(&conn, sticker_id, None).unwrap();
-        let child = create(&conn, sticker_id, Some(&parent.id)).unwrap();
-        assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
-        assert!(create(&conn, sticker_id, Some(&parent.id)).is_err());
-        assert!(create(&conn, sticker_id, Some(&child.id)).is_err());
+        let child_one = create(&conn, sticker_id, Some(&parent.id)).unwrap();
+        let child_two = create(&conn, sticker_id, Some(&parent.id)).unwrap();
+        assert_eq!(child_one.parent_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(child_two.parent_id.as_deref(), Some(parent.id.as_str()));
+        assert!(create(&conn, sticker_id, Some(&child_one.id)).is_err());
     }
 
     #[test]
