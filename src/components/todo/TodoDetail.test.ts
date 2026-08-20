@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import TodoDetail from "./TodoDetail.vue";
-import TodoDatePicker from "./TodoDatePicker.vue";
 import RepeatPicker from "./RepeatPicker.vue";
 import type { TodoBlock } from "../../types";
 
