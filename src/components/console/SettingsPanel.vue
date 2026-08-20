@@ -226,6 +226,14 @@ onMounted(async () => {
 
       <div v-else-if="activeMenu === 'todo'">
         <h3>Todo 时间预设</h3>
+        <label class="row">
+          <span>Todo 窗口默认置顶</span>
+          <input
+            type="checkbox"
+            :checked="settings.get('default_todo_always_on_top', '1') === '1'"
+            @change="(e) => settings.set('default_todo_always_on_top', (e.target as HTMLInputElement).checked ? '1' : '0')"
+          />
+        </label>
         <label class="row"><span>明天提醒时间</span><input type="number" min="0" max="23" :value="settings.get('todo_remind_tomorrow_hour', '9')" @change="(e) => settings.set('todo_remind_tomorrow_hour', (e.target as HTMLInputElement).value)" /></label>
         <label class="row"><span>下周提醒星期</span><select :value="settings.get('todo_remind_next_week_dow', '1')" @change="(e) => settings.set('todo_remind_next_week_dow', (e.target as HTMLSelectElement).value)"><option v-for="(name, value) in ['周日','周一','周二','周三','周四','周五','周六']" :key="value" :value="value">{{ name }}</option></select></label>
         <label class="row"><span>下周提醒时间</span><input type="number" min="0" max="23" :value="settings.get('todo_remind_next_week_hour', '9')" @change="(e) => settings.set('todo_remind_next_week_hour', (e.target as HTMLInputElement).value)" /></label>

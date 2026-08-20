@@ -114,7 +114,11 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
 }
 
 /// 创建独立 Todo 窗口。OS 关闭请求隐藏窗口，数据持续由 SQLite 保存。
-fn create_todo_win(app: &tauri::AppHandle, id: &str) -> tauri::Result<WebviewWindow> {
+fn create_todo_win(
+    app: &tauri::AppHandle,
+    id: &str,
+    always_on_top: bool,
+) -> tauri::Result<WebviewWindow> {
     let label = format!("todo-{id}");
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title("任务")
@@ -126,6 +130,9 @@ fn create_todo_win(app: &tauri::AppHandle, id: &str) -> tauri::Result<WebviewWin
         .maximizable(false)
         .resizable(false)
         .build()?;
+    if let Err(e) = win.set_always_on_top(always_on_top) {
+        tracing::warn!("设置 Todo 窗口置顶失败 label={label} always_on_top={always_on_top}: {e}");
+    }
     Ok(win)
 }
 
@@ -328,6 +335,16 @@ fn set_config_cmd(
         .with_conn(|c| commands::set_config(c, &key, &value))
         .map_err(|e| e.to_string())?;
     let _ = state.refresh_config();
+    if key == "default_todo_always_on_top" {
+        let always_on_top = value == "1";
+        for (label, win) in app.webview_windows().iter() {
+            if label.starts_with("todo-") {
+                if let Err(e) = win.set_always_on_top(always_on_top) {
+                    tracing::warn!("更新 Todo 窗口置顶失败 label={label} always_on_top={always_on_top}: {e}");
+                }
+            }
+        }
+    }
     events::emit_to_label(&app, "main", events::PREFS_UPDATED, ());
     Ok(())
 }
@@ -452,13 +469,20 @@ async fn open_todo_window_cmd(
     if todo.is_none() {
         return Err("Todo 块不存在".into());
     }
+    let always_on_top = state
+        .with_conn(commands::get_config)
+        .map(|cfg| cfg.get_or("default_todo_always_on_top", "1") == "1")
+        .unwrap_or(true);
     let label = format!("todo-{id}");
     if let Some(win) = app.get_webview_window(&label) {
+        if let Err(e) = win.set_always_on_top(always_on_top) {
+            tracing::warn!("更新 Todo 窗口置顶失败 label={label} always_on_top={always_on_top}: {e}");
+        }
         let _ = win.show();
         let _ = win.unminimize();
         return win.set_focus().map_err(|e| format!("聚焦 Todo 窗口失败: {e}"));
     }
-    let win = create_todo_win(&app, &id)
+    let win = create_todo_win(&app, &id, always_on_top)
         .map_err(|e| format!("创建 Todo 窗口失败: {e}"))?;
     win.set_focus()
         .map_err(|e| format!("聚焦 Todo 窗口失败: {e}"))?;
