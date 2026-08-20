@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { TodoBlock, TodoPatch } from "../../types";
-import { duePreset, formatTodoDate, reminderPreset, type TodoPresetConfig } from "../../utils/todo-dates";
+import { duePreset, formatTodoDate, formatTodoRepeat, reminderPreset, type TodoPresetConfig } from "../../utils/todo-dates";
 import TodoDatePicker from "./TodoDatePicker.vue";
 import RepeatPicker from "./RepeatPicker.vue";
 
@@ -9,16 +9,29 @@ const props = defineProps<{ item: TodoBlock | null; presets: TodoPresetConfig }>
 const emit = defineEmits<{ patch: [patch: TodoPatch]; createChild: [] }>();
 const title = ref(""); const description = ref("");
 const openPicker = ref<"reminder" | "due" | "repeat" | null>(null);
+type ReminderSource = "empty" | "hour" | "tomorrow" | "next-week" | "custom";
+type DueSource = "empty" | "today" | "tomorrow" | "next-week" | "custom";
+type RepeatSource = "empty" | "day" | "week" | "month" | "year" | "custom";
+const reminderSource = ref<ReminderSource>("empty");
+const dueSource = ref<DueSource>("empty");
+const repeatSource = ref<RepeatSource>("empty");
 const isChild = computed(() => Boolean(props.item?.parent_id));
-const repeatLabel = computed(() => {
-  if (!props.item?.repeat_rule) return "未设置";
-  try { const rule = JSON.parse(props.item.repeat_rule) as { unit?: string; interval?: number }; return `每 ${rule.interval ?? 1} ${{ day: "天", week: "周", month: "月", year: "年" }[rule.unit ?? ""] ?? ""}`.trim(); } catch { return "未设置"; }
-});
-watch(() => props.item, (item) => { title.value = item?.title ?? ""; description.value = item?.description ?? ""; openPicker.value = null; }, { immediate: true });
+const reminderTitle = computed(() => props.item?.reminder_at ? `提醒时间 - ${formatTodoDate(props.item.reminder_at)}` : "提醒时间");
+const dueTitle = computed(() => props.item?.due_at ? `截至时间 - ${formatTodoDate(props.item.due_at, false)}` : "截至时间");
+const repeatTitle = computed(() => props.item?.repeat_rule ? `设置任务重复 - ${formatTodoRepeat(props.item.repeat_rule)}` : "设置任务重复");
+watch(() => props.item?.id, () => {
+  const item = props.item;
+  title.value = item?.title ?? "";
+  description.value = item?.description ?? "";
+  reminderSource.value = item?.reminder_at ? "custom" : "empty";
+  dueSource.value = item?.due_at ? "custom" : "empty";
+  repeatSource.value = item?.repeat_rule ? "custom" : "empty";
+  openPicker.value = null;
+}, { immediate: true });
 function updateText() { emit("patch", { title: title.value, description: description.value }); }
-function setReminder(value: string) { emit("patch", { reminder_at: value }); openPicker.value = null; }
-function setDue(value: string) { emit("patch", { due_at: value }); openPicker.value = null; }
-function setRepeat(value: string) { emit("patch", { repeat_rule: value }); openPicker.value = null; }
+function setReminder(value: string, source: ReminderSource = "custom") { reminderSource.value = source; emit("patch", { reminder_at: value }); openPicker.value = null; }
+function setDue(value: string, source: DueSource = "custom") { dueSource.value = source; emit("patch", { due_at: value }); openPicker.value = null; }
+function setRepeat(value: string, source: RepeatSource = "custom") { repeatSource.value = source; emit("patch", { repeat_rule: value }); openPicker.value = null; }
 function togglePicker(kind: "reminder" | "due" | "repeat") { openPicker.value = openPicker.value === kind ? null : kind; }
 </script>
 
@@ -30,9 +43,9 @@ function togglePicker(kind: "reminder" | "due" | "repeat") { openPicker.value = 
       <button v-if="!isChild" class="add-child-btn" @click="emit('createChild')">+ 添加子任务</button>
       <label class="field"><span class="field-label">任务描述</span><textarea v-model="description" rows="3" placeholder="输入任务描述" @input="updateText"></textarea></label>
       <template v-if="!isChild">
-        <div class="field picker-field"><span class="field-label">提醒时间</span><div class="chips"><button @click="setReminder(reminderPreset('hour', presets))">1小时后</button><button @click="setReminder(reminderPreset('tomorrow', presets))">明天</button><button @click="setReminder(reminderPreset('next-week', presets))">下周</button><button :class="{ active: openPicker === 'reminder', empty: !item.reminder_at }" @click="togglePicker('reminder')">{{ formatTodoDate(item.reminder_at) }} ▾</button></div><TodoDatePicker v-if="openPicker === 'reminder'" :value="item.reminder_at" :with-time="true" @save="setReminder" @cancel="openPicker = null" /></div>
-        <div class="field picker-field"><span class="field-label">截至时间</span><div class="chips"><button @click="setDue(duePreset('today', presets))">今天</button><button @click="setDue(duePreset('tomorrow', presets))">明天</button><button @click="setDue(duePreset('next-week', presets))">下周</button><button :class="{ active: openPicker === 'due', empty: !item.due_at }" @click="togglePicker('due')">{{ formatTodoDate(item.due_at, false) }} ▾</button></div><TodoDatePicker v-if="openPicker === 'due'" :value="item.due_at" :with-time="false" @save="setDue" @cancel="openPicker = null" /></div>
-        <div class="field picker-field"><span class="field-label">设置任务重复</span><div class="chips"><button @click="setRepeat(JSON.stringify({ unit: 'day', interval: 1 }))">每天</button><button @click="setRepeat(JSON.stringify({ unit: 'week', interval: 1 }))">每周</button><button @click="setRepeat(JSON.stringify({ unit: 'month', interval: 1 }))">每月</button><button @click="setRepeat(JSON.stringify({ unit: 'year', interval: 1 }))">每年</button><button :class="{ active: openPicker === 'repeat', empty: !item.repeat_rule }" @click="togglePicker('repeat')">{{ repeatLabel }} ▾</button></div><RepeatPicker v-if="openPicker === 'repeat'" :value="item.repeat_rule" @save="setRepeat" @cancel="openPicker = null" /></div>
+        <div class="field picker-field"><span class="field-label">{{ reminderTitle }}</span><div class="chips"><button :class="{ active: reminderSource === 'hour' }" @click="setReminder(reminderPreset('hour', presets), 'hour')">1小时后</button><button :class="{ active: reminderSource === 'tomorrow' }" @click="setReminder(reminderPreset('tomorrow', presets), 'tomorrow')">明天</button><button :class="{ active: reminderSource === 'next-week' }" @click="setReminder(reminderPreset('next-week', presets), 'next-week')">下周</button><button :class="{ active: reminderSource === 'custom', empty: reminderSource === 'empty' }" @click="togglePicker('reminder')">自定义</button></div><TodoDatePicker v-if="openPicker === 'reminder'" :value="item.reminder_at" :with-time="true" @save="setReminder" @cancel="openPicker = null" /></div>
+        <div class="field picker-field"><span class="field-label">{{ dueTitle }}</span><div class="chips"><button :class="{ active: dueSource === 'today' }" @click="setDue(duePreset('today', presets), 'today')">今天</button><button :class="{ active: dueSource === 'tomorrow' }" @click="setDue(duePreset('tomorrow', presets), 'tomorrow')">明天</button><button :class="{ active: dueSource === 'next-week' }" @click="setDue(duePreset('next-week', presets), 'next-week')">下周</button><button :class="{ active: dueSource === 'custom', empty: dueSource === 'empty' }" @click="togglePicker('due')">自定义</button></div><TodoDatePicker v-if="openPicker === 'due'" :value="item.due_at" :with-time="false" @save="setDue" @cancel="openPicker = null" /></div>
+        <div class="field picker-field"><span class="field-label">{{ repeatTitle }}</span><div class="chips"><button :class="{ active: repeatSource === 'day' }" @click="setRepeat(JSON.stringify({ unit: 'day', interval: 1 }), 'day')">每天</button><button :class="{ active: repeatSource === 'week' }" @click="setRepeat(JSON.stringify({ unit: 'week', interval: 1 }), 'week')">每周</button><button :class="{ active: repeatSource === 'month' }" @click="setRepeat(JSON.stringify({ unit: 'month', interval: 1 }), 'month')">每月</button><button :class="{ active: repeatSource === 'year' }" @click="setRepeat(JSON.stringify({ unit: 'year', interval: 1 }), 'year')">每年</button><button :class="{ active: repeatSource === 'custom', empty: repeatSource === 'empty' }" @click="togglePicker('repeat')">自定义</button></div><RepeatPicker v-if="openPicker === 'repeat'" :value="item.repeat_rule" @save="setRepeat" @cancel="openPicker = null" /></div>
       </template>
       <p v-else class="sub-hint">子任务不继承高级设置，也不能添加自己的子任务。</p>
     </div>
