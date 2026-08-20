@@ -28,6 +28,7 @@ src-tauri/target
 # 工具内部目录（勿提交）
 .reasonix/
 .workbuddy/
+.worktrees/
 
 # 敏感文件（勿提交）
 docs/test.jpg
