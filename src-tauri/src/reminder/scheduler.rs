@@ -48,8 +48,9 @@ async fn tick_once(app: &AppHandle, state: &AppState) -> Result<()> {
         events::emit_alert_active(app, attrs.sticker_id, true);
 
         // 2) 系统通知
+        let db = state.db_path();
         let sticker = state
-            .with_conn(|c| commands::get_sticker(c, attrs.sticker_id))
+            .with_conn(|c| commands::get_sticker(c, attrs.sticker_id, &db))
             .ok()
             .flatten();
         let title = sticker
