@@ -6,6 +6,7 @@
 //! [`AppState::with_conn_async`] 派发到 `spawn_blocking`，避免阻塞 UI。
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use anyhow::Result;
@@ -17,7 +18,7 @@ use crate::models::SystemConfig;
 pub struct AppState {
     conn: Arc<Mutex<Connection>>,
     config: Arc<RwLock<SystemConfig>>,
-    db_path: Arc<String>,
+    db_path: Arc<Mutex<String>>,
     /// 当前处于 display（展示/穿透）模式的便签 id 集合（鼠标钩子唤醒用）。
     display_windows: Arc<Mutex<HashSet<i64>>>,
 }
@@ -27,7 +28,7 @@ impl AppState {
         Self {
             conn: Arc::new(Mutex::new(conn)),
             config: Arc::new(RwLock::new(config)),
-            db_path: Arc::new(db_path),
+            db_path: Arc::new(Mutex::new(db_path)),
             display_windows: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -57,8 +58,8 @@ impl AppState {
     }
 
     /// 当前数据库文件路径（供健康检查/诊断用）。
-    pub fn db_path(&self) -> &str {
-        &self.db_path
+    pub fn db_path(&self) -> String {
+        self.db_path.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// 同步执行数据库闭包（调用方负责放在 spawn_blocking 中）。
@@ -94,6 +95,26 @@ impl AppState {
         self.config
             .read()
             .expect("SystemConfig 读锁中毒")
+    }
+
+    /// 切换到指定数据库文件（重开连接 + 跑迁移 + 刷新配置快照 + 更新 db_path）。
+    pub fn switch_db(&self, path: &Path) -> Result<()> {
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
+        let new_conn = crate::db::connection::open(path)?;
+        crate::db::schema::run_migrations(&new_conn)?;
+        *guard = new_conn;
+        let cfg = crate::db::config_repo::load_all(&guard)?;
+        drop(guard);
+        let mut cfg_guard = self
+            .config
+            .write()
+            .map_err(|_| anyhow::anyhow!("SystemConfig 写锁中毒"))?;
+        *cfg_guard = cfg;
+        *self.db_path.lock().expect("db_path 锁中毒") = path.to_string_lossy().into_owned();
+        Ok(())
     }
 
     /// 重新加载 system_config 快照（配置变更后调用）。
@@ -157,5 +178,24 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 40, "8 线程 × 5 条应全部写入");
+    }
+
+    /// 运行时切换数据库：新连接可用（能读 config）且 db_path 已更新。
+    #[test]
+    fn switch_db_reopens_connection_and_refreshes_config() {
+        let dir = std::env::temp_dir().join(format!("state-switch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p1 = dir.join("one.db");
+        let p2 = dir.join("two.db");
+        let s = AppState::new(
+            crate::db::connection::open(&p1).unwrap(),
+            SystemConfig::default(),
+            p1.to_string_lossy().into_owned(),
+        );
+        s.switch_db(&p2).unwrap();
+        assert_eq!(s.db_path(), p2.to_string_lossy());
+        s.with_conn(crate::db::config_repo::load_all).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
