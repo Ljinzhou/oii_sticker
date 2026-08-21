@@ -39,11 +39,15 @@ pub fn rename_for_title(root: &Path, old_name: &str, id: i64, title: &str) -> Re
 
 /// 防目录穿越：仅允许普通文件名。
 pub fn safe_join(dir: &Path, file_name: &str) -> Result<PathBuf> {
-    let name = Path::new(file_name);
-    if file_name.is_empty() || name.components().count() != 1 {
+    if file_name.ends_with('/') || file_name.ends_with('\\') {
         anyhow::bail!("非法文件名：{file_name}");
     }
-    Ok(dir.join(name))
+    let mut comps = Path::new(file_name).components();
+    match comps.next() {
+        Some(std::path::Component::Normal(_)) if comps.next().is_none() => {}
+        _ => anyhow::bail!("非法文件名：{file_name}"),
+    }
+    Ok(dir.join(file_name))
 }
 
 #[cfg(test)]
@@ -89,5 +93,7 @@ mod tests {
         assert!(safe_join(Path::new("."), "../x.md").is_err());
         assert!(safe_join(Path::new("."), "sub/y.md").is_err());
         assert!(safe_join(Path::new("."), "").is_err());
+        assert!(safe_join(Path::new("."), "..").is_err());
+        assert!(safe_join(Path::new("."), "a.md/").is_err());
     }
 }
