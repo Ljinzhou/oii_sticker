@@ -60,8 +60,19 @@ export const useTodoStore = defineStore("todo", () => {
 
   async function remove(id: string) {
     await invoke("delete_todo_block_cmd", { id });
-    blocks.value = blocks.value.filter((block) => block.id !== id && block.parent_id !== id);
-    if (selectedId.value === id) selectedId.value = blocks.value[0]?.id ?? null;
+    const doomed = new Set([id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const block of blocks.value) {
+        if (block.parent_id && doomed.has(block.parent_id) && !doomed.has(block.id)) {
+          doomed.add(block.id);
+          grew = true;
+        }
+      }
+    }
+    blocks.value = blocks.value.filter((block) => !doomed.has(block.id));
+    if (selectedId.value && doomed.has(selectedId.value)) selectedId.value = blocks.value[0]?.id ?? null;
   }
 
   async function toggle(id: string, isCompleted: boolean) {
