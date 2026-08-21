@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use tauri::{Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 mod commands;
@@ -709,6 +710,80 @@ fn slash_query_cmd(query: String) -> Vec<SlashDto> {
         .collect()
 }
 
+// ═══════════════════ 工作控件命令（多工作空间） ═══════════════════
+
+fn workspace_to_dto(w: workspace::layout::WorkspaceEntry) -> models::WorkspaceEntryDto {
+    models::WorkspaceEntryDto {
+        id: w.id,
+        name: w.name,
+        path: w.path,
+        created_at: w.created_at,
+    }
+}
+
+/// 工作控件 DB 路径：<root>/data/index.db。
+fn entry_path_db(root: &Path) -> PathBuf {
+    root.join("data").join("index.db")
+}
+
+#[tauri::command]
+fn workspace_list_cmd(state: State<'_, AppState>) -> Result<Vec<models::WorkspaceEntryDto>, String> {
+    workspace::cmds::list(&state.registry_path())
+        .map(|v| v.into_iter().map(workspace_to_dto).collect())
+        .map_err(|e| e.to_string())
+}
+
+/// 新建工作控件：建目录 + 注册表；无当前项时自动激活（非首次引导，不迁移）。
+#[tauri::command]
+fn workspace_create_cmd(
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+) -> Result<models::WorkspaceEntryDto, String> {
+    let entry = workspace::cmds::create(&state.registry_path(), Path::new(&path), name.as_deref())
+        .map_err(|e| e.to_string())?;
+    Ok(workspace_to_dto(entry))
+}
+
+/// 切换当前工作控件：注册表更新 + DB 重连（switch_db）+ 主控台刷新。
+#[tauri::command]
+fn workspace_switch_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let entry = workspace::cmds::switch(&state.registry_path(), &id).map_err(|e| e.to_string())?;
+    let db = PathBuf::from(&entry.path).join("data").join("index.db");
+    state.switch_db(&db).map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+#[tauri::command]
+fn workspace_destroy_cmd(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    workspace::cmds::destroy(&state.registry_path(), &id).map_err(|e| e.to_string())
+}
+
+/// 首次引导：创建第一个工作控件 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
+#[tauri::command]
+fn workspace_bootstrap_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    name: Option<String>,
+    remove_legacy: bool,
+) -> Result<models::WorkspaceEntryDto, String> {
+    let root = PathBuf::from(&path);
+    let entry = workspace::cmds::create(&state.registry_path(), &root, name.as_deref())
+        .map_err(|e| e.to_string())?;
+    let db_path = entry_path_db(&root);
+    state.switch_db(&db_path).map_err(|e| e.to_string())?;
+    // TODO(Task 6): 旧数据迁移（workspace::migrate::run 在此接入调用点）
+    let _ = remove_legacy;
+    events::emit_push_update(&app, 0); // 主控台刷新
+    Ok(workspace_to_dto(entry))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 初始化 tracing 日志：默认 debug 级别（调试模式默认开启，输出详细
@@ -727,22 +802,30 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
-            // 数据层初始化：app_data_dir/stickers.db + 迁移 + 配置快照
-            let db_path = app
+            // 数据层初始化：注册表决定 boot 库（当前工作控件库或 bootstrap 库）
+            // + 迁移 + 配置快照。旧版 stickers.db 路径保留供后续迁移（Task 6）。
+            let app_data_dir = app
                 .path()
                 .app_data_dir()
-                .map_err(|e| format!("获取 app_data_dir 失败: {e}"))?
-                .join("stickers.db");
+                .map_err(|e| format!("获取 app_data_dir 失败: {e}"))?;
+            let db_path = workspace::boot_db_path(&app_data_dir);
             let conn = db::connection::open(&db_path)
                 .map_err(|e| format!("打开数据库失败: {e}"))?;
             db::schema::run_migrations(&conn).map_err(|e| format!("数据库迁移失败: {e}"))?;
             let config = db::config_repo::load_all(&conn)
                 .map_err(|e| format!("读取配置失败: {e}"))?;
+            let legacy_db = workspace::legacy_db_path(&app_data_dir);
             app.manage(AppState::new(
                 conn,
                 config,
                 db_path.to_string_lossy().into_owned(),
+                app_data_dir.to_string_lossy().into_owned(),
             ));
+            tracing::debug!(
+                "[setup] boot db={} legacy db={}",
+                db_path.display(),
+                legacy_db.display()
+            );
 
             let handle = app.handle().clone();
             let state = app.state::<AppState>().inner().clone();
@@ -846,7 +929,12 @@ pub fn run() {
             wake_sticker_cmd,
             list_open_sticker_ids_cmd,
             hide_sticker_cmd,
-            slash_query_cmd
+            slash_query_cmd,
+            workspace_list_cmd,
+            workspace_create_cmd,
+            workspace_switch_cmd,
+            workspace_destroy_cmd,
+            workspace_bootstrap_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
