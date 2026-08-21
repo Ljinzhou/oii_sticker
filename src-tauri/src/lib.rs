@@ -775,6 +775,14 @@ fn workspace_destroy_cmd(state: State<'_, AppState>, id: String) -> Result<(), S
     workspace::cmds::destroy(&state.registry_path(), &id).map_err(|e| e.to_string())
 }
 
+/// 首次引导默认路径：用户文档目录下默认工作控件（layout::default_root）。
+#[tauri::command]
+fn workspace_default_path_cmd() -> Result<String, String> {
+    workspace::layout::default_root()
+        .map(|p| p.to_string_lossy().into_owned())
+        .ok_or_else(|| "无法定位用户文档目录，请手动输入工作控件路径".to_string())
+}
+
 /// 首次引导：创建第一个工作控件 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
 #[tauri::command]
 fn workspace_bootstrap_cmd(
@@ -959,6 +967,7 @@ pub fn run() {
             workspace_create_cmd,
             workspace_switch_cmd,
             workspace_destroy_cmd,
+            workspace_default_path_cmd,
             workspace_bootstrap_cmd
         ])
         .run(tauri::generate_context!())
