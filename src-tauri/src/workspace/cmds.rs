@@ -47,6 +47,20 @@ pub fn switch(reg_path: &Path, id: &str) -> Result<WorkspaceEntry> {
     Ok(entry)
 }
 
+/// 转移用：更新注册表 entry.path（+ save）；返回更新后条目。不改 current。
+pub fn relocate(reg_path: &Path, id: &str, new_path: &Path) -> Result<WorkspaceEntry> {
+    let mut reg = load_registry(reg_path)?;
+    let entry = reg
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .context("工作空间不存在")?;
+    entry.path = new_path.to_string_lossy().into_owned();
+    let entry = entry.clone();
+    save_registry(reg_path, &reg)?;
+    Ok(entry)
+}
+
 /// 销毁：删注册表项 + 目录；最后一个或当前项拒绝。
 pub fn destroy(reg_path: &Path, id: &str) -> Result<()> {
     let mut reg = load_registry(reg_path)?;
@@ -98,6 +112,20 @@ mod tests {
         let e = create(&reg, &root, Some("工作区一")).unwrap();
         assert_eq!(current(&reg).unwrap().unwrap().id, e.id);
         assert!(list(&reg).unwrap().len() == 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relocate_updates_entry_path_and_persists() {
+        let (dir, reg) = temp_env("relocate");
+        let e = create(&reg, &dir.join("ws-old"), Some("A")).unwrap();
+        let new_path = dir.join("ws-new");
+        let updated = relocate(&reg, &e.id, &new_path).unwrap();
+        assert_eq!(updated.path, new_path.to_string_lossy());
+        assert_eq!(current(&reg).unwrap().unwrap().id, e.id, "relocate 不改 current");
+        let reloaded = list(&reg).unwrap().pop().unwrap();
+        assert_eq!(reloaded.path, new_path.to_string_lossy(), "路径已持久化");
+        assert!(relocate(&reg, "w-nonexistent", &new_path).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
