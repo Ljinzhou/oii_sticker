@@ -237,6 +237,13 @@ async function onClosed() {
   // push-update，主控台收到后把按钮切到"显示"，点"显示"再经 wake 恢复。
   if (mode.value === "edit") await editorRef.value?.discard();
   await invoke("hide_sticker_cmd", { id: stickerId });
+  releaseData();
+}
+
+/** 隐藏时释放内容引用（内存策略）：下次打开由 sticky://wake 或恢复流程重新 load。 */
+function releaseData() {
+  sticker.value = null;
+  todoBlocks.value = [];
 }
 
 onMounted(async () => {
@@ -268,8 +275,10 @@ onMounted(async () => {
   // 事件经 emit_to 定向发送到本窗口，无需校验 id（旧实现校验导致
   // payload 为 unit 时恒不匹配，唤醒后 UI 不切换）。
   unlisteners.push(
-    await listen<number>("sticky://wake", () => {
+    await listen<number>("sticky://wake", async () => {
       if (mode.value === "display") {
+        // 隐藏期间数据已释放（releaseData），先重载再切交互。
+        if (!sticker.value) await load();
         applyMode("interact");
       }
     }),
