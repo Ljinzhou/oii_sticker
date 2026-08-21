@@ -783,6 +783,56 @@ fn workspace_default_path_cmd() -> Result<String, String> {
         .ok_or_else(|| "无法定位用户文档目录，请手动输入工作控件路径".to_string())
 }
 
+/// 备份：在线快照 + zip 打包（排除 cache/）。
+/// 返回 zip 文件大小（字节）；不推送事件（保持静默）。
+#[tauri::command]
+fn workspace_backup_cmd(
+    state: State<'_, AppState>,
+    id: String,
+    dest_zip: String,
+) -> Result<u64, String> {
+    let entry = workspace::cmds::list(&state.registry_path())
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "工作空间不存在".to_string())?;
+    let layout = workspace::layout::Layout::at(Path::new(&entry.path));
+    state
+        .with_conn(|conn| workspace::backup::backup(&layout, conn, Path::new(&dest_zip)))
+        .map_err(|e| e.to_string())
+}
+
+/// 转移：复制（跳过 cache/）→ 校验签名 → 注册表 relocate → switch_db → 删源目录。
+/// 复制/校验失败时注册表与源目录均未动；relocate 成功后、删源前任何失败只会
+/// 留下「注册表已指向新路径」的不一致（数据完整，可手动重试或清理），
+/// 故注册表更新先于删源，保证任何时刻数据都可被发现。
+#[tauri::command]
+fn workspace_transfer_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    dest_root: String,
+) -> Result<(), String> {
+    let entry = workspace::cmds::list(&state.registry_path())
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|w| w.id == id)
+        .ok_or_else(|| "工作空间不存在".to_string())?;
+    let src_root = PathBuf::from(&entry.path);
+    let dest = PathBuf::from(&dest_root);
+    // 1) 复制 + 校验（失败 → 提前返回，原目录与注册表均未动）
+    workspace::backup::transfer(&src_root, &dest).map_err(|e| e.to_string())?;
+    // 2) 注册表 path 更新（先于删源；此后失败仅路径变化，数据在 dest 完整）
+    workspace::cmds::relocate(&state.registry_path(), &id, &dest).map_err(|e| e.to_string())?;
+    // 3) DB 重连到新位置
+    state.switch_db(&entry_path_db(&dest)).map_err(|e| e.to_string())?;
+    // 4) 清理源目录
+    std::fs::remove_dir_all(&src_root)
+        .map_err(|e| format!("转移完成但清理源目录失败：{e}"))?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
 /// 首次引导：创建第一个工作控件 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
 #[tauri::command]
 fn workspace_bootstrap_cmd(
@@ -968,6 +1018,8 @@ pub fn run() {
             workspace_switch_cmd,
             workspace_destroy_cmd,
             workspace_default_path_cmd,
+            workspace_backup_cmd,
+            workspace_transfer_cmd,
             workspace_bootstrap_cmd
         ])
         .run(tauri::generate_context!())

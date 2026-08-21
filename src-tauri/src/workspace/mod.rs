@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use layout::{load_registry};
 
+pub mod backup;
 pub mod cmds;
 pub mod layout;
 pub mod md_store;

@@ -128,3 +128,14 @@ CREATE TABLE todo_blocks (
 
 CREATE INDEX idx_todo_blocks_parent ON todo_blocks(parent_id);
 CREATE INDEX idx_todo_blocks_sticker ON todo_blocks(sticker_id);
+
+-- 外部文件阅读历史（v11）：记事本替代功能预留
+CREATE TABLE IF NOT EXISTS file_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    path        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    size        INTEGER NOT NULL DEFAULT 0,
+    last_opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+    open_count  INTEGER NOT NULL DEFAULT 1,
+    archived    INTEGER NOT NULL DEFAULT 0
+);

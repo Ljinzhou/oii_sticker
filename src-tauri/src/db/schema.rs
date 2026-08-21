@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -282,6 +282,28 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v10 → v11：新增 file_history 表（记事本替代功能阅读历史预留）。
+/// CREATE TABLE IF NOT EXISTS 天然幂等，无需列级检查。
+fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS file_history (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                path            TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                size            INTEGER NOT NULL DEFAULT 0,
+                last_opened_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                open_count      INTEGER NOT NULL DEFAULT 1,
+                archived        INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path);
+            ",
+        )
+        .context("迁移 v10→v11 失败")?;
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -325,6 +347,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
 
     if current < 10 {
         migrate_v9_to_v10(conn)?;
+    }
+
+    if current < 11 {
+        migrate_v10_to_v11(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -439,6 +465,7 @@ mod tests {
             vec![
                 "assets",
                 "completion_log",
+                "file_history",
                 "sticker_attrs",
                 "sticker_prefs",
                 "stickers",
@@ -565,5 +592,33 @@ mod tests {
                 .unwrap(),
             "1",
         );
+    }
+
+    /// v10 库执行迁移：file_history 表应被创建；重复执行幂等。
+    #[test]
+    fn migrate_v10_to_v11_creates_file_history_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 10;").unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_history')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists);
+        let cols: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('file_history') ORDER BY cid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(cols, vec!["id", "path", "name", "size", "last_opened_at", "open_count", "archived"]);
+
+        // 重复迁移不得报错（CREATE TABLE IF NOT EXISTS 幂等）。
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
     }
 }
