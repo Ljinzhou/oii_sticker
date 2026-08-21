@@ -113,4 +113,21 @@ describe("TodoDetail preset selections", () => {
     expect(button(wrapper, "今天").classes()).not.toContain("active");
     expect(button(wrapper, "每周").classes()).not.toContain("active");
   });
+
+  it("自定义按钮打开 Teleport 浮窗，点击外部关闭", async () => {
+    const wrapper = mount(TodoDetail, {
+      props: { item: makeTodo(), presets },
+      attachTo: document.body,
+      global: { stubs: { TodoDatePicker: true, RepeatPicker: true } },
+    });
+    const customBtn = wrapper.findAll(".chips button")[3];
+    await customBtn.trigger("click");
+
+    expect(document.body.querySelector(".picker-float")).not.toBeNull();
+
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await nextTick();
+    expect(document.body.querySelector(".picker-float")).toBeNull();
+    wrapper.unmount();
+  });
 });
