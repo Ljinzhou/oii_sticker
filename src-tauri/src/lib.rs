@@ -662,6 +662,9 @@ async fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> 
         .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
     let _ = win.show();
     let _ = win.set_focus();
+    // 前端隐藏时已释放内容引用（releaseData）；重开必须推送刷新事件，
+    // 让 StickerWindow 的 sticky://push-update 监听重新 load() 恢复数据。
+    events::emit_push_update(&app, id);
     tracing::info!("[cmd] wake_sticker id={id} always_on_top={}", s.always_on_top);
     Ok(())
 }

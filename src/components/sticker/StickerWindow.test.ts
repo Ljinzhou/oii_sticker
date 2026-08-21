@@ -145,4 +145,19 @@ describe("StickerWindow", () => {
     await flushPromises();
     expect(mocks.invokeMock).toHaveBeenCalledWith("get_sticker_cmd", { id: 7 });
   });
+
+  it("隐藏释放后 sticky://push-update 推送重新 load 恢复数据", async () => {
+    const wrapper = await mountSticker("interact");
+    // 关闭隐藏 → releaseData（sticker 置 null）
+    await wrapper.find(".ov-btn.close").trigger("click");
+    await flushPromises();
+    mocks.invokeMock.mockClear();
+    // 主控台"显示" → wake_sticker_cmd → emit_push_update(id)
+    const pushUpdate = mocks.handlers.get("sticky://push-update");
+    expect(pushUpdate).toBeDefined();
+    await pushUpdate?.(7);
+    await flushPromises();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("get_sticker_cmd", { id: 7 });
+    expect(mocks.invokeMock).toHaveBeenCalledWith("list_todo_for_sticker_cmd", { stickerId: 7 });
+  });
 });
