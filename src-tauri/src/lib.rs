@@ -161,8 +161,7 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
                 opacity: 0.9,
                 ..Default::default()
             };
-            let db = state.db_path();
-            match state.with_conn(|c| create_sticker(c, &new, &db)) {
+            match state.with_conn_path(|c, db| create_sticker(c, &new, db)) {
                 Ok(id) => {
                     // 新建便签按系统默认置顶配置应用（default_sticker_always_on_top）
                     let on_top = state
@@ -212,9 +211,8 @@ fn get_sticker_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<Option<models::Sticker>, String> {
-    let db = state.db_path();
     state
-        .with_conn(|c| commands::get_sticker(c, id, &db))
+        .with_conn_path(|c, db| commands::get_sticker(c, id, db))
         .map_err(|e| e.to_string())
 }
 
@@ -226,9 +224,8 @@ async fn create_sticker_cmd(
 ) -> Result<i64, String> {
     let state2 = state.inner().clone();
     let new_for_db = new.clone();
-    let db = state2.db_path();
     let id = tauri::async_runtime::spawn_blocking(move || {
-        state2.with_conn(|c| commands::create_sticker(c, &new_for_db, &db))
+        state2.with_conn_path(|c, db| commands::create_sticker(c, &new_for_db, db))
     })
     .await
     .map_err(|e| format!("spawn_blocking 失败: {e}"))?
@@ -253,9 +250,8 @@ fn update_sticker_cmd(
     id: i64,
     patch: db::sticker_repo::StickerPatch,
 ) -> Result<(), String> {
-    let db = state.db_path();
     state
-        .with_conn(|c| commands::update_sticker(c, id, &patch, &db))
+        .with_conn_path(|c, db| commands::update_sticker(c, id, &patch, db))
         .map_err(|e| e.to_string())?;
     // 标题/置顶/尺寸变化同步到窗口
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
@@ -276,9 +272,8 @@ fn delete_sticker_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<(), String> {
-    let db = state.db_path();
     state
-        .with_conn(|c| commands::delete_sticker(c, id, &db))
+        .with_conn_path(|c, db| commands::delete_sticker(c, id, db))
         .map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         let _ = win.close();
@@ -397,9 +392,8 @@ fn toggle_todo_cmd(
     id: i64,
     line: usize,
 ) -> Result<bool, String> {
-    let db = state.db_path();
     let changed = state
-        .with_conn(|c| commands::toggle_todo_in_sticker(c, id, line, &db))
+        .with_conn_path(|c, db| commands::toggle_todo_in_sticker(c, id, line, db))
         .map_err(|e| e.to_string())?;
     if changed {
         events::emit_push_update(&app, id);
@@ -478,9 +472,8 @@ fn sync_todo_marker_cmd(
     sticker_id: i64,
     id: String,
 ) -> Result<(), String> {
-    let db = state.db_path();
     let changed = state
-        .with_conn(|c| commands::sync_todo_marker(c, sticker_id, &id, &db))
+        .with_conn_path(|c, db| commands::sync_todo_marker(c, sticker_id, &id, db))
         .map_err(|e| e.to_string())?;
     if changed {
         events::emit_push_update(&app, sticker_id);
@@ -637,9 +630,8 @@ async fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> 
     let label = format!("sticker-{id}");
     // 先取数据库记录（含 always_on_top），窗口存在与否都要恢复置顶
     let state = app.state::<AppState>().inner().clone();
-    let db = state.db_path();
     let s = state
-        .with_conn_async(move |c| commands::get_sticker(c, id, &db))
+        .with_conn_path_async(move |c, db| commands::get_sticker(c, id, db))
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
@@ -766,7 +758,7 @@ fn workspace_create_cmd(
     Ok(workspace_to_dto(entry))
 }
 
-/// 切换当前工作控件：注册表更新 + DB 重连（switch_db）+ 主控台刷新。
+/// 切换当前工作控件：注册表更新 + 关闭全部便签窗口 + DB 重连（switch_db）+ 主控台刷新。
 #[tauri::command]
 fn workspace_switch_cmd(
     app: tauri::AppHandle,
@@ -774,6 +766,14 @@ fn workspace_switch_cmd(
     id: String,
 ) -> Result<(), String> {
     let entry = workspace::cmds::switch(&state.registry_path(), &id).map_err(|e| e.to_string())?;
+    // 切换前必须关闭所有 open 的便签窗口（含隐藏的）：粘旧工作控件数据的
+    // 窗口若继续存在，编辑会静默 no-op 或写错 md。UI 亦承诺"所有便签窗口将被关闭"。
+    for (label, win) in app.webview_windows().iter() {
+        if label.starts_with("sticker-") {
+            let _ = win.close();
+            tracing::info!("[switch] 关闭便签窗口 {label}");
+        }
+    }
     let db = PathBuf::from(&entry.path).join("data").join("index.db");
     state.switch_db(&db).map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
@@ -794,6 +794,7 @@ fn workspace_default_path_cmd() -> Result<String, String> {
 }
 
 /// 备份：在线快照 + zip 打包（排除 cache/）。
+/// 仅允许备份当前激活的工作控件（离线快照只对当前 DB 语义成立）。
 /// 返回 zip 文件大小（字节）；不推送事件（保持静默）。
 #[tauri::command]
 fn workspace_backup_cmd(
@@ -801,6 +802,10 @@ fn workspace_backup_cmd(
     id: String,
     dest_zip: String,
 ) -> Result<u64, String> {
+    let current = workspace::cmds::current(&state.registry_path()).map_err(|e| e.to_string())?;
+    if current.as_ref().map(|w| w.id.as_str()) != Some(id.as_str()) {
+        return Err("只能备份当前工作控件".to_string());
+    }
     let entry = workspace::cmds::list(&state.registry_path())
         .map_err(|e| e.to_string())?
         .into_iter()
@@ -843,6 +848,12 @@ fn workspace_transfer_cmd(
     Ok(())
 }
 
+/// 默认欢迎便签的种植条件：注册表为空（首个工作控件）且迁移无历史便签。
+/// bootstrap 库本身不种欢迎便签，保证不会出现卡在 bootstrap 数据的孤儿窗口。
+fn should_seed_welcome(registry_was_empty: bool, migrated_stickers: usize) -> bool {
+    registry_was_empty && migrated_stickers == 0
+}
+
 /// 首次引导：创建第一个工作控件 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
 #[tauri::command]
 fn workspace_bootstrap_cmd(
@@ -853,6 +864,9 @@ fn workspace_bootstrap_cmd(
     remove_legacy: bool,
 ) -> Result<models::WorkspaceEntryDto, String> {
     let root = PathBuf::from(&path);
+    let registry_was_empty = workspace::layout::load_registry(&state.registry_path())
+        .map(|r| r.workspaces.is_empty() && r.current.is_none())
+        .unwrap_or(true);
     let entry = workspace::cmds::create(&state.registry_path(), &root, name.as_deref())
         .map_err(|e| e.to_string())?;
     let db_path = entry_path_db(&root);
@@ -870,6 +884,13 @@ fn workspace_bootstrap_cmd(
         for ext in ["-wal", "-shm"] {
             let _ = std::fs::remove_file(PathBuf::from(format!("{}{ext}", legacy.display())));
         }
+    }
+    // 首个工作控件且无历史便签：补建默认欢迎便签（bootstrap 库不种孤儿）。
+    if should_seed_welcome(registry_was_empty, summary.stickers) {
+        state
+            .with_conn_path(|c, db| commands::create_welcome_sticker(c, db))
+            .map_err(|e| format!("创建默认欢迎便签失败：{e}"))?;
+        tracing::info!("[bootstrap] 首个工作控件无历史便签，已创建默认欢迎便签");
     }
     tracing::info!("[bootstrap] 迁移结果：{summary:?}");
     events::emit_push_update(&app, 0); // 主控台刷新
@@ -940,31 +961,29 @@ pub fn run() {
             // 提醒调度器（10s 周期）
             reminder::scheduler::spawn(handle.clone(), state.clone());
 
-            // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签
+            // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签。
+            // bootstrap 库（尚无注册工作控件）不创建欢迎便签——它会在首次
+            // workspace_bootstrap 迁移成功后补建，避免孤儿便签卡在 bootstrap 数据上。
             let stickers = state
                 .with_conn(commands::list_stickers)
                 .unwrap_or_default();
+            let on_bootstrap_db = workspace::layout::load_registry(&state.registry_path())
+                .map(|r| r.current.is_none())
+                .unwrap_or(true);
             if stickers.is_empty() {
-                // 首次运行：创建一条默认便签，便于查看效果
-                let default = NewSticker {
-                    title: "欢迎使用 oii_sticker".into(),
-                    content: "# 欢迎使用 oii_sticker\n\n这是一张默认便签，可以：\n\n- 点击右上角 ✎ 进入编辑\n- 双击便签从收起状态唤醒\n- 点击 ⚙ 调整颜色与透明度\n\n## 任务清单\n\n- [ ] 试试勾选这个待办\n- [x] 已完成示例\n\n> 背景半透明、文字不透明。".into(),
-                    pos_x: 200,
-                    pos_y: 140,
-                    width: 400,
-                    height: 500,
-                    opacity: 0.9,
-                    bg_color: Some("#FFF4D6".into()),
-                    ..Default::default()
-                };
-                let db = state.db_path();
-                if let Ok(id) = state.with_conn(|c| create_sticker(c, &default, &db)) {
-                    // 首次默认便签按系统默认置顶（default_sticker_always_on_top=1）
-                    let args = StickerWinArgs {
-                        always_on_top: true,
-                        ..StickerWinArgs::from_new(&default, id)
-                    };
-                    let _ = create_sticker_win(&handle, args);
+                if on_bootstrap_db {
+                    tracing::info!("[setup] 启动于 bootstrap 库（未注册工作控件），跳过默认便签创建");
+                } else {
+                    // 真实工作控件空库：创建一条默认便签，便于查看效果
+                    let default = commands::welcome_sticker_new();
+                    if let Ok(id) = state.with_conn_path(|c, db| create_sticker(c, &default, db)) {
+                        // 首次默认便签按系统默认置顶（default_sticker_always_on_top=1）
+                        let args = StickerWinArgs {
+                            always_on_top: true,
+                            ..StickerWinArgs::from_new(&default, id)
+                        };
+                        let _ = create_sticker_win(&handle, args);
+                    }
                 }
             } else {
                 for s in stickers {
@@ -1035,4 +1054,18 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// I2：欢迎便签只在「首个工作控件 + 无历史便签」时种植；bootstrap 库跳过。
+    #[test]
+    fn welcome_seed_only_for_first_empty_workspace() {
+        assert!(should_seed_welcome(true, 0), "首个工作控件空库应种欢迎便签");
+        assert!(!should_seed_welcome(true, 1), "有迁移数据则不种欢迎便签");
+        assert!(!should_seed_welcome(false, 0), "非首个工作控件不种欢迎便签");
+        assert!(!should_seed_welcome(false, 1));
+    }
 }

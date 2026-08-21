@@ -79,6 +79,23 @@ impl AppState {
         f(&guard)
     }
 
+    /// 在同一把锁内获取「连接 + 当前数据库路径」快照并执行闭包。
+    ///
+    /// 避免 TOCTOU：路径在锁外读取后、锁内才使用，切换 DB 的瞬间 md 写入会落到
+    /// 旧根目录。先锁 conn 再锁 db_path（与 `switch_db` 相同顺序，杜绝死锁）。
+    pub fn with_conn_path<T>(&self, f: impl FnOnce(&Connection, &str) -> Result<T>) -> Result<T> {
+        let guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
+        let db_path = self
+            .db_path
+            .lock()
+            .map_err(|_| anyhow::anyhow!("db_path 锁中毒"))?
+            .clone();
+        f(&guard, &db_path)
+    }
+
     /// 异步执行数据库闭包：内部用 `tauri::async_runtime::spawn_blocking`。
     ///
     /// 注意：闭包内不要再嵌套 `with_conn`/`with_conn_async`，避免死锁。
@@ -93,6 +110,28 @@ impl AppState {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
             f(&guard)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("spawn_blocking 失败: {e}"))?
+    }
+
+    /// 异步版 [`Self::with_conn_path`]：同一锁序下取「连接 + 路径」快照执行闭包。
+    pub async fn with_conn_path_async<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection, &str) -> Result<T> + Send + 'static,
+    {
+        let conn = Arc::clone(&self.conn);
+        let db_path = Arc::clone(&self.db_path);
+        tauri::async_runtime::spawn_blocking(move || {
+            let guard = conn
+                .lock()
+                .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
+            let path = db_path
+                .lock()
+                .map_err(|_| anyhow::anyhow!("db_path 锁中毒"))?
+                .clone();
+            f(&guard, &path)
         })
         .await
         .map_err(|e| anyhow::anyhow!("spawn_blocking 失败: {e}"))?
@@ -205,6 +244,67 @@ mod tests {
         s.switch_db(&p2).unwrap();
         assert_eq!(s.db_path(), p2.to_string_lossy());
         s.with_conn(crate::db::config_repo::load_all).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// with_conn_path：闭包拿到的路径必须与锁内快照一致（对外读 db_path 的值相同）。
+    #[test]
+    fn with_conn_path_gives_snapshot_path_matching_db_path() {
+        let state = test_state();
+        let before = state.db_path();
+        state
+            .with_conn_path(|_c, path| {
+                assert_eq!(path, &before, "路径快照应与 db_path 一致");
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// 切换与读路径并发跑：with_conn_path 闭包内永远只看到合法路径字符串
+    /// （非空且等于切换后的任一目标路径），不会出现半初始化状态。
+    #[test]
+    fn with_conn_path_concurrent_switch_sees_consistent_path() {
+        let dir = std::env::temp_dir().join(format!("state-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p1 = dir.join("one.db");
+        let p2 = dir.join("two.db");
+        let s = std::sync::Arc::new(AppState::new(
+            crate::db::connection::open(&p1).unwrap(),
+            SystemConfig::default(),
+            p1.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+        ));
+        let expected = [p1.to_string_lossy().into_owned(), p2.to_string_lossy().into_owned()];
+
+        let stopper = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut sw_pool = Vec::new();
+        for _ in 0..2u32 {
+            let s = s.clone();
+            let stopper = stopper.clone();
+            let p1 = p1.clone();
+            let p2 = p2.clone();
+            sw_pool.push(std::thread::spawn(move || {
+                while !stopper.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = s.switch_db(&p2);
+                    let _ = s.switch_db(&p1);
+                }
+            }));
+        }
+        let reader = std::thread::spawn(move || {
+            for _ in 0..200u32 {
+                s.with_conn_path(|_c, path| {
+                    assert!(expected.contains(&path.to_string()), "非法路径快照: {path}");
+                    Ok(())
+                })
+                .unwrap();
+            }
+        });
+        reader.join().unwrap();
+        stopper.store(true, std::sync::atomic::Ordering::Relaxed);
+        for h in sw_pool {
+            h.join().unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use rusqlite::Connection;
 
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
+use crate::db::sticker_repo::NewSticker;
 use crate::editing;
 use crate::models::{EffectivePrefs, Sticker, StickerAttrs, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
 use crate::workspace::{layout, md_store};
@@ -16,6 +17,26 @@ use crate::workspace::{layout, md_store};
 /// 当前工作控件根目录（从当前 DB 路径推算）。
 pub fn ws_root(conn_path: &str) -> std::path::PathBuf {
     layout::root_from_db_path(std::path::Path::new(conn_path)).unwrap_or_default()
+}
+
+/// 首次使用默认欢迎便签（仅在真实工作控件/首次迁移成功后创建，避免 bootstrap 库孤儿）。
+pub fn welcome_sticker_new() -> NewSticker {
+    NewSticker {
+        title: "欢迎使用 oii_sticker".into(),
+        content: "# 欢迎使用 oii_sticker\n\n这是一张默认便签，可以：\n\n- 点击右上角 ✎ 进入编辑\n- 双击便签从收起状态唤醒\n- 点击 ⚙ 调整颜色与透明度\n\n## 任务清单\n\n- [ ] 试试勾选这个待办\n- [x] 已完成示例\n\n> 背景半透明、文字不透明。".into(),
+        pos_x: 200,
+        pos_y: 140,
+        width: 400,
+        height: 500,
+        opacity: 0.9,
+        bg_color: Some("#FFF4D6".into()),
+        ..Default::default()
+    }
+}
+
+/// 创建默认欢迎便签（md 主存储随 create_sticker 一并落盘）。
+pub fn create_welcome_sticker(conn: &Connection, db_path: &str) -> Result<i64> {
+    create_sticker(conn, &welcome_sticker_new(), db_path)
 }
 
 /// 新建便签，返回自增 id；md 落盘（主存储），DB content 列保留作回退。
@@ -442,6 +463,22 @@ mod tests {
 
         let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
         assert_eq!(s.content, "DB 内容", "md 缺失应回退 DB content 列");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn welcome_sticker_created_with_md_and_reusable() {
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("welcome");
+        let id = create_welcome_sticker(&conn, &db_path).unwrap();
+        let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
+        assert_eq!(s.title, "欢迎使用 oii_sticker");
+        assert!(s.content.contains("欢迎使用"));
+        let file = layout::sticker_file_name(id, &s.title);
+        assert!(root.join("stickers").join(&file).exists(), "欢迎便签 md 应落盘");
+        // 同一连接内再次创建：id 应递增且均成功（函数可复用）
+        let id2 = create_welcome_sticker(&conn, &db_path).unwrap();
+        assert_ne!(id, id2);
         let _ = std::fs::remove_dir_all(&root);
     }
 }
