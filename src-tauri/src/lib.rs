@@ -786,8 +786,21 @@ fn workspace_bootstrap_cmd(
         .map_err(|e| e.to_string())?;
     let db_path = entry_path_db(&root);
     state.switch_db(&db_path).map_err(|e| e.to_string())?;
-    // TODO(Task 6): 旧数据迁移（workspace::migrate::run 在此接入调用点）
-    let _ = remove_legacy;
+    // 首次启动：旧库（%APPDATA%/stickers.db）→ 新工作控件库全量迁移。
+    // 便签 content 写入 md 文件，元数据/todo/prefs/attrs 入新库。
+    let legacy = workspace::legacy_db_path(
+        state.registry_path().parent().expect("registry 必在 app_data_dir 下"),
+    );
+    let summary = state
+        .with_conn(|c| workspace::migrate::run(&legacy, c, &root))
+        .map_err(|e| e.to_string())?;
+    if remove_legacy {
+        let _ = std::fs::remove_file(&legacy);
+        for ext in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(PathBuf::from(format!("{}{ext}", legacy.display())));
+        }
+    }
+    tracing::info!("[bootstrap] 迁移结果：{summary:?}");
     events::emit_push_update(&app, 0); // 主控台刷新
     Ok(workspace_to_dto(entry))
 }
