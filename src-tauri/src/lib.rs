@@ -161,7 +161,8 @@ fn dispatch_tray(app: &tauri::AppHandle, action: TrayAction) {
                 opacity: 0.9,
                 ..Default::default()
             };
-            match state.with_conn(|c| create_sticker(c, &new)) {
+            let db = state.db_path();
+            match state.with_conn(|c| create_sticker(c, &new, &db)) {
                 Ok(id) => {
                     // 新建便签按系统默认置顶配置应用（default_sticker_always_on_top）
                     let on_top = state
@@ -211,8 +212,9 @@ fn get_sticker_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<Option<models::Sticker>, String> {
+    let db = state.db_path();
     state
-        .with_conn(|c| commands::get_sticker(c, id))
+        .with_conn(|c| commands::get_sticker(c, id, &db))
         .map_err(|e| e.to_string())
 }
 
@@ -224,8 +226,9 @@ async fn create_sticker_cmd(
 ) -> Result<i64, String> {
     let state2 = state.inner().clone();
     let new_for_db = new.clone();
+    let db = state2.db_path();
     let id = tauri::async_runtime::spawn_blocking(move || {
-        state2.with_conn(|c| commands::create_sticker(c, &new_for_db))
+        state2.with_conn(|c| commands::create_sticker(c, &new_for_db, &db))
     })
     .await
     .map_err(|e| format!("spawn_blocking 失败: {e}"))?
@@ -250,8 +253,9 @@ fn update_sticker_cmd(
     id: i64,
     patch: db::sticker_repo::StickerPatch,
 ) -> Result<(), String> {
+    let db = state.db_path();
     state
-        .with_conn(|c| commands::update_sticker(c, id, &patch))
+        .with_conn(|c| commands::update_sticker(c, id, &patch, &db))
         .map_err(|e| e.to_string())?;
     // 标题/置顶/尺寸变化同步到窗口
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
@@ -272,8 +276,9 @@ fn delete_sticker_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<(), String> {
+    let db = state.db_path();
     state
-        .with_conn(|c| commands::delete_sticker(c, id))
+        .with_conn(|c| commands::delete_sticker(c, id, &db))
         .map_err(|e| e.to_string())?;
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         let _ = win.close();
@@ -392,8 +397,9 @@ fn toggle_todo_cmd(
     id: i64,
     line: usize,
 ) -> Result<bool, String> {
+    let db = state.db_path();
     let changed = state
-        .with_conn(|c| commands::toggle_todo_in_sticker(c, id, line))
+        .with_conn(|c| commands::toggle_todo_in_sticker(c, id, line, &db))
         .map_err(|e| e.to_string())?;
     if changed {
         events::emit_push_update(&app, id);
@@ -472,8 +478,9 @@ fn sync_todo_marker_cmd(
     sticker_id: i64,
     id: String,
 ) -> Result<(), String> {
+    let db = state.db_path();
     let changed = state
-        .with_conn(|c| commands::sync_todo_marker(c, sticker_id, &id))
+        .with_conn(|c| commands::sync_todo_marker(c, sticker_id, &id, &db))
         .map_err(|e| e.to_string())?;
     if changed {
         events::emit_push_update(&app, sticker_id);
@@ -630,8 +637,9 @@ async fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> 
     let label = format!("sticker-{id}");
     // 先取数据库记录（含 always_on_top），窗口存在与否都要恢复置顶
     let state = app.state::<AppState>().inner().clone();
+    let db = state.db_path();
     let s = state
-        .with_conn_async(move |c| commands::get_sticker(c, id))
+        .with_conn_async(move |c| commands::get_sticker(c, id, &db))
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("便签 #{id} 不存在，无法唤醒"))?;
@@ -865,7 +873,8 @@ pub fn run() {
                     bg_color: Some("#FFF4D6".into()),
                     ..Default::default()
                 };
-                if let Ok(id) = state.with_conn(|c| create_sticker(c, &default)) {
+                let db = state.db_path();
+                if let Ok(id) = state.with_conn(|c| create_sticker(c, &default, &db)) {
                     // 首次默认便签按系统默认置顶（default_sticker_always_on_top=1）
                     let args = StickerWinArgs {
                         always_on_top: true,

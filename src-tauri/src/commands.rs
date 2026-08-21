@@ -9,17 +9,35 @@ use rusqlite::Connection;
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
 use crate::editing;
 use crate::models::{EffectivePrefs, Sticker, StickerAttrs, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
+use crate::workspace::{layout, md_store};
 
 // ── 便签 CRUD ──
 
-/// 新建便签，返回自增 id。
-pub fn create_sticker(conn: &Connection, new: &sticker_repo::NewSticker) -> Result<i64> {
-    sticker_repo::insert(conn, new)
+/// 当前工作控件根目录（从当前 DB 路径推算）。
+pub fn ws_root(conn_path: &str) -> std::path::PathBuf {
+    layout::root_from_db_path(std::path::Path::new(conn_path)).unwrap_or_default()
 }
 
-/// 按 id 读取便签。
-pub fn get_sticker(conn: &Connection, id: i64) -> Result<Option<Sticker>> {
-    sticker_repo::get(conn, id)
+/// 新建便签，返回自增 id；md 落盘（主存储），DB content 列保留作回退。
+pub fn create_sticker(conn: &Connection, new: &sticker_repo::NewSticker, db_path: &str) -> Result<i64> {
+    let id = sticker_repo::insert(conn, new)?;
+    let root = ws_root(db_path);
+    let file_name = layout::sticker_file_name(id, &new.title);
+    md_store::write(&root, &file_name, &new.content)?;
+    Ok(id)
+}
+
+/// 按 id 读取便签；md 内容优先（md 缺失回退 DB content 列）。
+pub fn get_sticker(conn: &Connection, id: i64, db_path: &str) -> Result<Option<Sticker>> {
+    let Some(mut sticker) = sticker_repo::get(conn, id)? else {
+        return Ok(None);
+    };
+    let root = ws_root(db_path);
+    let file_name = layout::sticker_file_name(sticker.id, &sticker.title);
+    if let Some(content) = md_store::load(&root, &file_name)? {
+        sticker.content = content;
+    }
+    Ok(Some(sticker))
 }
 
 /// 列出全部便签。
@@ -27,17 +45,41 @@ pub fn list_stickers(conn: &Connection) -> Result<Vec<Sticker>> {
     sticker_repo::list_all(conn)
 }
 
-/// 部分更新便签。
+/// 部分更新便签；标题变化同步重命名 md，content 原子写 md（主存储）后双写 DB 列（回退）。
 pub fn update_sticker(
     conn: &Connection,
     id: i64,
     patch: &sticker_repo::StickerPatch,
+    db_path: &str,
 ) -> Result<()> {
+    // 标题变化时同步重命名 md 文件
+    if patch.title.is_some() {
+        if let Some(current) = sticker_repo::get(conn, id)? {
+            let root = ws_root(db_path);
+            let old = layout::sticker_file_name(current.id, &current.title);
+            let _ = md_store::rename_for_title(&root, &old, current.id, patch.title.as_deref().unwrap_or(""))?;
+        }
+    }
+    // content patch → 原子写 md（主存储），再双写 DB（回退）
+    if let Some(content) = &patch.content {
+        if let Some(current) = sticker_repo::get(conn, id)? {
+            let root = ws_root(db_path);
+            let file_name = layout::sticker_file_name(current.id, &current.title);
+            md_store::write(&root, &file_name, content)?;
+        }
+    }
     sticker_repo::update(conn, id, patch)
 }
 
-/// 删除便签（依赖外键级联清理）。
-pub fn delete_sticker(conn: &Connection, id: i64) -> Result<()> {
+/// 删除便签（依赖外键级联清理），md 与资产目录一并移除。
+pub fn delete_sticker(conn: &Connection, id: i64, db_path: &str) -> Result<()> {
+    if let Some(sticker) = sticker_repo::get(conn, id)? {
+        let root = ws_root(db_path);
+        let file_name = layout::sticker_file_name(id, &sticker.title);
+        let _ = md_store::remove(&root, &file_name);
+        let asset_dir = root.join("assets").join(id.to_string());
+        let _ = std::fs::remove_dir_all(asset_dir);
+    }
     sticker_repo::delete(conn, id)
 }
 
@@ -106,21 +148,22 @@ pub fn toggle_todo(content: &str, line: usize) -> Option<String> {
     editing::toggle_todo_in_content(content, line)
 }
 
-/// 翻转便签内 todo 并落库（读取 → 文本变换 → 写回）。
-pub fn toggle_todo_in_sticker(conn: &Connection, sticker_id: i64, line: usize) -> Result<bool> {
-    let Some(sticker) = sticker_repo::get(conn, sticker_id)? else {
+/// 翻转便签内 todo 并落库（读取 md 主存储 → 文本变换 → 原子写 md + 双写 DB）。
+pub fn toggle_todo_in_sticker(conn: &Connection, sticker_id: i64, line: usize, db_path: &str) -> Result<bool> {
+    let Some(sticker) = get_sticker(conn, sticker_id, db_path)? else {
         return Ok(false);
     };
     let Some(new_content) = editing::toggle_todo_in_content(&sticker.content, line) else {
         return Ok(false);
     };
-    sticker_repo::update(
+    update_sticker(
         conn,
         sticker_id,
         &sticker_repo::StickerPatch {
             content: Some(new_content),
             ..Default::default()
         },
+        db_path,
     )?;
     Ok(true)
 }
@@ -157,8 +200,8 @@ pub fn delete_todo_block(conn: &Connection, id: &str) -> Result<Option<i64>> {
 
 /// 把 `<todo-block>` 标记追加到便签内容末尾（幂等；已含标记则跳过）。
 /// 供 Todo 窗口新建根任务后同步标记，保证块与正文一致、不产生孤儿。
-pub fn sync_todo_marker(conn: &Connection, sticker_id: i64, id: &str) -> Result<bool> {
-    let Some(sticker) = sticker_repo::get(conn, sticker_id)? else {
+pub fn sync_todo_marker(conn: &Connection, sticker_id: i64, id: &str, db_path: &str) -> Result<bool> {
+    let Some(sticker) = get_sticker(conn, sticker_id, db_path)? else {
         bail!("便签不存在");
     };
     let tagged = todo_block_repo::tagged_ids(&sticker.content);
@@ -171,10 +214,10 @@ pub fn sync_todo_marker(conn: &Connection, sticker_id: i64, id: &str) -> Result<
     } else {
         format!("{}\n\n{tag}", sticker.content.trim_end())
     };
-    sticker_repo::update(conn, sticker_id, &sticker_repo::StickerPatch {
+    update_sticker(conn, sticker_id, &sticker_repo::StickerPatch {
         content: Some(next),
         ..Default::default()
-    })?;
+    }, db_path)?;
     Ok(true)
 }
 
@@ -197,6 +240,7 @@ pub fn reorder_todo(conn: &Connection, ids: &[String]) -> Result<Option<i64>> {
 mod tests {
     use super::*;
     use crate::db::schema;
+    use std::path::PathBuf;
 
     fn test_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -205,9 +249,20 @@ mod tests {
         conn
     }
 
+    /// 临时工作控件根目录：ensure_layout 后返回 (root, db_path)。
+    fn tmp_ws(tag: &str) -> (PathBuf, String) {
+        let d = std::env::temp_dir().join(format!("ws-cmd-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        crate::workspace::layout::ensure_layout(&crate::workspace::layout::Layout::at(&d), "t")
+            .unwrap();
+        let db = d.join("data").join("index.db").to_string_lossy().into_owned();
+        (d, db)
+    }
+
     #[test]
     fn sticker_lifecycle_and_reminder() {
         let conn = test_conn();
+        let (root, db_path) = tmp_ws("life");
         let id = create_sticker(
             &conn,
             &sticker_repo::NewSticker {
@@ -215,6 +270,7 @@ mod tests {
                 content: "- [ ] 任务一\n- [ ] 任务二".into(),
                 ..Default::default()
             },
+            &db_path,
         )
         .unwrap();
 
@@ -236,10 +292,10 @@ mod tests {
         assert!(get_reminder(&conn, id).unwrap().unwrap().remind_at.is_none());
 
         // todo 翻转并落库
-        assert!(toggle_todo_in_sticker(&conn, id, 0).unwrap());
-        let s = get_sticker(&conn, id).unwrap().unwrap();
+        assert!(toggle_todo_in_sticker(&conn, id, 0, &db_path).unwrap());
+        let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
         assert!(s.content.starts_with("- [x] 任务一"), "got: {}", s.content);
-        assert!(!toggle_todo_in_sticker(&conn, id, 99).unwrap());
+        assert!(!toggle_todo_in_sticker(&conn, id, 99, &db_path).unwrap());
 
         // 偏好与 effective
         update_sticker_prefs(
@@ -255,7 +311,65 @@ mod tests {
         let eff = effective_prefs(&conn, &cfg, id).unwrap();
         assert_eq!(eff.opacity, 0.66);
 
-        delete_sticker(&conn, id).unwrap();
-        assert!(get_sticker(&conn, id).unwrap().is_none());
+        delete_sticker(&conn, id, &db_path).unwrap();
+        assert!(get_sticker(&conn, id, &db_path).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sticker_md_is_primary_storage() {
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("md");
+        let id = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker {
+                title: "主存储".into(),
+                content: "# 正文A".into(),
+                ..Default::default()
+            },
+            &db_path,
+        )
+        .unwrap();
+        let file = layout::sticker_file_name(id, "主存储");
+        assert!(root.join("stickers").join(&file).exists(), "create 后 md 文件缺失");
+        assert_eq!(
+            md_store::load(&root, &file).unwrap().unwrap(),
+            "# 正文A"
+        );
+
+        // content 更新 → md 同步写入（主存储）
+        let new_content = "# 正文B".to_string();
+        update_sticker(
+            &conn,
+            id,
+            &sticker_repo::StickerPatch { content: Some(new_content.clone()), ..Default::default() },
+            &db_path,
+        )
+        .unwrap();
+        assert_eq!(md_store::load(&root, &file).unwrap().unwrap(), "# 正文B");
+
+        // 标题变更 → md 文件重命名
+        update_sticker(
+            &conn,
+            id,
+            &sticker_repo::StickerPatch { title: Some("新标题".into()), ..Default::default() },
+            &db_path,
+        )
+        .unwrap();
+        assert!(!root.join("stickers").join(&file).exists(), "旧文件未移除");
+        let new_file = layout::sticker_file_name(id, "新标题");
+        assert!(root.join("stickers").join(&new_file).exists(), "新文件未生成");
+        assert_eq!(md_store::load(&root, &new_file).unwrap().unwrap(), "# 正文B");
+
+        // get 以 md 为准
+        let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
+        assert_eq!(s.title, "新标题");
+        assert_eq!(s.content, "# 正文B");
+
+        // 删除 → md 一并移除
+        delete_sticker(&conn, id, &db_path).unwrap();
+        assert!(!root.join("stickers").join(&new_file).exists());
+        assert!(get_sticker(&conn, id, &db_path).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

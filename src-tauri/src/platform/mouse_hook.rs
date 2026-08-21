@@ -81,6 +81,7 @@ fn try_wake(app: &AppHandle, pt: POINT) {
         let _ = win.set_max_size(None::<tauri::Size>);
         let _ = win.set_focus();
         state.remove_display_window(id);
+        let db = state.db_path();
         let _ = state.with_conn(|c| {
             crate::commands::update_sticker(
                 c,
@@ -89,6 +90,7 @@ fn try_wake(app: &AppHandle, pt: POINT) {
                     display_mode: Some("interact".into()),
                     ..Default::default()
                 },
+                &db,
             )
         });
         let _ = app.emit_to(format!("sticker-{id}"), "sticky://wake", id);
