@@ -15,6 +15,7 @@ mod platform;
 mod reminder;
 mod slash;
 mod state;
+mod workspace;
 
 use commands::create_sticker;
 use db::sticker_repo::NewSticker;

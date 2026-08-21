@@ -31,4 +31,6 @@ time = { version = "0.3", features = ["local-offset"] }
 tokio = { version = "1", features = ["time"] }
 # 用户批准：display 全穿透 + 右键双击唤醒需要 WH_MOUSE_LL 低级鼠标钩子
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+zip = "2"
+dirs = "5"
 
