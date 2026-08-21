@@ -52,19 +52,18 @@ pub fn update_sticker(
     patch: &sticker_repo::StickerPatch,
     db_path: &str,
 ) -> Result<()> {
-    // 标题变化时同步重命名 md 文件
-    if patch.title.is_some() {
-        if let Some(current) = sticker_repo::get(conn, id)? {
-            let root = ws_root(db_path);
+    let root = ws_root(db_path);
+    if let Some(current) = sticker_repo::get(conn, id)? {
+        // 标题变化：用旧标题推旧名，重命名 md → {id}-新标题.md
+        if let Some(new_title) = &patch.title {
             let old = layout::sticker_file_name(current.id, &current.title);
-            let _ = md_store::rename_for_title(&root, &old, current.id, patch.title.as_deref().unwrap_or(""))?;
+            let _ = md_store::rename_for_title(&root, &old, current.id, new_title)?;
         }
-    }
-    // content patch → 原子写 md（主存储），再双写 DB（回退）
-    if let Some(content) = &patch.content {
-        if let Some(current) = sticker_repo::get(conn, id)? {
-            let root = ws_root(db_path);
-            let file_name = layout::sticker_file_name(current.id, &current.title);
+        // content patch → 原子写 md（主存储），再双写 DB（回退）。
+        // 文件名一律按「生效标题」派生：标题同时变化时用新标题，避免写回旧文件名。
+        if let Some(content) = &patch.content {
+            let title = patch.title.as_deref().unwrap_or(&current.title);
+            let file_name = layout::sticker_file_name(current.id, title);
             md_store::write(&root, &file_name, content)?;
         }
     }
@@ -370,6 +369,79 @@ mod tests {
         delete_sticker(&conn, id, &db_path).unwrap();
         assert!(!root.join("stickers").join(&new_file).exists());
         assert!(get_sticker(&conn, id, &db_path).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn update_with_title_and_content_writes_to_new_file_and_db() {
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("both");
+        let id = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker {
+                title: "旧题".into(),
+                content: "X".into(),
+                ..Default::default()
+            },
+            &db_path,
+        )
+        .unwrap();
+
+        // 组合补丁：标题+内容同时变更 → md 重命名到新标题文件且写入新内容
+        update_sticker(
+            &conn,
+            id,
+            &sticker_repo::StickerPatch {
+                title: Some("新题".into()),
+                content: Some("Y".into()),
+                ..Default::default()
+            },
+            &db_path,
+        )
+        .unwrap();
+
+        let old_f = layout::sticker_file_name(id, "旧题");
+        let new_f = layout::sticker_file_name(id, "新题");
+        assert!(!root.join("stickers").join(&old_f).exists(), "旧文件不应残留");
+        assert_eq!(
+            md_store::load(&root, &new_f).unwrap().unwrap(),
+            "Y",
+            "新文件名应为 Y"
+        );
+
+        // get 以 md 为准
+        let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
+        assert_eq!(s.title, "新题");
+        assert_eq!(s.content, "Y");
+
+        // DB content 列双写验证（回退保险）
+        let row = sticker_repo::get(&conn, id).unwrap().unwrap();
+        assert_eq!(row.content, "Y");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn get_sticker_falls_back_to_db_content_when_md_missing() {
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("fallback");
+        let id = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker {
+                title: "回退".into(),
+                content: "DB 内容".into(),
+                ..Default::default()
+            },
+            &db_path,
+        )
+        .unwrap();
+
+        let file = layout::sticker_file_name(id, "回退");
+        let path = root.join("stickers").join(&file);
+        assert!(path.exists());
+        std::fs::remove_file(&path).unwrap();
+
+        let s = get_sticker(&conn, id, &db_path).unwrap().unwrap();
+        assert_eq!(s.content, "DB 内容", "md 缺失应回退 DB content 列");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
