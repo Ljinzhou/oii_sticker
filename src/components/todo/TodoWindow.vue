@@ -16,7 +16,21 @@ let patchTimer: number | undefined;
 let pendingPatch: TodoPatch = {};
 const isReady = ref(false);
 const loadError = ref<string | null>(null);
+const deleteError = ref<string | null>(null);
+let deleteErrorTimer: number | undefined;
 const selected = computed(() => todo.selected);
+async function handleRemove(id: string) {
+  try {
+    await todo.remove(id);
+    deleteError.value = null;
+  } catch (error) {
+    deleteError.value = messageOf(error);
+    if (deleteErrorTimer) window.clearTimeout(deleteErrorTimer);
+    deleteErrorTimer = window.setTimeout(() => {
+      deleteError.value = null;
+    }, 2500);
+  }
+}
 async function startDragging(event: MouseEvent) { if (event.button !== 0) return; event.preventDefault(); try { await getCurrentWindow().startDragging(); } catch (error) { console.error("[todo] 启动窗口拖动失败：", error); } }
 async function createRoot() { await todo.create(); }
 async function createChild(id?: string) { const parentId = id ?? selected.value?.id; if (!parentId || selected.value?.parent_id) return; await todo.create(parentId); }
@@ -51,9 +65,12 @@ onBeforeUnmount(() => { stop?.(); stopClose?.(); void flushSelected(); });
 </script>
 
 <template>
-  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><button title="关闭" @mousedown.stop @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="todo.remove" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer></template></main>
+  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><button title="关闭" @mousedown.stop @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="handleRemove" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer><transition name="toast"><p v-if="deleteError" class="todo-toast" role="alert">{{ deleteError }}</p></transition></template></main>
 </template>
 
 <style scoped>
-.todo-window { height:100vh; display:flex; flex-direction:column; overflow:hidden; background:rgba(255,244,214,.95); color:#222; font-family:system-ui,"Microsoft YaHei","PingFang SC",sans-serif; }.drag-bar { height:30px; flex:none; position:relative; cursor:grab; }.drag-bar button { position:absolute; right:7px; top:4px; border:0; border-radius:5px; background:transparent; color:#777; font-size:20px; line-height:21px; cursor:pointer; }.drag-bar button:hover { color:#d33; background:#ffe3e3; }.todo-status { flex:1; display:grid; place-items:center; margin:0; padding:24px; text-align:center; color:#666; font-size:13px; }.todo-error { color:#b42318; background:rgba(255,255,255,.62); }.splitter { height:6px; flex:none; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.05); cursor:row-resize; }.splitter i { width:28px; height:2px; border-radius:2px; background:rgba(0,0,0,.2); } footer { flex:none; border-top:1px solid rgba(0,0,0,.08); padding:10px; text-align:center; background:rgba(255,255,255,.9); } footer button { border:0; border-radius:8px; min-width:104px; padding:7px 18px; background:#4f7cff; color:#fff; font:13px inherit; cursor:pointer; } footer button:hover { background:#3b67e8; }
+.todo-window { height:100vh; display:flex; flex-direction:column; overflow:hidden; background:rgba(255,244,214,.95); color:#222; font-family:system-ui,"Microsoft YaHei","PingFang SC",sans-serif; }.drag-bar { height:30px; flex:none; position:relative; cursor:grab; }.drag-bar button { position:absolute; right:7px; top:4px; border:0; border-radius:5px; background:transparent; color:#777; font-size:20px; line-height:21px; cursor:pointer; }.drag-bar button:hover { color:#d33; background:#ffe3e3; }.todo-status { flex:1; display:grid; place-items:center; margin:0; padding:24px; text-align:center; color:#666; font-size:13px; }.todo-error { color:#b42318; background:rgba(255,255,255,.62); }
+.todo-toast { position:fixed; left:50%; bottom:56px; transform:translateX(-50%); max-width:86%; margin:0; padding:8px 14px; background:rgba(180,35,24,.94); color:#fff; font-size:12px; line-height:1.4; border-radius:8px; box-shadow:0 4px 14px rgba(0,0,0,.18); pointer-events:none; z-index:30; }
+.toast-enter-active,.toast-leave-active { transition:opacity .2s ease, transform .2s ease; }
+.toast-enter-from,.toast-leave-to { opacity:0; transform:translateX(-50%) translateY(8px); }.splitter { height:6px; flex:none; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.05); cursor:row-resize; }.splitter i { width:28px; height:2px; border-radius:2px; background:rgba(0,0,0,.2); } footer { flex:none; border-top:1px solid rgba(0,0,0,.08); padding:10px; text-align:center; background:rgba(255,255,255,.9); } footer button { border:0; border-radius:8px; min-width:104px; padding:7px 18px; background:#4f7cff; color:#fff; font:13px inherit; cursor:pointer; } footer button:hover { background:#3b67e8; }
 </style>

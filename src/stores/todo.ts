@@ -33,8 +33,14 @@ export const useTodoStore = defineStore("todo", () => {
   async function loadForTodo(todoId: string) {
     const block = await invoke<TodoBlock | null>("get_todo_block_cmd", { id: todoId });
     if (!block) {
-      blocks.value = [];
-      selectedId.value = null;
+      // 窗口所辖块已被删除：不得清空整个便签的任务列表，
+      // 按已知 sticker 全量刷新（其余块仍可编辑），仅剔除该块关联的选中项。
+      if (stickerId.value !== null) {
+        await loadForSticker(stickerId.value);
+      } else {
+        blocks.value = blocks.value.filter((item) => item.id !== todoId && item.parent_id !== todoId);
+        if (selectedId.value === todoId) selectedId.value = blocks.value[0]?.id ?? null;
+      }
       return null;
     }
     await loadForSticker(block.sticker_id, todoId);
