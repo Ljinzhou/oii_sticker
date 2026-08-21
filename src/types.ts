@@ -87,6 +87,13 @@ export interface SystemConfig {
   entries: Record<string, string>;
 }
 
+export interface WorkspaceEntry {
+  id: string;
+  name: string;
+  path: string;
+  created_at: string;
+}
+
 export interface TodoBlock {
   id: string;
   sticker_id: number;

@@ -744,6 +744,16 @@ fn workspace_list_cmd(state: State<'_, AppState>) -> Result<Vec<models::Workspac
         .map_err(|e| e.to_string())
 }
 
+/// 当前激活的工作控件（注册表无 current 时返回 None）。
+#[tauri::command]
+fn workspace_current_cmd(
+    state: State<'_, AppState>,
+) -> Result<Option<models::WorkspaceEntryDto>, String> {
+    workspace::cmds::current(&state.registry_path())
+        .map(|v| v.map(workspace_to_dto))
+        .map_err(|e| e.to_string())
+}
+
 /// 新建工作控件：建目录 + 注册表；无当前项时自动激活（非首次引导，不迁移）。
 #[tauri::command]
 fn workspace_create_cmd(
@@ -1014,6 +1024,7 @@ pub fn run() {
             hide_sticker_cmd,
             slash_query_cmd,
             workspace_list_cmd,
+            workspace_current_cmd,
             workspace_create_cmd,
             workspace_switch_cmd,
             workspace_destroy_cmd,

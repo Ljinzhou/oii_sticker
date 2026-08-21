@@ -3,12 +3,13 @@ import { ref, onMounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
 import { useNotesStore } from "../../stores/notes";
 import { invoke } from "../../composables/useTauri";
+import WorkspaceManager from "./WorkspaceManager.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const settings = useSettingsStore();
 const notes = useNotesStore();
 
-type MenuKey = "general" | "defaults" | "todo" | "about" | "debug";
+type MenuKey = "general" | "defaults" | "todo" | "workspace" | "about" | "debug";
 const activeMenu = ref<MenuKey>("general");
 const autoStart = ref(false);
 const closeBehavior = ref("hide");
@@ -118,6 +119,11 @@ onMounted(async () => {
         @click="activeMenu = 'defaults'"
       >便签样式</button>
       <button class="nav-item" :class="{ active: activeMenu === 'todo' }" @click="activeMenu = 'todo'">Todo 默认值</button>
+      <button
+        class="nav-item"
+        :class="{ active: activeMenu === 'workspace' }"
+        @click="activeMenu = 'workspace'"
+      >工作控件</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'debug' }"
@@ -241,6 +247,11 @@ onMounted(async () => {
         <label class="row"><span>明天截止时间</span><input type="number" min="0" max="23" :value="settings.get('todo_due_tomorrow_hour', '9')" @change="(e) => settings.set('todo_due_tomorrow_hour', (e.target as HTMLInputElement).value)" /></label>
         <label class="row"><span>下周截止星期</span><select :value="settings.get('todo_due_next_week_dow', '1')" @change="(e) => settings.set('todo_due_next_week_dow', (e.target as HTMLSelectElement).value)"><option v-for="(name, value) in ['周日','周一','周二','周三','周四','周五','周六']" :key="value" :value="value">{{ name }}</option></select></label>
         <p class="hint">提醒和截止 chip 选择“明天”或“下周”时使用以上默认值。</p>
+      </div>
+
+      <!-- 工作控件 -->
+      <div v-else-if="activeMenu === 'workspace'">
+        <WorkspaceManager />
       </div>
 
       <!-- Debug -->
