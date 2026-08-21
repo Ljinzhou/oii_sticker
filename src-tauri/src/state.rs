@@ -105,8 +105,8 @@ impl AppState {
             .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
         let new_conn = crate::db::connection::open(path)?;
         crate::db::schema::run_migrations(&new_conn)?;
+        let cfg = crate::db::config_repo::load_all(&new_conn)?;
         *guard = new_conn;
-        let cfg = crate::db::config_repo::load_all(&guard)?;
         drop(guard);
         let mut cfg_guard = self
             .config
