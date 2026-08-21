@@ -47,12 +47,19 @@ function showOk(text: string) {
 }
 
 async function refresh() {
-  const [list, cur] = await Promise.all([
-    invoke<WorkspaceEntry[]>("workspace_list_cmd"),
-    invoke<WorkspaceEntry | null>("workspace_current_cmd"),
-  ]);
-  entries.value = list;
-  currentId.value = cur?.id ?? null;
+  busyKey.value = "refresh";
+  try {
+    const [list, cur] = await Promise.all([
+      invoke<WorkspaceEntry[]>("workspace_list_cmd"),
+      invoke<WorkspaceEntry | null>("workspace_current_cmd"),
+    ]);
+    entries.value = list;
+    currentId.value = cur?.id ?? null;
+  } catch (e) {
+    showError(e);
+  } finally {
+    busyKey.value = null;
+  }
 }
 
 onMounted(async () => {
@@ -61,13 +68,8 @@ onMounted(async () => {
   } catch {
     defaultRoot = "";
   }
-  try {
-    await refresh();
-  } catch (e) {
-    showError(e);
-  } finally {
-    loading.value = false;
-  }
+  await refresh();
+  loading.value = false;
 });
 
 // —— 新建 ——
@@ -174,11 +176,11 @@ async function runTransfer() {
   if (!dest || !transferId.value) return;
   busyKey.value = `transfer:${transferId.value}`;
   try {
-    const msg = await invoke<string>("workspace_transfer_cmd", {
+    await invoke<void>("workspace_transfer_cmd", {
       id: transferId.value,
       destRoot: dest,
     });
-    showOk(msg || "转移完成");
+    showOk("转移完成");
     transferId.value = null;
     await refresh();
   } catch (e) {
@@ -232,7 +234,9 @@ async function runTransfer() {
     <section class="ws-list">
       <header class="ws-list-head">
         <span class="ws-list-title">全部工作控件</span>
-        <button class="ws-btn ghost ws-refresh" :disabled="busy" @click="refresh">刷新</button>
+        <button class="ws-btn ghost ws-refresh" :disabled="busy" @click="refresh">
+          <span v-if="busyKey === 'refresh'" class="spin"></span>刷新
+        </button>
       </header>
 
       <div v-if="loading" class="ws-loading">加载中…</div>
@@ -256,7 +260,7 @@ async function runTransfer() {
               class="ws-btn sm row-switch"
               :disabled="busy"
               @click="onSwitch(w)"
-            >切换</button>
+            ><span v-if="busyKey === `switch:${w.id}`" class="spin"></span>切换</button>
             <button class="ws-btn sm row-transfer" :disabled="busy" @click="openTransfer(w.id)">
               转移
             </button>

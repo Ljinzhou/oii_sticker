@@ -222,6 +222,20 @@ describe("WorkspaceManager", () => {
     expect(wrapper.text()).toContain("新控件");
   });
 
+  it("刷新失败时显示错误 toast，完成后恢复可用", async () => {
+    setupBackend({
+      handlers: {
+        workspace_list_cmd: () => Promise.reject("列表读取失败：数据库不可用"),
+      },
+    });
+    const wrapper = await mountManager();
+
+    const toast = wrapper.get(".ws-toast.error");
+    expect(toast.text()).toContain("列表读取失败：数据库不可用");
+    expect(wrapper.find(".ws-loading").exists()).toBe(false);
+    expect(wrapper.get(".ws-refresh").attributes("disabled")).toBeUndefined();
+  });
+
   it("异步操作进行中禁用全部按钮，完成后恢复", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {
