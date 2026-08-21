@@ -70,9 +70,15 @@ pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBloc
 }
 
 pub fn delete(conn: &Connection, id: &str) -> Result<Option<i64>> {
-    let sticker_id = get(conn, id)?.map(|item| item.sticker_id);
-    if sticker_id.is_some() { conn.execute("DELETE FROM todo_blocks WHERE id = ?1", params![id]).context("删除 Todo 块失败")?; }
-    Ok(sticker_id)
+    let block = get(conn, id)?.context("Todo 块不存在")?;
+    // 根任务即块本体，删除会导致整个块无任务；子任务删除后根任务仍保留，
+    // 满足「每个 Todo 块至少有一个任务」约束。若删除根任务会使块清空，
+    // 则拒绝（外键 CASCADE 会连带清空子任务）。
+    if block.parent_id.is_none() {
+        bail!("每个 Todo 块至少保留一个任务，根任务不可删除");
+    }
+    conn.execute("DELETE FROM todo_blocks WHERE id = ?1", params![id]).context("删除 Todo 块失败")?;
+    Ok(Some(block.sticker_id))
 }
 
 fn row_to_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlock> {
@@ -112,14 +118,28 @@ mod tests {
     }
 
     #[test]
-    fn child_cannot_write_advanced_fields_and_delete_cascades() {
+    fn child_cannot_write_advanced_fields_and_delete_keeps_block_alive() {
         let conn = conn();
         let sticker_id = sticker(&conn);
         let parent = create(&conn, sticker_id, None).unwrap();
         let child = create(&conn, sticker_id, Some(&parent.id)).unwrap();
         let updated = update(&conn, &child.id, &TodoPatch { reminder_at: Some("2030-01-01T00:00:00Z".into()), ..Default::default() }).unwrap();
         assert!(updated.reminder_at.is_none());
-        delete(&conn, &parent.id).unwrap();
+        delete(&conn, &child.id).unwrap();
         assert!(get(&conn, &child.id).unwrap().is_none());
+        assert!(get(&conn, &parent.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn root_cannot_be_deleted_so_block_keeps_at_least_one_task() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        // 仅剩根任务：无论有无子任务，删除根（块本体）一律拒绝
+        let parent = create(&conn, sticker_id, None).unwrap();
+        assert!(delete(&conn, &parent.id).is_err());
+        let child = create(&conn, sticker_id, Some(&parent.id)).unwrap();
+        assert!(delete(&conn, &parent.id).is_err());
+        assert!(get(&conn, &parent.id).unwrap().is_some());
+        assert!(get(&conn, &child.id).unwrap().is_some());
     }
 }

@@ -50,4 +50,18 @@ describe("todo store", () => {
     expect(store.blocks.map((block) => block.id)).toEqual(["t-1"]);
     expect(store.selectedId).toBe("t-1");
   });
+
+  it("窗口根任务被删除后刷新列表，而不清空整个便签的任务", async () => {
+    const remaining = [makeBlock("t-2"), makeBlock("t-3"), makeBlock("t-4", "t-2")];
+    invokeMock.mockResolvedValueOnce(null).mockResolvedValue(remaining);
+    const store = useTodoStore();
+    store.stickerId = 7;
+    store.blocks = [makeBlock("t-1"), ...remaining];
+    store.selectedId = "t-1";
+    const result = await store.loadForTodo("t-1");
+    expect(result).toBeNull();
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "list_todo_for_sticker_cmd", { stickerId: 7 });
+    expect(store.blocks.map((block) => block.id)).toEqual(["t-2", "t-3", "t-4"]);
+    expect(store.selectedId).toBe("t-2");
+  });
 });
