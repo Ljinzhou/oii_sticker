@@ -130,4 +130,20 @@ describe("TodoDetail preset selections", () => {
     expect(document.body.querySelector(".picker-float")).toBeNull();
     wrapper.unmount();
   });
+
+  it("同一自定义按钮再次点击后浮窗保持关闭", async () => {
+    const wrapper = mount(TodoDetail, {
+      props: { item: makeTodo(), presets },
+      attachTo: document.body,
+      global: { stubs: { TodoDatePicker: true, RepeatPicker: true } },
+    });
+    const customBtn = wrapper.findAll(".chips button")[3];
+    await customBtn.trigger("click");
+    expect(document.body.querySelector(".picker-float")).not.toBeNull();
+
+    customBtn.element.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await customBtn.trigger("click");
+    expect(document.body.querySelector(".picker-float")).toBeNull();
+    wrapper.unmount();
+  });
 });

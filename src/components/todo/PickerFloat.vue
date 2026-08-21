@@ -2,7 +2,7 @@
 import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 const props = defineProps<{ anchor: DOMRect }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: [source?: Event] }>();
 const panel = ref<HTMLElement | null>(null);
 const pos = ref({ top: -9999, left: 0 });
 
@@ -18,7 +18,7 @@ function place() {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (panel.value && event.target instanceof Node && !panel.value.contains(event.target)) emit("close");
+  if (panel.value && event.target instanceof Node && !panel.value.contains(event.target)) emit("close", event);
 }
 function onKeydown(event: KeyboardEvent) { if (event.key === "Escape") emit("close"); }
 const onResize = () => emit("close");
@@ -47,4 +47,5 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .picker-float { position: fixed; z-index: 1000; width: max-content; }
+.picker-float :deep(.date-picker), .picker-float :deep(.repeat-picker) { position: static; }
 </style>
