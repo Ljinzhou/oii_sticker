@@ -6,7 +6,7 @@
 //! [`AppState::with_conn_async`] 派发到 `spawn_blocking`，避免阻塞 UI。
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 
 use anyhow::Result;
@@ -19,18 +19,26 @@ pub struct AppState {
     conn: Arc<Mutex<Connection>>,
     config: Arc<RwLock<SystemConfig>>,
     db_path: Arc<Mutex<String>>,
+    /// app_data_dir（程序级注册表所在目录）。
+    app_data_dir: Arc<String>,
     /// 当前处于 display（展示/穿透）模式的便签 id 集合（鼠标钩子唤醒用）。
     display_windows: Arc<Mutex<HashSet<i64>>>,
 }
 
 impl AppState {
-    pub fn new(conn: Connection, config: SystemConfig, db_path: String) -> Self {
+    pub fn new(conn: Connection, config: SystemConfig, db_path: String, app_data_dir: String) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
             config: Arc::new(RwLock::new(config)),
             db_path: Arc::new(Mutex::new(db_path)),
+            app_data_dir: Arc::new(app_data_dir),
             display_windows: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// 程序级工作控件注册表路径：<app_data_dir>/workspaces.json。
+    pub fn registry_path(&self) -> PathBuf {
+        PathBuf::from(&*self.app_data_dir).join("workspaces.json")
     }
 
     /// display 模式窗口集合（只读拷贝）。
@@ -139,7 +147,7 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
         schema::run_migrations(&conn).unwrap();
         let config = SystemConfig::default();
-        AppState::new(conn, config, ":memory:".to_string())
+        AppState::new(conn, config, ":memory:".to_string(), std::env::temp_dir().to_string_lossy().into_owned())
     }
 
     /// 多线程并发写：单连接 Mutex + 每线程独立 with_conn，无死锁且不丢数据。
@@ -192,6 +200,7 @@ mod tests {
             crate::db::connection::open(&p1).unwrap(),
             SystemConfig::default(),
             p1.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
         );
         s.switch_db(&p2).unwrap();
         assert_eq!(s.db_path(), p2.to_string_lossy());
