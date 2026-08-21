@@ -91,18 +91,21 @@ export interface TodoBlock {
   id: string;
   sticker_id: number;
   title: string;
+  block_title: string;
   description: string | null;
   is_completed: boolean;
   parent_id: string | null;
   reminder_at: string | null;
   due_at: string | null;
   repeat_rule: string | null;
+  sort_order?: number;
   created_at: string;
   updated_at: string;
 }
 
 export interface TodoPatch {
   title?: string;
+  block_title?: string;
   description?: string;
   is_completed?: boolean;
   reminder_at?: string;

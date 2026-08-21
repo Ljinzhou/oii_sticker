@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -234,6 +234,54 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v8 → v9：Todo 块新增独立「块标题」（block_title），
+/// 卡头不再直接使用第一个任务名作为标题。
+fn migrate_v8_to_v9(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_table && !has_column(c, "todo_blocks", "block_title")? {
+            c.execute(
+                "ALTER TABLE todo_blocks ADD COLUMN block_title TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .context("迁移 v8→v9 失败")?;
+        }
+        Ok(())
+    })
+}
+
+/// 表是否已含指定列（迁移幂等检查）。
+fn has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let cols = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(cols.iter().any(|c| c == col))
+}
+
+/// v9 → v10：Todo 块新增 `sort_order`，支持任务拖拽排序（旧数据保持创建顺序）。
+fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_table && !has_column(c, "todo_blocks", "sort_order")? {
+            c.execute(
+                "ALTER TABLE todo_blocks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .context("迁移 v9→v10 失败")?;
+        }
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -269,6 +317,14 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
 
     if current < 8 {
         migrate_v7_to_v8(conn)?;
+    }
+
+    if current < 9 {
+        migrate_v8_to_v9(conn)?;
+    }
+
+    if current < 10 {
+        migrate_v9_to_v10(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -311,7 +367,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cnt, 1);
-        assert_eq!(run_migrations(&conn).unwrap(), 8);
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     /// v2 库执行迁移：auto_scroll_speed 列应被补上；
@@ -329,13 +385,13 @@ mod tests {
         .unwrap();
 
         // 第一次迁移到 v6。
-        assert_eq!(run_migrations(&conn).unwrap(), 8);
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
 
         // 模拟"迁移中途崩溃后重跑"：列已存在时再跑 v2→v3 不得报错。
         migrate_v2_to_v3(&conn).unwrap();
 
         // 再次全量迁移应为 no-op 成功。
-        assert_eq!(run_migrations(&conn).unwrap(), 8);
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
 
         // 列确实存在。
         assert!(table_has_column(&conn, "sticker_prefs", "auto_scroll_speed").unwrap());
@@ -360,7 +416,7 @@ mod tests {
         // 事务已回滚：连接不在事务中，可以继续执行新语句。
         conn.execute_batch("ALTER TABLE sticker_prefs_bak RENAME TO sticker_prefs;")
             .unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 8);
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
     }
 
     /// 全新库：init_schema 建全部表并写 user_version=5。
@@ -394,7 +450,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     /// v5 → v6：旧默认背景色 #CCFFCC 迁移为 #FFF4D6，其他键不受影响。
@@ -435,7 +491,7 @@ mod tests {
              CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', updated_at TEXT);
              PRAGMA user_version = 6;",
         ).unwrap();
-        assert_eq!(run_migrations(&conn).unwrap(), 8);
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
         let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='todo_blocks')", [], |row| row.get(0)).unwrap();
         assert!(exists);
         assert_eq!(
@@ -454,6 +510,19 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v8_to_v9_adds_block_title_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE stickers (id INTEGER PRIMARY KEY);
+             CREATE TABLE todo_blocks (id TEXT PRIMARY KEY, sticker_id INTEGER);
+             PRAGMA user_version = 8;",
+        )
+        .unwrap();
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "todo_blocks", "block_title").unwrap());
+    }
+
+    #[test]
     fn migrate_v7_to_v8_adds_todo_window_topmost_default() {
         let existing = Connection::open_in_memory().unwrap();
         existing
@@ -464,7 +533,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(run_migrations(&existing).unwrap(), 8);
+        assert_eq!(run_migrations(&existing).unwrap(), SCHEMA_VERSION);
         assert_eq!(
             existing
                 .query_row(
@@ -485,7 +554,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(run_migrations(&missing).unwrap(), 8);
+        assert_eq!(run_migrations(&missing).unwrap(), SCHEMA_VERSION);
         assert_eq!(
             missing
                 .query_row(

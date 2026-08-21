@@ -51,11 +51,26 @@ describe("renderMarkdown", () => {
   });
 
   it("受控 Todo 标记渲染为卡片，任意 HTML 不会透传", () => {
-    const todo: TodoBlock = { id: "t-1", sticker_id: 1, title: "购物", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const todo: TodoBlock = { id: "t-1", sticker_id: 1, title: "购物", block_title: "", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
     const html = renderMarkdown('<todo-block id="t-1"></todo-block>\n\n<script>alert(1)</script>', [todo]);
     expect(html).toContain('data-todo-id="t-1"');
     expect(html).toContain("购物");
     expect(html).not.toContain("<script>");
+  });
+
+  it("同便签多个标记合并为一张卡：全部任务完整显示、后续标记不重复渲染", () => {
+    const rootA: TodoBlock = { id: "t-1", sticker_id: 1, title: "任务一", block_title: "任务块", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const childA: TodoBlock = { ...rootA, id: "t-2", title: "子任务1", parent_id: "t-1" };
+    const rootB: TodoBlock = { ...rootA, id: "t-3", title: "任务二" };
+    const html = renderMarkdown('<todo-block id="t-1"></todo-block>\n\n<todo-block id="t-3"></todo-block>', [rootA, childA, rootB]);
+    expect((html.match(/todo-block-card/g) ?? []).length).toBe(1);
+    expect(html).toContain("任务一");
+    expect(html).toContain("子任务1");
+    expect(html).toContain("任务二");
+    expect(html).toContain("任务块");
+    expect(html).toContain("0 / 3");
+    // 校验框只渲染每个任务一次
+    expect((html.match(/todo-task-checkbox/g) ?? []).length).toBe(3);
   });
 });
 

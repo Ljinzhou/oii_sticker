@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+﻿import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import TodoDetail from "./TodoDetail.vue";
@@ -19,6 +19,7 @@ function makeTodo(overrides: Partial<TodoBlock> = {}): TodoBlock {
     id: "todo-1",
     sticker_id: 1,
     title: "任务",
+    block_title: "",
     description: null,
     is_completed: false,
     parent_id: null,
@@ -112,6 +113,41 @@ describe("TodoDetail preset selections", () => {
     expect(fieldButton(wrapper, "设置任务重复", "自定义").classes()).toContain("active");
     expect(button(wrapper, "今天").classes()).not.toContain("active");
     expect(button(wrapper, "每周").classes()).not.toContain("active");
+  });
+
+  it("再次点击已生效的预设按钮取消设置", async () => {
+    const wrapper = mountDetail();
+    await button(wrapper, "1小时后").trigger("click");
+    await wrapper.setProps({ item: makeTodo({ reminder_at: "2026-08-20T06:30:00.000Z" }) });
+    expect(button(wrapper, "1小时后").classes()).toContain("active");
+
+    await button(wrapper, "1小时后").trigger("click");
+    expect(wrapper.emitted("patch")?.slice(-1)[0]).toEqual([{ reminder_at: "" }]);
+    expect(button(wrapper, "1小时后").classes()).not.toContain("active");
+  });
+
+  it("预设每周按当前日期记录星期，标签显示每1周的周几", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-24T10:00:00+08:00")); // 周一
+    const wrapper = mountDetail();
+
+    await button(wrapper, "每周").trigger("click");
+    const patch = wrapper.emitted("patch")?.slice(-1)[0];
+    expect(patch).toEqual([{ repeat_rule: JSON.stringify({ unit: "week", interval: 1, weekdays: [1] }) }]);
+
+    await wrapper.setProps({ item: makeTodo({ repeat_rule: JSON.stringify({ unit: "week", interval: 1, weekdays: [1] }) }) });
+    expect(wrapper.text()).toContain("设置任务重复 - 每 1 周的 周一");
+    await button(wrapper, "每周").trigger("click");
+    expect(wrapper.emitted("patch")?.slice(-1)[0]).toEqual([{ repeat_rule: "" }]);
+  });
+
+  it("自定义已设置时再次点击自定义按钮取消设置", async () => {
+    const wrapper = mountDetail(makeTodo({ due_at: "2026-08-21T00:00:00+08:00" }));
+    expect(fieldButton(wrapper, "截至时间", "自定义").classes()).toContain("active");
+
+    await fieldButton(wrapper, "截至时间", "自定义").trigger("click");
+    expect(wrapper.emitted("patch")?.slice(-1)[0]).toEqual([{ due_at: "" }]);
+    expect(wrapper.text()).toContain("截至时间");
   });
 
   it("自定义按钮打开 Teleport 浮窗，点击外部关闭", async () => {

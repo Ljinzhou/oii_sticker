@@ -30,7 +30,10 @@ export const useTodoStore = defineStore("todo", () => {
     }
   }
 
-  async function loadForTodo(todoId: string) {
+  /** 加载窗口所辖块。selectBlock=true 仅在打开窗口时使用；
+   *  后续 todo://updated 刷新必须保持用户当前选中（否则编辑任务时
+   *  补丁回写会把选中强制切回窗口根任务，导致输入焦点跳失）。 */
+  async function loadForTodo(todoId: string, selectBlock = false) {
     const block = await invoke<TodoBlock | null>("get_todo_block_cmd", { id: todoId });
     if (!block) {
       // 窗口所辖块已被删除：不得清空整个便签的任务列表，
@@ -43,7 +46,7 @@ export const useTodoStore = defineStore("todo", () => {
       }
       return null;
     }
-    await loadForSticker(block.sticker_id, todoId);
+    await loadForSticker(block.sticker_id, selectBlock ? todoId : undefined);
     return block;
   }
 
@@ -85,5 +88,25 @@ export const useTodoStore = defineStore("todo", () => {
     return update(id, { is_completed: isCompleted });
   }
 
-  return { blocks, selectedId, stickerId, loading, selected, loadForSticker, loadForTodo, create, update, remove, toggle };
+  /** 拖拽排序：ids 为同一分组（根或同父子任务）的完整新顺序。乐观更新，失败回滚。 */
+  async function reorder(ids: string[]) {
+    if (ids.length < 2) return;
+    const groupId = blocks.value.find((block) => block.id === ids[0])?.parent_id ?? null;
+    const rank = new Map(ids.map((id, index) => [id, index]));
+    blocks.value = blocks.value.slice().sort((a, b) => {
+      const inA = a.parent_id === groupId;
+      const inB = b.parent_id === groupId;
+      if (inA && inB) return (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER);
+      return 0;
+    });
+    try {
+      await invoke("reorder_todo_cmd", { ids });
+    } catch (error) {
+      // 还原为服务端顺序并上抛（UI 展示错误 toast）
+      if (stickerId.value !== null) await loadForSticker(stickerId.value);
+      throw error;
+    }
+  }
+
+  return { blocks, selectedId, stickerId, loading, selected, loadForSticker, loadForTodo, create, update, remove, toggle, reorder };
 });

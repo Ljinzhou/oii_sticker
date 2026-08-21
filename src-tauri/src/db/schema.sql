@@ -114,12 +114,14 @@ CREATE TABLE todo_blocks (
     id            TEXT PRIMARY KEY,
     sticker_id    INTEGER NOT NULL REFERENCES stickers(id) ON DELETE CASCADE,
     title         TEXT NOT NULL DEFAULT '',
+    block_title   TEXT NOT NULL DEFAULT '',
     description   TEXT,
     is_completed  INTEGER NOT NULL DEFAULT 0,
     parent_id     TEXT REFERENCES todo_blocks(id) ON DELETE CASCADE,
     reminder_at   TEXT,
     due_at        TEXT,
     repeat_rule   TEXT,
+    sort_order    INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );

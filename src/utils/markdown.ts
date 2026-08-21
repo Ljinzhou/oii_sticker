@@ -134,6 +134,11 @@ md.block.ruler.before("paragraph", "show_done", showDoneRule, { alt: ["paragraph
 md.renderer.rules.todo_block = (tokens, idx, _options, env) => {
   const blocks = Array.isArray(env?.todoBlocks) ? env.todoBlocks as TodoBlock[] : [];
   const id = (tokens[idx].meta as { id?: string } | null)?.id ?? "";
+  // 同便签的多个 <todo-block> 标记合并为一张卡：仅首个有效标记渲染，
+  // 后续标记为空（避免任务重复渲染），任一任务都会出现在卡内。
+  if (tokens.slice(0, idx).some((t) => t.type === "todo_block" && blocks.some((b) => b.id === (t.meta as { id?: string })?.id))) {
+    return "";
+  }
   return renderTodoCard(blocks, id, Boolean(env?.interactive));
 };
 md.renderer.rules.show_done = (_tokens, _idx, _options, env) => {
@@ -144,11 +149,18 @@ md.renderer.rules.show_done = (_tokens, _idx, _options, env) => {
 function renderTodoCard(blocks: TodoBlock[], id: string, interactive: boolean): string {
   const root = blocks.find((block) => block.id === id);
   if (!root) return `<div class="todo-block-card todo-block-missing" data-todo-id="${escapeText(id)}">未找到任务</div>`;
-  const children = blocks.filter((block) => block.parent_id === root.id);
-  const all = [root, ...children];
-  const done = all.filter((block) => block.is_completed).length;
-  const items = all.map((block) => `<li class="${block.is_completed ? "tb-done" : ""}${block.parent_id ? " tb-sub" : ""}"><input type="checkbox" class="todo-task-checkbox" data-todo-id="${escapeText(block.id)}"${block.is_completed ? " checked" : ""}${interactive ? "" : " disabled"}><span class="tb-name">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
-  return `<div class="todo-block-card" data-todo-id="${escapeText(root.id)}"><div class="tb-head"><span class="tb-icon">☑</span><span class="tb-title">${escapeText(root.title || "未命名任务")}</span><span class="tb-count">${done} / ${all.length}</span></div><ul class="tb-list">${items}</ul></div>`;
+  // 合并该便签的全部任务到一张卡：根任务在前、各自子任务排其后（保持列表顺序）。
+  const group = blocks.filter((block) => block.sticker_id === root.sticker_id);
+  const order: TodoBlock[] = [];
+  for (const block of group) {
+    if (block.parent_id) continue;
+    order.push(block, ...group.filter((child) => child.parent_id === block.id));
+  }
+  const done = order.filter((block) => block.is_completed).length;
+  const items = order.map((block) => `<li class="${block.is_completed ? "tb-done" : ""}${block.parent_id ? " tb-sub" : ""}"><input type="checkbox" class="todo-task-checkbox" data-todo-id="${escapeText(block.id)}"${block.is_completed ? " checked" : ""}${interactive ? "" : " disabled"}><span class="tb-name">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
+  // 卡头使用独立块标题（block_title），不再直接用第一个任务名作为标题
+  const head = order[0]?.block_title?.trim() || "未命名任务";
+  return `<div class="todo-block-card" data-todo-id="${escapeText(root.id)}"><div class="tb-head"><span class="tb-icon">☑</span><span class="tb-title">${escapeText(head)}</span><span class="tb-count">${done} / ${order.length}</span></div><ul class="tb-list">${items}</ul></div>`;
 }
 
 function renderDoneCard(blocks: TodoBlock[]): string {

@@ -44,7 +44,7 @@ describe("MarkdownView", () => {
   });
 
   it("Todo 卡片在交互态可切换，卡片空白处打开窗口", async () => {
-    const todo = { id: "t-1", sticker_id: 1, title: "购物", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const todo = { id: "t-1", sticker_id: 1, title: "购物", block_title: "", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
     const wrapper = mount(MarkdownView, { props: { content: '<todo-block id="t-1"></todo-block>', interactive: true, todoBlocks: [todo] } });
     await wrapper.find(".todo-task-checkbox").trigger("click");
     expect(wrapper.emitted("toggleTodo")?.[0]).toEqual(["t-1", true]);
