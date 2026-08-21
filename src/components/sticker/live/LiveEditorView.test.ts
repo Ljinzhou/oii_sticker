@@ -125,7 +125,7 @@ describe("LiveEditorView（CM6 内核）", () => {
       doc: '<todo-block id="t-1"></todo-block>\n正文',
       fontSize: 14,
       todoBlocks: [{
-        id: "t-1", sticker_id: 7, title: "购买牛奶", description: null, is_completed: false,
+        id: "t-1", sticker_id: 7, title: "购买牛奶", block_title: "", description: null, is_completed: false,
         parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
       }],
       onDocChange: () => {},
@@ -144,7 +144,7 @@ describe("LiveEditorView（CM6 内核）", () => {
       doc: '<todo-block id="t-1"></todo-block>\n正文',
       fontSize: 14,
       todoBlocks: [{
-        id: "t-1", sticker_id: 7, title: "购买牛奶", description: null, is_completed: false,
+        id: "t-1", sticker_id: 7, title: "购买牛奶", block_title: "", description: null, is_completed: false,
         parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
       }],
       onDocChange: () => {},

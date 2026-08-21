@@ -5,7 +5,7 @@ import { useTodoStore } from "./todo";
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock("../composables/useTauri", () => ({ invoke: invokeMock }));
 
-const todo = { id: "t-1", sticker_id: 7, title: "任务", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+const todo = { id: "t-1", sticker_id: 7, title: "任务", block_title: "", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
 
 function makeBlock(id: string, parentId: string | null = null) {
   return { ...todo, id, parent_id: parentId };
@@ -63,5 +63,20 @@ describe("todo store", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, "list_todo_for_sticker_cmd", { stickerId: 7 });
     expect(store.blocks.map((block) => block.id)).toEqual(["t-2", "t-3", "t-4"]);
     expect(store.selectedId).toBe("t-2");
+  });
+
+  it("拖拽重排乐观更新本地顺序，失败时回滚并上抛", async () => {
+    invokeMock.mockResolvedValue([makeBlock("t-1"), makeBlock("t-2")]);
+    const store = useTodoStore();
+    await store.loadForSticker(7);
+    // 立即乐观重排（await 之前顺序已变）
+    const running = store.reorder(["t-2", "t-1"]);
+    expect(store.blocks.map((block) => block.id)).toEqual(["t-2", "t-1"]);
+    expect(invokeMock).toHaveBeenCalledWith("reorder_todo_cmd", { ids: ["t-2", "t-1"] });
+    await running;
+    // 失败：回滚为服务端顺序并上抛错误
+    invokeMock.mockRejectedValueOnce(new Error("排序失败")).mockResolvedValue([makeBlock("t-2"), makeBlock("t-1")]);
+    await expect(store.reorder(["t-1", "t-2"])).rejects.toThrow("排序失败");
+    expect(store.blocks.map((block) => block.id)).toEqual(["t-2", "t-1"]);
   });
 });

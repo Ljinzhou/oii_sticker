@@ -69,7 +69,7 @@ describe("StickerEditor（容器路由）", () => {
     const store = useSettingsStore();
     store.config = { entries: { editor_mode: "live" } };
     const todoBlocks = [{
-      id: "t-1", sticker_id: 7, title: "任务", description: null, is_completed: false,
+      id: "t-1", sticker_id: 7, title: "任务", block_title: "", description: null, is_completed: false,
       parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
     }];
     const wrapper = shallowMount(StickerEditor, {

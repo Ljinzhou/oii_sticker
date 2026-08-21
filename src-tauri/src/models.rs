@@ -172,12 +172,14 @@ pub struct TodoBlock {
     pub id: String,
     pub sticker_id: i64,
     pub title: String,
+    pub block_title: String,
     pub description: Option<String>,
     pub is_completed: bool,
     pub parent_id: Option<String>,
     pub reminder_at: Option<String>,
     pub due_at: Option<String>,
     pub repeat_rule: Option<String>,
+    pub sort_order: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -186,6 +188,7 @@ pub struct TodoBlock {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TodoPatch {
     pub title: Option<String>,
+    pub block_title: Option<String>,
     pub description: Option<String>,
     pub is_completed: Option<bool>,
     pub reminder_at: Option<String>,

@@ -25,6 +25,8 @@ const todoBlocks = ref<TodoBlock[]>([]);
 const mode = ref<StickerMode>("display");
 const showSettings = ref(false);
 const alertActive = ref(false);
+/** Todo 窗口在场（用户正在编辑 Todo）：interact 期间不自动收起回展示模式。 */
+const todoPresent = ref(false);
 const unlisteners: UnlistenFn[] = [];
 let collapseTimer: number | undefined;
 /** 模式切换提示（应用内 toast，2 秒自动消失，替代系统通知）。 */
@@ -156,7 +158,7 @@ async function applyMode(next: StickerMode) {
  *  收起秒数可在系统设置修改（auto_collapse_secs，默认 5）。 */
 function resetCollapseTimer() {
   if (collapseTimer) window.clearTimeout(collapseTimer);
-  if (mode.value !== "interact" || showSettings.value) return;
+  if (mode.value !== "interact" || showSettings.value || todoPresent.value) return;
   const secs = settings.autoCollapseSecs;
   collapseTimer = window.setTimeout(() => {
     if (mode.value === "interact" && !showSettings.value) applyMode("display");
@@ -254,6 +256,12 @@ onMounted(async () => {
       invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId }).then((items) => {
         todoBlocks.value = items;
       });
+    }),
+  );
+  unlisteners.push(
+    await listen<boolean>("sticky://todo-presence", (present) => {
+      todoPresent.value = present;
+      resetCollapseTimer();
     }),
   );
   // 全局鼠标钩子中键+左键唤醒（display 穿透状态）→ 前端切换 interact。

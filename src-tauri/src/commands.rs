@@ -3,7 +3,7 @@
 //! 本模块只做"模型 ←→ repo"的业务编排（默认值、级联、文本变换），
 //! 不直接接触 Tauri 运行时；阶段 3 起在其上薄包一层 `#[tauri::command]`。
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use rusqlite::Connection;
 
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
@@ -132,8 +132,11 @@ pub fn list_todos(conn: &Connection, sticker_id: i64) -> Result<Vec<crate::model
 
 // ── 独立 Todo 块 ──
 
-pub fn list_todo_blocks(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlock>> {
-    todo_block_repo::list_by_sticker(conn, sticker_id)
+pub fn list_todo_blocks(conn: &Connection, sticker_id: i64) -> Result<(Vec<TodoBlock>, bool)> {
+    // 列表前先为无标记的根任务补写标记（幂等），保证块与正文一致；
+    // 返回是否补写了标记（调用方据此通知便签窗口刷新正文）。
+    let retagged = !todo_block_repo::retag_orphans_for_sticker(conn, sticker_id)?.is_empty();
+    Ok((todo_block_repo::list_by_sticker(conn, sticker_id)?, retagged))
 }
 
 pub fn get_todo_block(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
@@ -150,6 +153,44 @@ pub fn update_todo_block(conn: &Connection, id: &str, patch: &TodoPatch) -> Resu
 
 pub fn delete_todo_block(conn: &Connection, id: &str) -> Result<Option<i64>> {
     todo_block_repo::delete(conn, id)
+}
+
+/// 把 `<todo-block>` 标记追加到便签内容末尾（幂等；已含标记则跳过）。
+/// 供 Todo 窗口新建根任务后同步标记，保证块与正文一致、不产生孤儿。
+pub fn sync_todo_marker(conn: &Connection, sticker_id: i64, id: &str) -> Result<bool> {
+    let Some(sticker) = sticker_repo::get(conn, sticker_id)? else {
+        bail!("便签不存在");
+    };
+    let tagged = todo_block_repo::tagged_ids(&sticker.content);
+    if tagged.iter().any(|t| t == id) {
+        return Ok(false);
+    }
+    let tag = format!("<todo-block id=\"{id}\"></todo-block>");
+    let next = if sticker.content.trim().is_empty() {
+        tag
+    } else {
+        format!("{}\n\n{tag}", sticker.content.trim_end())
+    };
+    sticker_repo::update(conn, sticker_id, &sticker_repo::StickerPatch {
+        content: Some(next),
+        ..Default::default()
+    })?;
+    Ok(true)
+}
+
+/// 全局补写孤儿 Todo 块标记（启动时调用一次），返回每便签被补写的 id 列表供广播。
+pub fn retag_orphan_todos(conn: &Connection) -> Result<Vec<(i64, Vec<String>)>> {
+    todo_block_repo::retag_all_orphans(conn)
+}
+
+/// 重排任务（拖拽排序），返回所属便签 id（空列表返回 None）。
+pub fn reorder_todo(conn: &Connection, ids: &[String]) -> Result<Option<i64>> {
+    if ids.is_empty() {
+        return Ok(None);
+    }
+    let sticker_id = todo_block_repo::get(conn, &ids[0])?.map(|b| b.sticker_id);
+    todo_block_repo::reorder(conn, ids)?;
+    Ok(sticker_id)
 }
 
 #[cfg(test)]

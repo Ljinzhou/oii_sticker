@@ -123,12 +123,11 @@ fn create_todo_win(
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title("任务")
         .inner_size(440.0, 620.0)
-        .min_inner_size(440.0, 620.0)
-        .max_inner_size(440.0, 620.0)
+        .min_inner_size(320.0, 420.0)
         .decorations(false)
         .skip_taskbar(true)
         .maximizable(false)
-        .resizable(false)
+        .resizable(true)
         .build()?;
     if let Err(e) = win.set_always_on_top(always_on_top) {
         tracing::warn!("设置 Todo 窗口置顶失败 label={label} always_on_top={always_on_top}: {e}");
@@ -410,10 +409,18 @@ fn get_todo_block_cmd(
 
 #[tauri::command]
 fn list_todo_for_sticker_cmd(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     sticker_id: i64,
 ) -> Result<Vec<models::TodoBlock>, String> {
-    state.with_conn(|c| commands::list_todo_blocks(c, sticker_id)).map_err(|e| e.to_string())
+    let (blocks, retagged) = state
+        .with_conn(|c| commands::list_todo_blocks(c, sticker_id))
+        .map_err(|e| e.to_string())?;
+    if retagged {
+        // 补写了孤儿块标记：通知便签窗口刷新正文，使任务卡即时展示
+        events::emit_push_update(&app, sticker_id);
+    }
+    Ok(blocks)
 }
 
 #[tauri::command]
@@ -450,6 +457,47 @@ fn delete_todo_block_cmd(
 ) -> Result<(), String> {
     if let Some(sticker_id) = state.with_conn(|c| commands::delete_todo_block(c, &id)).map_err(|e| e.to_string())? {
         events::emit_todo_updated(&app, sticker_id, &id);
+        // 删除根任务会同步移除便签正文中的标记行，需刷新便签窗口内容
+        events::emit_push_update(&app, sticker_id);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn sync_todo_marker_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    sticker_id: i64,
+    id: String,
+) -> Result<(), String> {
+    let changed = state
+        .with_conn(|c| commands::sync_todo_marker(c, sticker_id, &id))
+        .map_err(|e| e.to_string())?;
+    if changed {
+        events::emit_push_update(&app, sticker_id);
+    }
+    Ok(())
+}
+
+/// Todo 窗口在场状态通报：编辑 Todo 期间所属便签不自动收起回展示模式。
+#[tauri::command]
+fn notify_todo_presence_cmd(app: tauri::AppHandle, sticker_id: i64, present: bool) -> Result<(), String> {
+    events::emit_to_label(&app, &format!("sticker-{sticker_id}"), "sticky://todo-presence", present);
+    Ok(())
+}
+
+/// 任务拖拽排序：ids 为该分组（根或同父子任务）的完整新顺序。
+#[tauri::command]
+fn reorder_todo_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    if let Some(sticker_id) = state
+        .with_conn(|c| commands::reorder_todo(c, &ids))
+        .map_err(|e| e.to_string())?
+    {
+        events::emit_todo_updated(&app, sticker_id, &ids[0]);
     }
     Ok(())
 }
@@ -698,6 +746,15 @@ pub fn run() {
             let handle = app.handle().clone();
             let state = app.state::<AppState>().inner().clone();
 
+            // 启动一致性：为正文中缺少标记的孤儿 Todo 块补写标记（旧版本遗留），
+            // 并通知所属便签窗口刷新正文。
+            if let Ok(retagged) = state.with_conn(commands::retag_orphan_todos) {
+                for (sticker_id, todo_ids) in &retagged {
+                    tracing::info!("[setup] 为孤儿 Todo 块补写标记 sticker={sticker_id} ids={todo_ids:?}");
+                    events::emit_push_update(&handle, *sticker_id);
+                }
+            }
+
             // 系统托盘（新建便签/打开主控台/系统设置/退出）
             platform::tray::install(&handle, dispatch_tray)?;
 
@@ -777,6 +834,9 @@ pub fn run() {
             create_todo_block_cmd,
             update_todo_block_cmd,
             delete_todo_block_cmd,
+            sync_todo_marker_cmd,
+            notify_todo_presence_cmd,
+            reorder_todo_cmd,
             open_todo_window_cmd,
             close_todo_window_cmd,
             debug_notify_cmd,
