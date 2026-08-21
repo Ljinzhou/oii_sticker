@@ -129,4 +129,20 @@ describe("StickerWindow", () => {
     wrapper.unmount();
     expect(cancelFrame).toHaveBeenCalled();
   });
+
+  it("隐藏释放后 waking 前先 load 重载 get_sticker_cmd", async () => {
+    const wrapper = await mountSticker("interact");
+    // 关闭隐藏 → releaseData（sticker 置 null，mode 仍 interact）
+    await wrapper.find(".ov-btn.close").trigger("click");
+    await flushPromises();
+    // 收起回展示模式（此时 sticker 已 null，update_sticker_cmd 跳过）
+    await wrapper.find('.ov-btn[title="收起回展示模式"]').trigger("click");
+    await flushPromises();
+    mocks.invokeMock.mockClear();
+    const wake = mocks.handlers.get("sticky://wake");
+    expect(wake).toBeDefined();
+    await wake?.(7);
+    await flushPromises();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("get_sticker_cmd", { id: 7 });
+  });
 });
