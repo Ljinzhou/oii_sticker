@@ -37,4 +37,17 @@ describe("TodoList child tasks", () => {
     await wrapper.get(".add-child").trigger("click");
     expect(wrapper.emitted("createChild")).toEqual([[root.id]]);
   });
+
+  it("每行渲染删除按钮，点击 emit remove 且不触发 select", async () => {
+    const root = makeTodo({ id: "root", title: "根任务" });
+    const child1 = makeTodo({ id: "child-1", title: "子任务一", parent_id: root.id });
+    const wrapper = mount(TodoList, { props: { items: [root, child1], selectedId: root.id, height: 220 } });
+
+    const deletes = wrapper.findAll(".row-delete");
+    expect(deletes).toHaveLength(2);
+
+    await deletes[1].trigger("click");
+    expect(wrapper.emitted("remove")).toEqual([[child1.id]]);
+    expect(wrapper.emitted("select")).toBeUndefined();
+  });
 });

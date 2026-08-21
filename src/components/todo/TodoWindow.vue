@@ -51,7 +51,7 @@ onBeforeUnmount(() => { stop?.(); stopClose?.(); void flushSelected(); });
 </script>
 
 <template>
-  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><button title="关闭" @mousedown.stop @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer></template></main>
+  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><button title="关闭" @mousedown.stop @click.stop="invoke('close_todo_window_cmd', { id: todoId })">×</button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="todo.remove" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer></template></main>
 </template>
 
 <style scoped>
