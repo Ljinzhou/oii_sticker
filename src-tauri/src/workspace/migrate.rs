@@ -64,11 +64,18 @@ pub fn run(
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut summary = MigrateSummary::default();
+    // 1) md 文件先行（事务外）：文件落盘失败时提前返回，DB 尚未写入。
+    for (id, _parent_id, title, content, ..) in &rows {
+        let file_name = crate::workspace::layout::sticker_file_name(*id, title);
+        crate::workspace::md_store::write(new_root, &file_name, content)?;
+    }
+    // 2) 全量 DB 插入放入同一事务：任一阶段失败整体回滚，不留半迁移状态。
+    let tx = new_conn.unchecked_transaction().context("开启迁移事务失败")?;
     for (
         id,
         parent_id,
         title,
-        content,
+        _content,
         heading_level,
         pos_x,
         pos_y,
@@ -83,11 +90,9 @@ pub fn run(
         display_mode,
         created_at,
         updated_at,
-    ) in rows
+    ) in &rows
     {
-        let file_name = crate::workspace::layout::sticker_file_name(id, &title);
-        crate::workspace::md_store::write(new_root, &file_name, &content)?;
-        new_conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO stickers
                (id, parent_id, title, content, heading_level, pos_x, pos_y, width, height, opacity, bg_color,
                 always_on_top, auto_scroll, is_completed, alert_active, display_mode, created_at, updated_at)
@@ -97,8 +102,7 @@ pub fn run(
         ).context("迁移便签失败")?;
         summary.stickers += 1;
     }
-    // 2) todo_items / todo_blocks / sticker_prefs / sticker_attrs：逐表复制（id 保持，INSERT OR IGNORE）
-    //    —— 每表固定列清单 + 位置参数（?1..?N 与列一一对应）。
+    // 3) 其余表固定列复制（同一事务内）。
     const TODO_ITEM_COLS: &[&str] = &[
         "id",
         "sticker_id",
@@ -144,10 +148,11 @@ pub fn run(
         "remind_rule",
         "is_recurring",
     ];
-    copy_fixed(&legacy, new_conn, "todo_items", TODO_ITEM_COLS)?;
-    copy_fixed(&legacy, new_conn, "todo_blocks", TODO_BLOCK_COLS)?;
-    copy_fixed(&legacy, new_conn, "sticker_prefs", PREFS_COLS)?;
-    copy_fixed(&legacy, new_conn, "sticker_attrs", ATTRS_COLS)?;
+    copy_fixed(&legacy, &tx, "todo_items", TODO_ITEM_COLS)?;
+    copy_fixed(&legacy, &tx, "todo_blocks", TODO_BLOCK_COLS)?;
+    copy_fixed(&legacy, &tx, "sticker_prefs", PREFS_COLS)?;
+    copy_fixed(&legacy, &tx, "sticker_attrs", ATTRS_COLS)?;
+    tx.commit().context("提交迁移事务失败")?;
     summary.todo_items = count_of(&legacy, "todo_items");
     summary.todo_blocks = count_of(&legacy, "todo_blocks");
     summary.prefs = count_of(&legacy, "sticker_prefs");
@@ -157,7 +162,10 @@ pub fn run(
 
 /// 固定列复制：列清单与 VALUES 占位符一一对应（?1..?N），ValueRef 直映射无损保真类型。
 fn copy_fixed(legacy: &Connection, new: &Connection, table: &str, cols: &[&str]) -> Result<usize> {
-    let mut stmt = legacy.prepare(&format!("SELECT {} FROM {table}", cols.join(",")))?;
+    let mut stmt = legacy.prepare(&format!(
+        "SELECT {} FROM {table} ORDER BY rowid",
+        cols.join(",")
+    ))?;
     let rows = stmt
         .query_map([], |row| {
             let mut vals = Vec::with_capacity(cols.len());
@@ -251,6 +259,60 @@ mod tests {
             })
             .unwrap();
         assert_eq!(todo, "任务");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 事务中途失败（悬空 FK）→ 全部 DB 插入回滚，不留半迁移状态。
+    #[test]
+    fn run_rolls_back_all_db_inserts_on_mid_phase_error() {
+        let dir = std::env::temp_dir().join(format!("migrate-rb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let layout = crate::workspace::layout::Layout::at(&dir);
+        crate::workspace::layout::ensure_layout(&layout, "rb").unwrap();
+
+        // 旧库：不启用 FK（SCHEMA_SQL 自带 PRAGMA foreign_keys=ON，须显式关掉）。
+        let legacy_file = dir.join("legacy-rb.db");
+        let legacy = Connection::open(&legacy_file).unwrap();
+        schema::run_migrations(&legacy).unwrap();
+        legacy.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        legacy
+            .execute(
+                "INSERT INTO stickers (id, title, content) VALUES (7, '正常', '# ok')",
+                [],
+            )
+            .unwrap();
+        // 合法条目 rowid=1 先于悬空条目 rowid=2 → ORDER BY rowid 保证中途才失败。
+        legacy
+            .execute(
+                "INSERT INTO todo_items (sticker_id, text) VALUES (7, '合法条目')",
+                [],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO todo_items (sticker_id, text) VALUES (777, '悬空条目')",
+                [],
+            )
+            .unwrap();
+        legacy.close().unwrap();
+
+        // 新库：与外键约束（真实连接同配置）。
+        let new = Connection::open_in_memory().unwrap();
+        new.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        schema::run_migrations(&new).unwrap();
+
+        let result = run(&legacy_file, &new, &dir);
+        assert!(result.is_err(), "悬空 FK 应导致迁移失败");
+
+        let stickers: i64 = new
+            .query_row("SELECT COUNT(*) FROM stickers", [], |r| r.get(0))
+            .unwrap();
+        let todos: i64 = new
+            .query_row("SELECT COUNT(*) FROM todo_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stickers, 0, "事务回滚：stickers 不应残留");
+        assert_eq!(todos, 0, "事务回滚：todo_items 不应残留");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

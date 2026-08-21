@@ -16,7 +16,8 @@ pub fn backup(layout: &Layout, conn: &rusqlite::Connection, dest_zip: &Path) -> 
     let snap = layout.cache_dir().join("backup-snapshot.db");
     let _ = std::fs::remove_file(&snap);
     let snap_str = snap.to_string_lossy().replace('\\', "/");
-    conn.execute(&format!("VACUUM INTO '{snap_str}'"), [])
+    // 参数化绑定（VACUUM INTO ?1）：路径含单引号等字符不破坏 SQL
+    conn.execute("VACUUM INTO ?1", [&snap_str])
         .context("生成数据库快照失败")?;
     let file = File::create(dest_zip).with_context(|| format!("创建备份文件失败：{}", dest_zip.display()))?;
     let mut zip = zip::ZipWriter::new(file);    let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -233,5 +234,28 @@ mod tests {
         build_ws(&src);
         assert!(transfer(&src, &src.join("nested").join("cp")).is_err());
         let _ = std::fs::remove_dir_all(&src);
+    }
+
+    /// 路径含单引号（如 "Bob's ws"）时备份必须成功：
+    /// VACUUM INTO 参数化绑定后不再受 SQL 字符串转义影响。
+    #[test]
+    fn backup_works_when_snapshot_path_contains_single_quote() {
+        let base = std::env::temp_dir().join(format!("ws-backup-quote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("Bob's workspace");
+        let layout = build_ws(&root);
+        let zip_path = base.join("backup'rest.zip");
+        let _ = std::fs::remove_file(&zip_path);
+
+        let conn = rusqlite::Connection::open(layout.db_path()).unwrap();
+        let size = backup(&layout, &conn, &zip_path).unwrap();
+        let _ = conn.close();
+
+        assert!(size > 0, "含引号路径备份应成功");
+        assert!(zip_path.exists());
+        let names = archive_names(&zip_path);
+        assert!(names.contains(&"data/index.db".to_string()));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_file(&zip_path);
     }
 }

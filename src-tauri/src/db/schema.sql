@@ -139,3 +139,5 @@ CREATE TABLE IF NOT EXISTS file_history (
     open_count  INTEGER NOT NULL DEFAULT 1,
     archived    INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path);
