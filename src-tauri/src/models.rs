@@ -29,11 +29,22 @@ pub struct Sticker {
     pub is_completed: bool,
     /// 运行时标记，提醒触发后由 scheduler 写入。
     pub alert_active: bool,
+    /// 所属分组 id；NULL 表示默认分组（v12）。
+    pub group_id: Option<i64>,
     /// 窗口模式字符串（"display"/"interact"/"edit"），落库持久化；
     /// 类型安全访问用 [`Sticker::mode`]。
     pub display_mode: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// 便签分组。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StickerGroup {
+    pub id: i64,
+    pub name: String,
+    pub sort_order: i64,
+    pub created_at: String,
 }
 
 /// 便签窗口模式（对应 DB `display_mode` 列）。

@@ -44,7 +44,7 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Sticker>> {
         "SELECT id, parent_id, title, content, heading_level,
                 pos_x, pos_y, width, height, opacity, bg_color,
                 always_on_top, auto_scroll, is_completed, alert_active,
-                display_mode, created_at, updated_at
+                group_id, display_mode, created_at, updated_at
            FROM stickers WHERE id = ?1",
     )?;
     let s = stmt.query_row(params![id], row_to_sticker).optional()?;
@@ -57,7 +57,7 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Sticker>> {
         "SELECT id, parent_id, title, content, heading_level,
                 pos_x, pos_y, width, height, opacity, bg_color,
                 always_on_top, auto_scroll, is_completed, alert_active,
-                display_mode, created_at, updated_at
+                group_id, display_mode, created_at, updated_at
            FROM stickers ORDER BY id",
     )?;
     let rows = stmt
@@ -179,9 +179,10 @@ fn row_to_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
         auto_scroll: row.get(12)?,
         is_completed: row.get(13)?,
         alert_active: row.get(14)?,
-        display_mode: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        group_id: row.get(15)?,
+        display_mode: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
     })
 }
 

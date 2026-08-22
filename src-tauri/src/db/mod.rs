@@ -3,6 +3,7 @@
 pub mod asset_repo;
 pub mod config_repo;
 pub mod connection;
+pub mod group_repo;
 pub mod prefs_repo;
 pub mod schema;
 pub mod sticker_repo;
