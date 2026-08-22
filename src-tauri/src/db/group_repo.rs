@@ -55,22 +55,34 @@ pub fn rename(conn: &Connection, id: i64, name: &str) -> Result<()> {
 /// 删除分组。mode：
 /// - "to-default"：组内便签由外键 ON DELETE SET NULL 自动回默认组；
 /// - "with-stickers"：删除组内全部便签并返回其 id（调用方负责 md/assets 清理）。
+///
+/// 全程单事务：任一步失败整体回滚，避免"便签已删、组还在"的中间态。
 pub fn delete(conn: &Connection, id: i64, mode: &str) -> Result<Vec<i64>> {
+    if mode != "to-default" && mode != "with-stickers" {
+        bail!("未知的删除模式：{mode}");
+    }
     get(conn, id)?.context("分组不存在")?;
+
+    let tx = conn
+        .unchecked_transaction()
+        .context("开启删除分组事务失败")?;
     let mut removed = Vec::new();
     if mode == "with-stickers" {
-        let mut stmt = conn.prepare("SELECT id FROM stickers WHERE group_id = ?1")?;
-        removed = stmt
-            .query_map(params![id], |r| r.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        conn.execute(
+        {
+            let mut stmt = tx.prepare("SELECT id FROM stickers WHERE group_id = ?1")?;
+            removed = stmt
+                .query_map(params![id], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+        tx.execute(
             "DELETE FROM stickers WHERE group_id = ?1",
             params![id],
         )
         .context("删除分组内便签失败")?;
     }
-    conn.execute("DELETE FROM sticker_groups WHERE id = ?1", params![id])
+    tx.execute("DELETE FROM sticker_groups WHERE id = ?1", params![id])
         .context("删除分组失败")?;
+    tx.commit().context("提交删除分组事务失败")?;
     Ok(removed)
 }
 
@@ -148,5 +160,13 @@ mod tests {
         assert_eq!(gid, g.id);
         move_sticker(&c, s, None).unwrap(); // 移出回默认组
         assert!(move_sticker(&c, s, Some(99999)).is_err(), "目标分组不存在应拒绝");
+    }
+
+    #[test]
+    fn delete_rejects_unknown_mode_and_keeps_group() {
+        let c = conn();
+        let g = create(&c, "G").unwrap();
+        assert!(delete(&c, g.id, "explode").is_err(), "未知模式应拒绝");
+        assert!(get(&c, g.id).unwrap().is_some(), "未知模式不得删组");
     }
 }
