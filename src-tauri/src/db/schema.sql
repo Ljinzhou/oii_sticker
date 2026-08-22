@@ -141,3 +141,13 @@ CREATE TABLE IF NOT EXISTS file_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path);
+
+-- 便签分组（v12）：类文件夹管理；stickers.group_id 为 NULL 表示默认分组。
+CREATE TABLE sticker_groups (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+ALTER TABLE stickers ADD COLUMN group_id INTEGER REFERENCES sticker_groups(id) ON DELETE SET NULL;

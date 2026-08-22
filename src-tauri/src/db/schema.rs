@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -304,6 +304,33 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v11 → v12：便签分组表 + stickers.group_id（NULL = 默认分组）。
+fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS sticker_groups (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );",
+        )
+        .context("迁移 v11→v12 创建 sticker_groups 失败")?;
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stickers')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_table && !has_column(c, "stickers", "group_id")? {
+            c.execute_batch(
+                "ALTER TABLE stickers ADD COLUMN group_id INTEGER REFERENCES sticker_groups(id) ON DELETE SET NULL;",
+            )
+            .context("迁移 v11→v12 失败")?;
+        }
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -351,6 +378,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
 
     if current < 11 {
         migrate_v10_to_v11(conn)?;
+    }
+
+    if current < 12 {
+        migrate_v11_to_v12(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -467,6 +498,7 @@ mod tests {
                 "completion_log",
                 "file_history",
                 "sticker_attrs",
+                "sticker_groups",
                 "sticker_prefs",
                 "stickers",
                 "system_config",
