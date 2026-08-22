@@ -2,6 +2,7 @@
 import { computed, ref, watch, nextTick } from "vue";
 import hljs from "highlight.js";
 import { renderMarkdown, collectMathStyle, mathVersion } from "../../utils/markdown";
+import { invoke } from "../../composables/useTauri";
 import type { TodoBlock } from "../../types";
 
 const props = defineProps<{
@@ -52,6 +53,19 @@ watch(
 
 function onContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
+  // 外部链接一律交给系统默认浏览器打开（绝不在内嵌 WebView 中导航）
+  const anchor = target.closest("a[href]") as HTMLAnchorElement | null;
+  if (anchor) {
+    e.preventDefault();
+    e.stopPropagation();
+    const href = anchor.getAttribute("href") ?? "";
+    if (/^https?:\/\//i.test(href)) {
+      invoke<void>("open_external_cmd", { url: href }).catch((err) => {
+        console.error("[markdown] 打开外部链接失败：", err);
+      });
+    }
+    return;
+  }
   const todoCheckbox = target.closest(".todo-task-checkbox") as HTMLInputElement | null;
   if (todoCheckbox) {
     e.stopPropagation();

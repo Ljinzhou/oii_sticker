@@ -7,7 +7,6 @@ const emit = defineEmits<{ done: [] }>();
 const SUBDIR_NAME = "oiistiker_workspace";
 const path = ref("");
 const name = ref("未命名工作空间");
-const removeLegacy = ref(false);
 const building = ref(false);
 const errorMsg = ref("");
 
@@ -38,7 +37,6 @@ async function confirm() {
     await invoke("workspace_bootstrap_cmd", {
       path: path.value.trim(),
       name: name.value || undefined,
-      removeLegacy: removeLegacy.value,
     });
     emit("done");
   } catch (e) {
@@ -69,7 +67,7 @@ async function confirm() {
   <div class="onboarding">
     <div class="panel">
       <h2>欢迎使用 oii_sticker</h2>
-      <p class="hint">创建第一个工作空间以保存便签数据。旧的便签数据会在创建后自动迁移。</p>
+      <p class="hint">创建第一个工作空间以保存便签数据。所有便签、任务与配置都会保存在这个目录里。</p>
       <label class="field">
         <span>目录</span>
         <div class="dir-row">
@@ -80,10 +78,6 @@ async function confirm() {
       <label class="field">
         <span>名称</span>
         <input v-model="name" type="text" placeholder="未命名工作空间" />
-      </label>
-      <label class="legacy">
-        <input v-model="removeLegacy" type="checkbox" />
-        <span>迁移后删除旧版数据库（stickers.db）</span>
       </label>
       <p v-if="errorMsg" class="errorMsg">{{ errorMsg }}</p>
       <div class="actions">
