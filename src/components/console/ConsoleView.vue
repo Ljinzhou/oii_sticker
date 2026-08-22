@@ -69,10 +69,8 @@ function closeWindow() {
   invoke("main_close_cmd");
 }
 
-// —— 视图模式（持久化 system_config） ——
-const viewMode = ref<"section" | "flat">(
-  settings.get("console_group_view", "section") === "flat" ? "flat" : "section",
-);
+// —— 视图模式（持久化 system_config；启动时先默认分区，待 settings 回读后恢复） ——
+const viewMode = ref<"section" | "flat">("section");
 function setViewMode(m: "section" | "flat") {
   viewMode.value = m;
   void settings.set("console_group_view", m);
@@ -179,7 +177,9 @@ function showGroupToast(text: string) {
 
 onMounted(async () => {
   notes.refresh();
-  settings.refresh();
+  await settings.refresh(); // 配置回读完成后，再恢复持久化的视图模式
+  viewMode.value =
+    settings.get("console_group_view", "section") === "flat" ? "flat" : "section";
   refreshOpenIds();
   // 后端推送 → 刷新列表 + 窗口打开状态（隐藏/显示按钮实时同步）
   unlisteners.push(
