@@ -14,20 +14,65 @@ use crate::workspace::{layout, md_store};
 
 // ── 便签 CRUD ──
 
-/// 当前工作控件根目录（从当前 DB 路径推算）。
+/// 当前工作空间根目录（从当前 DB 路径推算）。
 pub fn ws_root(conn_path: &str) -> std::path::PathBuf {
     layout::root_from_db_path(std::path::Path::new(conn_path)).unwrap_or_default()
 }
 
-/// 首次使用默认欢迎便签（仅在真实工作控件/首次迁移成功后创建，避免 bootstrap 库孤儿）。
+/// 首次使用默认欢迎便签（仅在真实工作空间/首次迁移成功后创建，避免 bootstrap 库孤儿）。
 pub fn welcome_sticker_new() -> NewSticker {
     NewSticker {
         title: "欢迎使用 oii_sticker".into(),
-        content: "# 欢迎使用 oii_sticker\n\n这是一张默认便签，可以：\n\n- 点击右上角 ✎ 进入编辑\n- 双击便签从收起状态唤醒\n- 点击 ⚙ 调整颜色与透明度\n\n## 任务清单\n\n- [ ] 试试勾选这个待办\n- [x] 已完成示例\n\n> 背景半透明、文字不透明。".into(),
+        content: r#"# 欢迎使用 oii_sticker
+
+这是一张 **Markdown 便签** —— 你看到的一切都可以编辑。
+点击右上角 ✎ 进入编辑模式，`Ctrl+S` 保存；双击便签可从收起状态唤醒。
+
+## 写作
+
+- **加粗**、*斜体*、~~删除线~~、`行内代码`、[链接](https://)
+- 引用：数据永远以你写的文字为准
+- 代码块带语法高亮：
+
+```rust
+fn main() {
+    println!("Hello, oii_sticker!");
+}
+```
+
+- 数学公式：质能方程 $E = mc^2$
+
+$$
+\sum_{i=1}^{n} i = \frac{n(n+1)}{2}
+$$
+
+## 任务清单
+
+普通待办，勾选即完成并自动记录历史：
+
+- [ ] 勾选我试试（完成会进入「已完成」列表）
+- [x] 这是一个已完成示例
+
+在正文输入 `/todo` 可以插入独立的 **Todo 块**——它有自己的任务窗口，
+支持子任务、提醒时间、截止时间与重复规则（设置里可调整默认值）。
+
+## 数据保存在哪？
+
+你的每张便签都是工作控件目录下的一个 `.md` 文件——可以用任何
+Markdown 编辑器直接打开；任务与偏好则存放在同目录的 SQLite 数据库里。
+
+打开 **系统设置 → 工作空间** 可以创建多个工作控件，
+并在它们之间切换、备份（zip）或整体转移，把生活 / 工作 / 学习分开管理。
+
+## 小技巧
+
+- 点击 ⚙ 调整颜色、透明度与字号；置顶开关也在里面
+- 编辑器里输入 `/` 呼出命令菜单：标题、列表、表格、代码块……
+- 隐藏的便签不会占用内存，从托盘或主控台随时唤回"#.into(),
         pos_x: 200,
         pos_y: 140,
         width: 400,
-        height: 500,
+        height: 520,
         opacity: 0.9,
         bg_color: Some("#FFF4D6".into()),
         ..Default::default()
@@ -269,7 +314,7 @@ mod tests {
         conn
     }
 
-    /// 临时工作控件根目录：ensure_layout 后返回 (root, db_path)。
+    /// 临时工作空间根目录：ensure_layout 后返回 (root, db_path)。
     fn tmp_ws(tag: &str) -> (PathBuf, String) {
         let d = std::env::temp_dir().join(format!("ws-cmd-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

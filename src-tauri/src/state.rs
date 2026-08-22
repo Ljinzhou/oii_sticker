@@ -36,7 +36,7 @@ impl AppState {
         }
     }
 
-    /// 程序级工作控件注册表路径：<app_data_dir>/workspaces.json。
+    /// 程序级工作空间注册表路径：<app_data_dir>/workspaces.json。
     pub fn registry_path(&self) -> PathBuf {
         PathBuf::from(&*self.app_data_dir).join("workspaces.json")
     }

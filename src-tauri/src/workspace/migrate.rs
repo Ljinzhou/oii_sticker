@@ -1,4 +1,4 @@
-//! 旧库（%APPDATA% 的 stickers.db）→ 当前工作控件库的全量迁移。
+//! 旧库（%APPDATA% 的 stickers.db）→ 当前工作空间库的全量迁移。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};

@@ -1,4 +1,4 @@
-//! 工作控件命令核心逻辑（注册表读写 + 目录操作）。
+//! 工作空间命令核心逻辑（注册表读写 + 目录操作）。
 //! Tauri 包装（需 app/state）在 lib.rs 中。
 
 use anyhow::{bail, Context, Result};
@@ -12,7 +12,7 @@ pub fn current(state_registry_path: &Path) -> Result<Option<WorkspaceEntry>> {
     Ok(reg.workspaces.into_iter().find(|w| w.id == id))
 }
 
-/// 新建工作控件：建目录结构 + 写入注册表；无当前项时自动激活。
+/// 新建工作空间：建目录结构 + 写入注册表；无当前项时自动激活。
 pub fn create(reg_path: &Path, root: &Path, name: Option<&str>) -> Result<WorkspaceEntry> {
     let mut reg = load_registry(reg_path)?;
     let id = format!("w-{}", gen_id_hex());
@@ -33,7 +33,7 @@ pub fn create(reg_path: &Path, root: &Path, name: Option<&str>) -> Result<Worksp
     Ok(entry)
 }
 
-/// 切换当前工作控件（不负责 DB 重连，由调用方 switch_db）。
+/// 切换当前工作空间（不负责 DB 重连，由调用方 switch_db）。
 pub fn switch(reg_path: &Path, id: &str) -> Result<WorkspaceEntry> {
     let mut reg = load_registry(reg_path)?;
     let entry = reg
@@ -65,10 +65,10 @@ pub fn relocate(reg_path: &Path, id: &str, new_path: &Path) -> Result<WorkspaceE
 pub fn destroy(reg_path: &Path, id: &str) -> Result<()> {
     let mut reg = load_registry(reg_path)?;
     if reg.workspaces.len() <= 1 {
-        bail!("至少需要保留一个工作控件，无法删除最后一个");
+        bail!("至少需要保留一个工作空间，无法删除最后一个");
     }
     if reg.current.as_deref() == Some(id) {
-        bail!("不能删除当前激活的工作控件，请先切换到其他工作控件");
+        bail!("不能删除当前激活的工作空间，请先切换到其他工作空间");
     }
     let entry = reg.workspaces.iter().find(|w| w.id == id).cloned().context("工作空间不存在")?;
     reg.workspaces.retain(|w| w.id != id);
