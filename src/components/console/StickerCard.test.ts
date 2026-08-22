@@ -92,13 +92,40 @@ describe("StickerCard 更多菜单", () => {
     expect(items[2]).toBe("移出分组");
     expect(items[3]).toContain("删除便签");
 
-    // 再点 ⋯ 关闭；Esc / document 级点击也能关闭
+    // 再点 ⋯ 关闭（toggle 自身开合）
     await openMenu(wrapper);
     expect(wrapper.find(".card-dropdown").exists()).toBe(false);
 
+    // 本卡其他区域（如显示/隐藏按钮）pointerdown 也关闭菜单
     await openMenu(wrapper);
-    await wrapper.find(".card-title").trigger("pointerdown");
+    const showBtn = wrapper.findAll(".card-btns .btn")[1]!;
+    showBtn.element.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await flushPromises();
     expect(wrapper.find(".card-dropdown").exists()).toBe(false);
+  });
+
+  it("跨卡片互斥：打开 A 菜单后按下 B 卡的 ⋯，A 先关闭、随后只打开 B", async () => {
+    const a = mountCard(mkSticker(1, null, "甲卡"));
+    const b = mountCard(mkSticker(2, 10, "乙卡"));
+
+    await openMenu(a);
+    expect(a.find(".card-dropdown").exists()).toBe(true);
+
+    // pointerdown 命中 B 卡 ⋯（在 A 根元素之外）→ A 关闭
+    const bMore = b.find(".more").element;
+    bMore.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(a.find(".card-dropdown").exists()).toBe(false);
+
+    // B 的 click 正常打开自己的菜单（无双切换）
+    await b.find(".more").trigger("click");
+    expect(b.find(".card-dropdown").exists()).toBe(true);
+    expect(a.find(".card-dropdown").exists()).toBe(false);
+
+    // 反向：按 A 卡空白区域 → B 关闭
+    a.find(".card-preview").element.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await flushPromises();
+    expect(b.find(".card-dropdown").exists()).toBe(false);
   });
 
   it("重命名：Enter 提交调用 update_sticker_cmd，Esc 取消不提交", async () => {

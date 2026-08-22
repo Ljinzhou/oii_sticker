@@ -17,6 +17,7 @@ function preview(sticker: Sticker): string {
 }
 
 // —— ⋯ 更多菜单（下拉：重命名 / 转移分组 / 移出分组 / 删除便签）——
+const rootEl = ref<HTMLElement | null>(null);
 const menuOpen = ref(false);
 const showMoveSub = ref(false);
 const renaming = ref(false);
@@ -71,10 +72,18 @@ function requestRemove() {
   emit("remove", props.sticker);
 }
 
-// document 级 pointerdown 关闭菜单（点击菜单/按钮内部除外，避免与 toggle 冲突）
+// document 级 pointerdown 关闭菜单（跨卡片互斥）：
+// - 本卡 ⋯ 按钮：pointerdown 先于 click，忽略以免双切换（由 toggleMenu 自管开合）
+// - 本卡下拉菜单内部：交给 @click.stop 的菜单项处理，不关闭
+// - 本卡其他区域（如显示/隐藏按钮）：关闭
+// - 其他卡片或页面空白：关闭 → 同一时刻至多一张卡菜单打开
 function onDocPointerDown(e: PointerEvent) {
   const t = e.target as HTMLElement | null;
-  if (t && t.closest(".card-btns")) return;
+  if (rootEl.value && t && rootEl.value.contains(t)) {
+    if (t.closest(".more") || t.closest(".card-dropdown")) return;
+    closeMenu();
+    return;
+  }
   if (menuOpen.value) closeMenu();
 }
 
@@ -94,7 +103,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="card">
+  <div ref="rootEl" class="card">
     <div class="card-head">
       <input
         v-if="renaming"
