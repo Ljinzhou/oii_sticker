@@ -325,9 +325,8 @@ fn group_delete_cmd(
     id: i64,
     mode: String,
 ) -> Result<usize, String> {
-    let db = state.db_path();
     let removed = state
-        .with_conn(|c| commands::delete_group(c, id, &mode, &db))
+        .with_conn_path(|c, db| commands::delete_group(c, id, &mode, db))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(removed)
