@@ -8,7 +8,7 @@ pub mod layout;
 pub mod md_store;
 pub mod migrate;
 
-/// 启动用 DB 路径：注册表有当前工作控件 → 该工作控件库；否则 bootstrap 临时库。
+/// 启动用 DB 路径：注册表有当前工作空间 → 该工作空间库；否则 bootstrap 临时库。
 /// 只读注册表，不写；首次引导完成后才写。
 pub fn boot_db_path(app_data_dir: &Path) -> PathBuf {
     let reg_path = app_data_dir.join("workspaces.json");

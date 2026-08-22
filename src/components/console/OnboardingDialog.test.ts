@@ -39,7 +39,7 @@ describe("OnboardingDialog", () => {
     await wrapper.get(".onboarding-confirm").trigger("click");
     await flushPromises();
     expect(wrapper.find(".errorMsg").exists()).toBe(true);
-    expect(wrapper.text()).toContain("请填写工作控件目录");
+    expect(wrapper.text()).toContain("请填写工作空间目录");
     expect(
       mocks.invokeMock.mock.calls.some((c) => c[0] === "workspace_bootstrap_cmd"),
     ).toBe(false);

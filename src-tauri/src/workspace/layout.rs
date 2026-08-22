@@ -1,12 +1,12 @@
-//! 工作控件磁盘布局与注册表。
-use anyhow::{Context, Result};
+//! 工作空间磁盘布局与注册表。
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_ROOT_NAME: &str = "oiistiker_workspace";
 const BAD_CHARS: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|', '%', '&', '{', '}', '$', '\'', '@', '+', '`', '=', ';', ',', '#'];
 
-/// 工作控件目录布局（root = 工作控件根目录）。
+/// 工作空间目录布局（root = 工作空间根目录）。
 #[derive(Clone, Debug)]
 pub struct Layout {
     pub root: PathBuf,
@@ -24,7 +24,7 @@ impl Layout {
     pub fn signature_path(&self) -> PathBuf { self.root.join("workspace.json") }
 }
 
-/// 从当前 DB 文件路径推算工作控件根目录（db 位于 <root>/data/index.db）。
+/// 从当前 DB 文件路径推算工作空间根目录（db 位于 <root>/data/index.db）。
 pub fn root_from_db_path(db_path: &Path) -> Option<PathBuf> {
     db_path.parent()?.parent().map(Path::to_path_buf)
 }
@@ -133,6 +133,31 @@ pub fn default_root() -> Option<PathBuf> {
     dirs::document_dir().map(|d| d.join(DEFAULT_ROOT_NAME))
 }
 
+/// 目录选择校验的错误前缀：目标文件夹已存在且非空。
+/// 前端据此弹确认「是否在其中创建 oiistiker_workspace 子目录」。
+pub const ERR_DEST_NOT_EMPTY: &str = "DEST_NOT_EMPTY:";
+
+/// 校验工作控件目标目录：
+/// - 不存在 → 创建（含父目录）并返回 Ok；
+/// - 存在且为空目录 → Ok；
+/// - 存在且非空 → Err，消息以 [`ERR_DEST_NOT_EMPTY`] 前缀开头；
+/// - 路径存在但不是文件夹 → Err。
+pub fn ensure_empty_dest(dest: &Path) -> Result<()> {
+    if !dest.exists() {
+        std::fs::create_dir_all(dest)
+            .with_context(|| format!("创建目录失败：{}", dest.display()))?;
+        return Ok(());
+    }
+    if !dest.is_dir() {
+        bail!("目标路径不是文件夹：{}", dest.display());
+    }
+    let is_empty = std::fs::read_dir(dest)?.next().is_none();
+    if !is_empty {
+        bail!("{ERR_DEST_NOT_EMPTY}{}", dest.display());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +203,25 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
         reg.workspaces.clear();
         assert!(reg.workspaces.is_empty());
+    }
+
+    #[test]
+    fn ensure_empty_dest_accepts_missing_and_empty_rejects_nonempty() {
+        let tmp = std::env::temp_dir().join(format!("ws-empty-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        // 不存在 → 创建
+        ensure_empty_dest(&tmp).unwrap();
+        assert!(tmp.is_dir());
+        // 空目录 → Ok
+        ensure_empty_dest(&tmp).unwrap();
+        // 非空 → 前缀错误
+        std::fs::write(tmp.join("占用.txt"), b"x").unwrap();
+        let err = ensure_empty_dest(&tmp).unwrap_err().to_string();
+        assert!(err.starts_with(ERR_DEST_NOT_EMPTY), "实际：{err}");
+        // 文件路径 → 拒绝
+        let file = tmp.join("文件.md");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(ensure_empty_dest(&file).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

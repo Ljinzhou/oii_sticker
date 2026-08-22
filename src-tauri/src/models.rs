@@ -205,7 +205,7 @@ pub struct ConfigEntry {
     pub updated_at: String,
 }
 
-/// 工作控件 DTO（注册表条目，供前端 invoke 返回）。
+/// 工作空间 DTO（注册表条目，供前端 invoke 返回）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceEntryDto {
     pub id: String,

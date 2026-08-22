@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
+import { open as pickDirectory, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "../../composables/useTauri";
 import type { WorkspaceEntry } from "../../types";
 
@@ -15,22 +16,31 @@ const busy = computed(() => busyKey.value !== null);
 const toast = ref<{ type: "error" | "ok"; text: string } | null>(null);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-// 新建
+// 新建（系统目录选择 → 名称确认条）
 const creating = ref(false);
-const newPath = ref("");
+const pickedNewPath = ref("");
 const newName = ref("");
 
-// 备份（仅当前工作控件，hero 卡内展开）
-const backupOpen = ref(false);
-const destZip = ref("");
+// 备份结果（系统另存为对话框选择 zip 位置）
 const backupResult = ref("");
 let defaultRoot = "";
 
-// 转移（hero 与列表行共用，按 id 展开）
+// 转移进行中的工作空间 id（spinner 用）
 const transferId = ref<string | null>(null);
-const destRoot = ref("");
 
 const current = computed(() => entries.value.find((e) => e.id === currentId.value) ?? null);
+
+/** 目录校验失败前缀：目标文件夹存在且非空（Rust ensure_empty_dest）。 */
+const ERR_DEST_NOT_EMPTY = "DEST_NOT_EMPTY:";
+const SUBDIR_NAME = "oiistiker_workspace";
+
+function isDestNotEmpty(e: unknown): boolean {
+  return String(e).startsWith(ERR_DEST_NOT_EMPTY);
+}
+
+function joinSubdir(path: string): string {
+  return path.replace(/[\\/]+$/, "") + "/" + SUBDIR_NAME;
+}
 
 function showToast(type: "error" | "ok", text: string) {
   if (toastTimer) clearTimeout(toastTimer);
@@ -72,19 +82,28 @@ onMounted(async () => {
   loading.value = false;
 });
 
-// —— 新建 ——
-function openCreate() {
+// —— 新建：系统目录选择 → 名称确认 → 创建（非空时建议子目录） ——
+async function openCreate() {
+  const dir = await pickDirectory({
+    directory: true,
+    title: "选择新工作控件的存放位置",
+  });
+  if (!dir) return; // 用户取消
+  pickedNewPath.value = dir;
   creating.value = true;
 }
 
 function cancelCreate() {
   creating.value = false;
-  newPath.value = "";
+  pickedNewPath.value = "";
   newName.value = "";
 }
 
 async function onCreate() {
-  const path = newPath.value.trim();
+  await tryCreate(pickedNewPath.value.trim());
+}
+
+async function tryCreate(path: string) {
   if (!path) return;
   busyKey.value = "create";
   try {
@@ -96,9 +115,18 @@ async function onCreate() {
     cancelCreate();
     await refresh();
   } catch (e) {
+    if (isDestNotEmpty(e)) {
+      busyKey.value = null;
+      const ok = window.confirm(
+        `所选文件夹非空，是否在其中创建「${SUBDIR_NAME}」子文件夹并使用？`,
+      );
+      if (!ok) return;
+      await tryCreate(joinSubdir(path));
+      return;
+    }
     showError(e);
   } finally {
-    busyKey.value = null;
+    if (busyKey.value === "create") busyKey.value = null;
   }
 }
 
@@ -136,11 +164,26 @@ async function onDestroy(row: WorkspaceEntry) {
   }
 }
 
-// —— 备份（当前工作控件）——
-function openBackup() {
-  backupOpen.value = true;
+// —— 备份（当前工作空间）：系统另存为对话框选 zip 位置 ——
+async function openBackup() {
+  if (!currentId.value) return;
   backupResult.value = "";
-  if (!destZip.value) destZip.value = defaultRoot ? `${defaultRoot}.zip` : "oiistiker_workspace.zip";
+  const suggested = defaultRoot ? `${defaultRoot.replace(/[\\/]+$/, "")}.zip` : "oiistiker_workspace.zip";
+  const dest = await saveFileDialog({
+    title: "选择备份保存位置",
+    defaultPath: suggested,
+    filters: [{ name: "Zip 归档", extensions: ["zip"] }],
+  });
+  if (!dest) return;
+  busyKey.value = "backup";
+  try {
+    const size = await invoke<number>("workspace_backup_cmd", { id: currentId.value, destZip: dest });
+    backupResult.value = `备份完成：${dest}（${formatSize(size)}）`;
+  } catch (e) {
+    showError(e);
+  } finally {
+    busyKey.value = null;
+  }
 }
 
 function formatSize(bytes: number): string {
@@ -151,42 +194,42 @@ function formatSize(bytes: number): string {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
-async function runBackup() {
-  const dest = destZip.value.trim();
-  if (!dest || !currentId.value) return;
-  busyKey.value = "backup";
-  try {
-    const size = await invoke<number>("workspace_backup_cmd", { id: currentId.value, destZip: dest });
-    backupResult.value = `备份完成：${formatSize(size)}`;
-  } catch (e) {
-    showError(e);
-  } finally {
-    busyKey.value = null;
-  }
-}
-
-// —— 转移 ——
-function openTransfer(id: string) {
+// —— 转移：系统目录选择 → 非空时建议子目录重试 ——
+async function openTransfer(id: string) {
+  const dir = await pickDirectory({
+    directory: true,
+    title: "选择转移目标位置",
+  });
+  if (!dir) return; // 用户取消
   transferId.value = id;
-  destRoot.value = "";
+  await tryTransfer(id, dir);
 }
 
-async function runTransfer() {
-  const dest = destRoot.value.trim();
-  if (!dest || !transferId.value) return;
-  busyKey.value = `transfer:${transferId.value}`;
+async function tryTransfer(id: string, dest: string) {
+  if (!dest) { transferId.value = null; return; }
+  busyKey.value = `transfer:${id}`;
   try {
     await invoke<void>("workspace_transfer_cmd", {
-      id: transferId.value,
+      id,
       destRoot: dest,
     });
     showOk("转移完成");
     transferId.value = null;
     await refresh();
   } catch (e) {
+    if (isDestNotEmpty(e)) {
+      busyKey.value = null;
+      const ok = window.confirm(
+        `所选文件夹非空，是否在其中创建「${SUBDIR_NAME}」子文件夹并转移至此？`,
+      );
+      if (!ok) { transferId.value = null; return; }
+      await tryTransfer(id, joinSubdir(dest));
+      return;
+    }
     showError(e);
+    transferId.value = null;
   } finally {
-    busyKey.value = null;
+    if (busyKey.value?.startsWith("transfer:")) busyKey.value = null;
   }
 }
 </script>
@@ -195,10 +238,10 @@ async function runTransfer() {
   <div class="ws-manager">
     <div v-if="toast" class="ws-toast" :class="toast.type">{{ toast.text }}</div>
 
-    <!-- 当前工作控件 hero 卡 -->
+    <!-- 当前工作空间 hero 卡 -->
     <section class="ws-hero">
       <header class="ws-hero-head">
-        <h3 class="ws-hero-kicker">当前工作控件</h3>
+        <h3 class="ws-hero-kicker">当前工作空间</h3>
         <span v-if="current" class="ws-badge">当前</span>
       </header>
 
@@ -210,30 +253,19 @@ async function runTransfer() {
             <span v-if="busyKey === 'backup'" class="spin"></span>备份
           </button>
           <button class="ws-btn hero-transfer" :disabled="busy" @click="openTransfer(current.id)">
-            转移
+            <span v-if="busyKey === `transfer:${current.id}`" class="spin"></span>转移
           </button>
         </div>
 
-        <div v-if="backupOpen" class="ws-inline">
-          <input v-model="destZip" class="ws-input backup-input" placeholder="备份 zip 的完整路径，如 C:/Users/you/Documents/oiistiker_workspace.zip" />
-          <div class="ws-inline-actions">
-            <button class="ws-btn primary backup-run" :disabled="busy || !destZip.trim()" @click="runBackup">
-              <span v-if="busyKey === 'backup'" class="spin"></span>执行备份
-            </button>
-            <button class="ws-btn" :disabled="busy" @click="backupOpen = false">取消</button>
-          </div>
-          <!-- TODO: 系统目录选择对话框（tauri dialog plugin）未安装，暂用文本输入替代 -->
-          <p class="ws-hint">暂未接入目录选择对话框，请直接输入完整 zip 路径。</p>
-          <p v-if="backupResult" class="ws-ok-line">{{ backupResult }}</p>
-        </div>
+        <p v-if="backupResult" class="ws-ok-line">{{ backupResult }}</p>
       </template>
-      <p v-else class="ws-empty">未设置当前工作控件，请从下方列表新建。</p>
+      <p v-else class="ws-empty">未设置当前工作空间，请从下方列表新建。</p>
     </section>
 
-    <!-- 全部工作控件列表 -->
+    <!-- 全部工作空间列表 -->
     <section class="ws-list">
       <header class="ws-list-head">
-        <span class="ws-list-title">全部工作控件</span>
+        <span class="ws-list-title">全部工作空间</span>
         <button class="ws-btn ghost ws-refresh" :disabled="busy" @click="refresh">
           <span v-if="busyKey === 'refresh'" class="spin"></span>刷新
         </button>
@@ -262,36 +294,26 @@ async function runTransfer() {
               @click="onSwitch(w)"
             ><span v-if="busyKey === `switch:${w.id}`" class="spin"></span>切换</button>
             <button class="ws-btn sm row-transfer" :disabled="busy" @click="openTransfer(w.id)">
-              转移
+              <span v-if="busyKey === `transfer:${w.id}`" class="spin"></span>转移
             </button>
             <button class="ws-btn sm danger row-destroy" :disabled="busy" @click="onDestroy(w)">
               <span v-if="busyKey === `destroy:${w.id}`" class="spin"></span>销毁
             </button>
           </div>
-
-          <div v-if="transferId === w.id" class="ws-inline">
-            <input v-model="destRoot" class="ws-input transfer-input" placeholder="转移目标目录（完整路径，如 C:/Users/you/Documents/workspace_new" />
-            <div class="ws-inline-actions">
-              <button class="ws-btn primary sm transfer-run" :disabled="busy || !destRoot.trim()" @click="runTransfer">
-                <span v-if="busyKey === `transfer:${w.id}`" class="spin"></span>执行转移
-              </button>
-              <button class="ws-btn sm" :disabled="busy" @click="transferId = null">取消</button>
-            </div>
-          </div>
         </div>
 
-        <div v-if="entries.length === 0" class="ws-empty">还没有工作控件，点击下方新建。</div>
+        <div v-if="entries.length === 0" class="ws-empty">还没有工作空间，点击下方新建。</div>
 
-        <!-- 新建（虚线卡片） -->
+        <!-- 新建（虚线卡片）：系统目录选择 → 名称确认条 -->
         <div class="ws-new">
           <button v-if="!creating" class="ws-new-trigger" :disabled="busy" @click="openCreate">
-            + 新建工作控件
+            + 新建工作空间
           </button>
           <div v-else class="ws-inline">
-            <input v-model="newPath" class="ws-input new-path-input" placeholder="存放路径（完整目录，如 C:/Users/you/Documents/workspace1" />
+            <div class="ws-picked-path">{{ pickedNewPath }}</div>
             <input v-model="newName" class="ws-input new-name-input" placeholder="名称（选填，默认“未命名工作空间”）" />
             <div class="ws-inline-actions">
-              <button class="ws-btn primary new-run" :disabled="busy || !newPath.trim()" @click="onCreate">
+              <button class="ws-btn primary new-run" :disabled="busy" @click="onCreate">
                 <span v-if="busyKey === 'create'" class="spin"></span>创建
               </button>
               <button class="ws-btn" :disabled="busy" @click="cancelCreate">取消</button>
@@ -557,6 +579,18 @@ async function runTransfer() {
   font-size: 12px;
   color: var(--ink);
   background: var(--paper-card);
+}
+
+.ws-picked-path {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--paper-deep);
+  overflow-wrap: anywhere;
 }
 
 .ws-input:focus {

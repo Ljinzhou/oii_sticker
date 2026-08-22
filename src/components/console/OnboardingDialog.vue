@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { open as pickDirectory } from "@tauri-apps/plugin-dialog";
 import { invoke } from "../../composables/useTauri";
 
 const emit = defineEmits<{ done: [] }>();
@@ -17,9 +18,17 @@ onMounted(async () => {
   }
 });
 
+async function chooseDir() {
+  const dir = await pickDirectory({
+    directory: true,
+    title: "选择工作控件存放位置",
+  });
+  if (dir) path.value = dir;
+}
+
 async function confirm() {
   if (!path.value.trim()) {
-    errorMsg.value = "请填写工作控件目录";
+    errorMsg.value = "请填写工作空间目录";
     return;
   }
   building.value = true;
@@ -32,7 +41,20 @@ async function confirm() {
     });
     emit("done");
   } catch (e) {
-    errorMsg.value = String(e);
+    const msg = String(e);
+    // 目标目录非空：提示改用其下 oiistiker_workspace 子目录重试
+    if (msg.startsWith("DEST_NOT_EMPTY:") && !path.value.trim().endsWith("oiistiker_workspace")) {
+      const ok = window.confirm(
+        "所选文件夹非空，是否在其中创建「oiistiker_workspace」子文件夹并使用？",
+      );
+      building.value = false;
+      if (ok) {
+        path.value = path.value.replace(/[\\/]+$/, "") + "/oiistiker_workspace";
+        await confirm();
+      }
+      return;
+    }
+    errorMsg.value = msg;
   } finally {
     building.value = false;
   }
@@ -43,10 +65,13 @@ async function confirm() {
   <div class="onboarding">
     <div class="panel">
       <h2>欢迎使用 oii_sticker</h2>
-      <p class="hint">创建第一个工作控件以保存便签数据。旧的便签数据会在创建后自动迁移。</p>
+      <p class="hint">创建第一个工作空间以保存便签数据。旧的便签数据会在创建后自动迁移。</p>
       <label class="field">
         <span>目录</span>
-        <input v-model="path" class="onboarding-path" type="text" placeholder="工作控件目录" />
+        <div class="dir-row">
+          <input v-model="path" class="onboarding-path" type="text" placeholder="工作空间目录" />
+          <button class="dir-pick" type="button" @click="chooseDir">浏览…</button>
+        </div>
       </label>
       <label class="field">
         <span>名称</span>
@@ -117,6 +142,30 @@ async function confirm() {
   border-radius: 8px;
   padding: 7px 10px;
   font-size: 13px;
+}
+
+.dir-row {
+  display: flex;
+  gap: 6px;
+}
+
+.dir-row .onboarding-path {
+  flex: 1;
+}
+
+.dir-pick {
+  flex: none;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  background: #f5f6f8;
+  color: #555;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dir-pick:hover {
+  background: #eaeef5;
 }
 
 .legacy {

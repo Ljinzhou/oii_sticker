@@ -17,7 +17,7 @@ function resolveView(label: string): "console" | "sticker" | "todo" {
 // 新窗口首帧直接按 label 路由，避免 Todo 窗口先挂载空白主控台。
 const view = ref(resolveView(getCurrentWindow().label));
 
-// 首次启动引导：无任何工作控件时弹窗创建第一个。
+// 首次启动引导：无任何工作空间时弹窗创建第一个。
 const notes = useNotesStore();
 const showOnboarding = ref(false);
 
@@ -27,7 +27,7 @@ onMounted(async () => {
     const list = await invoke<unknown[]>("workspace_list_cmd");
     if (list.length === 0) showOnboarding.value = true;
   } catch (e) {
-    console.warn("[boot] 工作控件列表查询失败：", e);
+    console.warn("[boot] 工作空间列表查询失败：", e);
   }
 });
 

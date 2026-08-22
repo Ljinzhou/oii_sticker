@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use super::layout::{ensure_layout, read_signature, Layout};
 
-/// 备份工作控件：SQLite 在线快照 + zip（排除 cache/）。
+/// 备份工作空间：SQLite 在线快照 + zip（排除 cache/）。
 /// dest_zip 为输出 zip 完整路径；返回 zip 字节数。
 pub fn backup(layout: &Layout, conn: &rusqlite::Connection, dest_zip: &Path) -> Result<u64> {
     let snap = layout.cache_dir().join("backup-snapshot.db");
@@ -121,7 +121,7 @@ mod tests {
         dir
     }
 
-    /// 小工作控件：签名 + 2 个便签 md + 1 个 asset（assets/12/）+ 1 个库文件 + cache 垃圾。
+    /// 小工作空间：签名 + 2 个便签 md + 1 个 asset（assets/12/）+ 1 个库文件 + cache 垃圾。
     fn build_ws(root: &Path) -> Layout {
         let layout = Layout::at(root);
         ensure_layout(&layout, "备份测试").unwrap();

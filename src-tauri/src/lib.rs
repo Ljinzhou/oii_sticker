@@ -713,7 +713,7 @@ fn slash_query_cmd(query: String) -> Vec<SlashDto> {
         .collect()
 }
 
-// ═══════════════════ 工作控件命令（多工作空间） ═══════════════════
+// ═══════════════════ 工作空间命令（多工作空间） ═══════════════════
 
 fn workspace_to_dto(w: workspace::layout::WorkspaceEntry) -> models::WorkspaceEntryDto {
     models::WorkspaceEntryDto {
@@ -724,7 +724,7 @@ fn workspace_to_dto(w: workspace::layout::WorkspaceEntry) -> models::WorkspaceEn
     }
 }
 
-/// 工作控件 DB 路径：<root>/data/index.db。
+/// 工作空间 DB 路径：<root>/data/index.db。
 fn entry_path_db(root: &Path) -> PathBuf {
     root.join("data").join("index.db")
 }
@@ -736,7 +736,7 @@ fn workspace_list_cmd(state: State<'_, AppState>) -> Result<Vec<models::Workspac
         .map_err(|e| e.to_string())
 }
 
-/// 当前激活的工作控件（注册表无 current 时返回 None）。
+/// 当前激活的工作空间（注册表无 current 时返回 None）。
 #[tauri::command]
 fn workspace_current_cmd(
     state: State<'_, AppState>,
@@ -746,19 +746,22 @@ fn workspace_current_cmd(
         .map_err(|e| e.to_string())
 }
 
-/// 新建工作控件：建目录 + 注册表；无当前项时自动激活（非首次引导，不迁移）。
+/// 新建工作空间：建目录 + 注册表；无当前项时自动激活（非首次引导，不迁移）。
+/// 目标目录必须不存在或为空；非空返回 `DEST_NOT_EMPTY:` 前缀错误，由前端
+/// 弹确认后改用其下的 oiistiker_workspace 子目录重试。
 #[tauri::command]
 fn workspace_create_cmd(
     state: State<'_, AppState>,
     path: String,
     name: Option<String>,
 ) -> Result<models::WorkspaceEntryDto, String> {
+    workspace::layout::ensure_empty_dest(Path::new(&path)).map_err(|e| e.to_string())?;
     let entry = workspace::cmds::create(&state.registry_path(), Path::new(&path), name.as_deref())
         .map_err(|e| e.to_string())?;
     Ok(workspace_to_dto(entry))
 }
 
-/// 切换当前工作控件：注册表更新 + 关闭全部便签窗口 + DB 重连（switch_db）+ 主控台刷新。
+/// 切换当前工作空间：注册表更新 + 关闭全部便签窗口 + DB 重连（switch_db）+ 主控台刷新。
 #[tauri::command]
 fn workspace_switch_cmd(
     app: tauri::AppHandle,
@@ -766,7 +769,7 @@ fn workspace_switch_cmd(
     id: String,
 ) -> Result<(), String> {
     let entry = workspace::cmds::switch(&state.registry_path(), &id).map_err(|e| e.to_string())?;
-    // 切换前必须关闭所有 open 的便签窗口（含隐藏的）：粘旧工作控件数据的
+    // 切换前必须关闭所有 open 的便签窗口（含隐藏的）：粘旧工作空间数据的
     // 窗口若继续存在，编辑会静默 no-op 或写错 md。UI 亦承诺"所有便签窗口将被关闭"。
     for (label, win) in app.webview_windows().iter() {
         if label.starts_with("sticker-") {
@@ -785,16 +788,16 @@ fn workspace_destroy_cmd(state: State<'_, AppState>, id: String) -> Result<(), S
     workspace::cmds::destroy(&state.registry_path(), &id).map_err(|e| e.to_string())
 }
 
-/// 首次引导默认路径：用户文档目录下默认工作控件（layout::default_root）。
+/// 首次引导默认路径：用户文档目录下默认工作空间（layout::default_root）。
 #[tauri::command]
 fn workspace_default_path_cmd() -> Result<String, String> {
     workspace::layout::default_root()
         .map(|p| p.to_string_lossy().into_owned())
-        .ok_or_else(|| "无法定位用户文档目录，请手动输入工作控件路径".to_string())
+        .ok_or_else(|| "无法定位用户文档目录，请手动输入工作空间路径".to_string())
 }
 
 /// 备份：在线快照 + zip 打包（排除 cache/）。
-/// 仅允许备份当前激活的工作控件（离线快照只对当前 DB 语义成立）。
+/// 仅允许备份当前激活的工作空间（离线快照只对当前 DB 语义成立）。
 /// 返回 zip 文件大小（字节）；不推送事件（保持静默）。
 #[tauri::command]
 fn workspace_backup_cmd(
@@ -804,7 +807,7 @@ fn workspace_backup_cmd(
 ) -> Result<u64, String> {
     let current = workspace::cmds::current(&state.registry_path()).map_err(|e| e.to_string())?;
     if current.as_ref().map(|w| w.id.as_str()) != Some(id.as_str()) {
-        return Err("只能备份当前工作控件".to_string());
+        return Err("只能备份当前工作空间".to_string());
     }
     let entry = workspace::cmds::list(&state.registry_path())
         .map_err(|e| e.to_string())?
@@ -835,6 +838,8 @@ fn workspace_transfer_cmd(
         .ok_or_else(|| "工作空间不存在".to_string())?;
     let src_root = PathBuf::from(&entry.path);
     let dest = PathBuf::from(&dest_root);
+    // 目标目录必须不存在或为空（前端弹确认后可改用其下子目录重试）
+    workspace::layout::ensure_empty_dest(&dest).map_err(|e| e.to_string())?;
     // 1) 复制 + 校验（失败 → 提前返回，原目录与注册表均未动）
     workspace::backup::transfer(&src_root, &dest).map_err(|e| e.to_string())?;
     // 2) 注册表 path 更新（先于删源；此后失败仅路径变化，数据在 dest 完整）
@@ -848,13 +853,13 @@ fn workspace_transfer_cmd(
     Ok(())
 }
 
-/// 默认欢迎便签的种植条件：注册表为空（首个工作控件）且迁移无历史便签。
+/// 默认欢迎便签的种植条件：注册表为空（首个工作空间）且迁移无历史便签。
 /// bootstrap 库本身不种欢迎便签，保证不会出现卡在 bootstrap 数据的孤儿窗口。
 fn should_seed_welcome(registry_was_empty: bool, migrated_stickers: usize) -> bool {
     registry_was_empty && migrated_stickers == 0
 }
 
-/// 首次引导：创建第一个工作控件 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
+/// 首次引导：创建第一个工作空间 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
 #[tauri::command]
 fn workspace_bootstrap_cmd(
     app: tauri::AppHandle,
@@ -864,6 +869,8 @@ fn workspace_bootstrap_cmd(
     remove_legacy: bool,
 ) -> Result<models::WorkspaceEntryDto, String> {
     let root = PathBuf::from(&path);
+    // 首次引导同样要求目标目录不存在或为空（OnboardingDialog 处理非空确认流）
+    workspace::layout::ensure_empty_dest(&root).map_err(|e| e.to_string())?;
     let registry_was_empty = workspace::layout::load_registry(&state.registry_path())
         .map(|r| r.workspaces.is_empty() && r.current.is_none())
         .unwrap_or(true);
@@ -871,7 +878,7 @@ fn workspace_bootstrap_cmd(
         .map_err(|e| e.to_string())?;
     let db_path = entry_path_db(&root);
     state.switch_db(&db_path).map_err(|e| e.to_string())?;
-    // 首次启动：旧库（%APPDATA%/stickers.db）→ 新工作控件库全量迁移。
+    // 首次启动：旧库（%APPDATA%/stickers.db）→ 新工作空间库全量迁移。
     // 便签 content 写入 md 文件，元数据/todo/prefs/attrs 入新库。
     let legacy = workspace::legacy_db_path(
         state.registry_path().parent().expect("registry 必在 app_data_dir 下"),
@@ -885,12 +892,12 @@ fn workspace_bootstrap_cmd(
             let _ = std::fs::remove_file(PathBuf::from(format!("{}{ext}", legacy.display())));
         }
     }
-    // 首个工作控件且无历史便签：补建默认欢迎便签（bootstrap 库不种孤儿）。
+    // 首个工作空间且无历史便签：补建默认欢迎便签（bootstrap 库不种孤儿）。
     if should_seed_welcome(registry_was_empty, summary.stickers) {
         state
             .with_conn_path(|c, db| commands::create_welcome_sticker(c, db))
             .map_err(|e| format!("创建默认欢迎便签失败：{e}"))?;
-        tracing::info!("[bootstrap] 首个工作控件无历史便签，已创建默认欢迎便签");
+        tracing::info!("[bootstrap] 首个工作空间无历史便签，已创建默认欢迎便签");
     }
     tracing::info!("[bootstrap] 迁移结果：{summary:?}");
     events::emit_push_update(&app, 0); // 主控台刷新
@@ -910,12 +917,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .setup(|app| {
-            // 数据层初始化：注册表决定 boot 库（当前工作控件库或 bootstrap 库）
+            // 数据层初始化：注册表决定 boot 库（当前工作空间库或 bootstrap 库）
             // + 迁移 + 配置快照。旧版 stickers.db 路径保留供后续迁移（Task 6）。
             let app_data_dir = app
                 .path()
@@ -962,7 +970,7 @@ pub fn run() {
             reminder::scheduler::spawn(handle.clone(), state.clone());
 
             // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签。
-            // bootstrap 库（尚无注册工作控件）不创建欢迎便签——它会在首次
+            // bootstrap 库（尚无注册工作空间）不创建欢迎便签——它会在首次
             // workspace_bootstrap 迁移成功后补建，避免孤儿便签卡在 bootstrap 数据上。
             let stickers = state
                 .with_conn(commands::list_stickers)
@@ -972,9 +980,9 @@ pub fn run() {
                 .unwrap_or(true);
             if stickers.is_empty() {
                 if on_bootstrap_db {
-                    tracing::info!("[setup] 启动于 bootstrap 库（未注册工作控件），跳过默认便签创建");
+                    tracing::info!("[setup] 启动于 bootstrap 库（未注册工作空间），跳过默认便签创建");
                 } else {
-                    // 真实工作控件空库：创建一条默认便签，便于查看效果
+                    // 真实工作空间空库：创建一条默认便签，便于查看效果
                     let default = commands::welcome_sticker_new();
                     if let Ok(id) = state.with_conn_path(|c, db| create_sticker(c, &default, db)) {
                         // 首次默认便签按系统默认置顶（default_sticker_always_on_top=1）
@@ -1060,12 +1068,12 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    /// I2：欢迎便签只在「首个工作控件 + 无历史便签」时种植；bootstrap 库跳过。
+    /// I2：欢迎便签只在「首个工作空间 + 无历史便签」时种植；bootstrap 库跳过。
     #[test]
     fn welcome_seed_only_for_first_empty_workspace() {
-        assert!(should_seed_welcome(true, 0), "首个工作控件空库应种欢迎便签");
+        assert!(should_seed_welcome(true, 0), "首个工作空间空库应种欢迎便签");
         assert!(!should_seed_welcome(true, 1), "有迁移数据则不种欢迎便签");
-        assert!(!should_seed_welcome(false, 0), "非首个工作控件不种欢迎便签");
+        assert!(!should_seed_welcome(false, 0), "非首个工作空间不种欢迎便签");
         assert!(!should_seed_welcome(false, 1));
     }
 }

@@ -33,4 +33,5 @@ tokio = { version = "1", features = ["time"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 zip = "2"
 dirs = "5"
+tauri-plugin-dialog = "2"
 

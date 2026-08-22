@@ -123,7 +123,7 @@ onMounted(async () => {
         class="nav-item"
         :class="{ active: activeMenu === 'workspace' }"
         @click="activeMenu = 'workspace'"
-      >工作控件</button>
+      >工作空间</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'debug' }"
@@ -249,7 +249,7 @@ onMounted(async () => {
         <p class="hint">提醒和截止 chip 选择“明天”或“下周”时使用以上默认值。</p>
       </div>
 
-      <!-- 工作控件 -->
+      <!-- 工作空间 -->
       <div v-else-if="activeMenu === 'workspace'">
         <WorkspaceManager />
       </div>

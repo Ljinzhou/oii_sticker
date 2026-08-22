@@ -1,13 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+﻿import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
   confirmMock: vi.fn<(message: string) => boolean>(() => true),
+  pickDirMock: vi.fn<() => Promise<string | null>>(async () => null),
+  saveMock: vi.fn<() => Promise<string | null>>(async () => null),
 }));
 
 vi.mock("../../composables/useTauri", () => ({
   invoke: (...args: unknown[]) => mocks.invokeMock(...args),
+}));
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: unknown[]) => mocks.pickDirMock(...(args as [])),
+  save: (...args: unknown[]) => mocks.saveMock(...(args as [])),
 }));
 
 import WorkspaceManager from "./WorkspaceManager.vue";
@@ -77,6 +84,10 @@ beforeEach(() => {
   mocks.invokeMock.mockReset();
   mocks.confirmMock.mockReset();
   mocks.confirmMock.mockReturnValue(true);
+  mocks.pickDirMock.mockReset();
+  mocks.pickDirMock.mockResolvedValue(null);
+  mocks.saveMock.mockReset();
+  mocks.saveMock.mockResolvedValue(null);
   window.confirm = mocks.confirmMock as unknown as typeof window.confirm;
 });
 
@@ -151,7 +162,7 @@ describe("WorkspaceManager", () => {
   it("销毁失败时显示错误 toast", async () => {
     setupBackend({
       handlers: {
-        workspace_destroy_cmd: () => Promise.reject("不能删除当前激活的工作控件，请先切换到其他工作控件"),
+        workspace_destroy_cmd: () => Promise.reject("不能删除当前激活的工作空间，请先切换到其他工作空间"),
       },
     });
     const wrapper = await mountManager();
@@ -160,42 +171,40 @@ describe("WorkspaceManager", () => {
     await flushPromises();
 
     const toast = wrapper.get(".ws-toast.error");
-    expect(toast.text()).toContain("不能删除当前激活的工作控件");
+    expect(toast.text()).toContain("不能删除当前激活的工作空间");
     expect(wrapper.findAll(".ws-row")).toHaveLength(2);
   });
 
-  it("备份：预填默认 zip 路径并调用 workspace_backup_cmd，展示大小", async () => {
+  it("备份：系统另存为对话框选择位置并调用 workspace_backup_cmd，展示大小", async () => {
     setupBackend();
+    mocks.saveMock.mockResolvedValue("C:/backup/workspace.zip");
     const wrapper = await mountManager();
+    mocks.invokeMock.mockClear();
 
     await wrapper.get(".hero-backup").trigger("click");
-    const input = wrapper.get<HTMLInputElement>(".backup-input");
-    expect(input.element.value).toBe(`${DEFAULT_ROOT}.zip`);
-
-    await input.setValue("C:/backup/workspace.zip");
-    await wrapper.get(".backup-run").trigger("click");
     await flushPromises();
 
+    expect(mocks.saveMock).toHaveBeenCalledTimes(1);
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_backup_cmd", {
       id: "w-1",
       destZip: "C:/backup/workspace.zip",
     });
-    expect(wrapper.get(".ws-ok-line").text()).toContain("备份完成");
-    expect(wrapper.get(".ws-ok-line").text()).toContain("1.2 MB");
+    const okLine = wrapper.get(".ws-ok-line");
+    expect(okLine.text()).toContain("备份完成");
+    expect(okLine.text()).toContain("1.2 MB");
   });
 
-  it("转移：输入目标目录调用 workspace_transfer_cmd 并刷新", async () => {
+  it("转移：目录对话框选择空文件夹直接调用 workspace_transfer_cmd 并刷新", async () => {
     setupBackend();
+    mocks.pickDirMock.mockResolvedValue("C:/ws/a-new");
     const wrapper = await mountManager();
     mocks.invokeMock.mockClear();
 
     await wrapper.findAll(".ws-row")[0].findAll("button").find((b) => b.text() === "转移")!.trigger("click");
-    const input = wrapper.get<HTMLInputElement>(".transfer-input");
-    expect(input.element.value).toBe("");
-    await input.setValue("C:/ws/a-new");
-    await wrapper.get(".transfer-run").trigger("click");
     await flushPromises();
 
+    expect(mocks.pickDirMock).toHaveBeenCalledTimes(1);
+    expect(mocks.confirmMock).not.toHaveBeenCalled();
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_transfer_cmd", {
       id: "w-1",
       destRoot: "C:/ws/a-new",
@@ -204,12 +213,42 @@ describe("WorkspaceManager", () => {
     expect(listCalls).toHaveLength(1);
   });
 
-  it("新建：输入路径与名称调用 workspace_create_cmd 并刷新", async () => {
+  it("转移：目标非空时确认后改用 oiistiker_workspace 子目录重试", async () => {
+    let transferCalls = 0;
+    setupBackend({
+      handlers: {
+        workspace_transfer_cmd: (args) => {
+          transferCalls += 1;
+          if (args?.destRoot === "E:/") return Promise.reject(`DEST_NOT_EMPTY:E:/`);
+          return Promise.resolve();
+        },
+      },
+    });
+    mocks.pickDirMock.mockResolvedValue("E:/");
+    const wrapper = await mountManager();
+    mocks.invokeMock.mockClear();
+
+    await wrapper.findAll(".ws-row")[0].findAll("button").find((b) => b.text() === "转移")!.trigger("click");
+    await flushPromises();
+
+    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
+    expect(String(mocks.confirmMock.mock.calls[0][0])).toContain("oiistiker_workspace");
+    expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_transfer_cmd", {
+      id: "w-1",
+      destRoot: "E:/oiistiker_workspace",
+    });
+    expect(transferCalls).toBe(2);
+  });
+
+  it("新建：目录对话框选择路径与名称调用 workspace_create_cmd 并刷新", async () => {
     setupBackend();
+    mocks.pickDirMock.mockResolvedValue("C:/ws/new");
     const wrapper = await mountManager();
 
     await wrapper.get(".ws-new-trigger").trigger("click");
-    await wrapper.get<HTMLInputElement>(".new-path-input").setValue("C:/ws/new");
+    await flushPromises();
+    // 所选路径回填展示
+    expect(wrapper.get(".ws-picked-path").text()).toBe("C:/ws/new");
     await wrapper.get<HTMLInputElement>(".new-name-input").setValue("新控件");
     await wrapper.get(".new-run").trigger("click");
     await flushPromises();
@@ -220,6 +259,31 @@ describe("WorkspaceManager", () => {
     });
     expect(wrapper.findAll(".ws-row")).toHaveLength(3);
     expect(wrapper.text()).toContain("新控件");
+  });
+
+  it("新建：目标非空时确认后改用 oiistiker_workspace 子目录创建", async () => {
+    setupBackend({
+      handlers: {
+        workspace_create_cmd: (args) => {
+          if (args?.path === "E:/") return Promise.reject(`DEST_NOT_EMPTY:E:/`);
+          const dto = E("w-new", "未命名工作空间", args?.path as string);
+          return Promise.resolve(dto);
+        },
+      },
+    });
+    mocks.pickDirMock.mockResolvedValue("E:/");
+    const wrapper = await mountManager();
+
+    await wrapper.get(".ws-new-trigger").trigger("click");
+    await flushPromises();
+    await wrapper.get(".new-run").trigger("click");
+    await flushPromises();
+
+    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
+    expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_create_cmd", {
+      path: "E:/oiistiker_workspace",
+      name: null,
+    });
   });
 
   it("刷新失败时显示错误 toast，完成后恢复可用", async () => {
