@@ -150,8 +150,7 @@ describe("ConsoleView", () => {
     expect(wrapper.findAll(".group-menu-btn")).toHaveLength(2);
   });
 
-  it("视图切换持久化到 system_config（console_group_view）", async () => {
-    const wrapper = await mountConsole();
+  it("视图切换持久化到 system_config（console_group_view）", async () => {    const wrapper = await mountConsole();
     const btns = wrapper.findAll(".view-switch button");
     await btns[1]!.trigger("click"); // 平铺
     let call = mocks.invokeMock.mock.calls.find((c) => c[0] === "set_config_cmd");
@@ -160,6 +159,16 @@ describe("ConsoleView", () => {
     await btns[0]!.trigger("click"); // 分区
     call = mocks.invokeMock.mock.calls.filter((c) => c[0] === "set_config_cmd").slice(-1)[0];
     expect(call![1]).toMatchObject({ key: "console_group_view", value: "section" });
+  });
+
+  it("启动时在设置回读后恢复持久化的视图模式（flat）", async () => {
+    setupInvoke({ console_group_view: "flat" });
+    const wrapper = await mountConsole();
+    const btns = wrapper.findAll(".view-switch button");
+    expect(btns[1]!.classes()).toContain("on"); // 平铺激活
+    expect(btns[0]!.classes()).not.toContain("on");
+    // 平铺视图已生效：筛选 chips 可见
+    expect(wrapper.find(".filter-chips").exists()).toBe(true);
   });
 
   it("平铺视图筛选 chips 过滤卡片", async () => {
