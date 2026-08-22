@@ -285,10 +285,8 @@ fn delete_sticker_cmd(
 // ── 便签分组 ──
 
 #[tauri::command]
-fn group_list_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<models::StickerGroup>, String> {
-    let groups = state.with_conn(commands::list_groups).map_err(|e| e.to_string())?;
-    events::emit_push_update(&app, 0);
-    Ok(groups)
+fn group_list_cmd(state: State<'_, AppState>) -> Result<Vec<models::StickerGroup>, String> {
+    state.with_conn(commands::list_groups).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
