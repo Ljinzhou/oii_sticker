@@ -3,7 +3,6 @@ import { mount, flushPromises } from "@vue/test-utils";
 
 const mocks = vi.hoisted(() => ({
   invokeMock: vi.fn(),
-  confirmMock: vi.fn<(message: string) => boolean>(() => true),
   pickDirMock: vi.fn<() => Promise<string | null>>(async () => null),
   saveMock: vi.fn<() => Promise<string | null>>(async () => null),
 }));
@@ -80,15 +79,21 @@ async function mountManager() {
   return wrapper;
 }
 
+/** 确认浮层：断言出现并点击「确定」/「取消」。 */
+async function answerConfirmIn(wrapper: Awaited<ReturnType<typeof mountManager>>, yes: boolean, expectText?: string) {
+  const mask = wrapper.get(".ws-confirm-mask");
+  if (expectText) expect(mask.text()).toContain(expectText);
+  const btn = mask.findAll("button").find((b) => b.classes().includes(yes ? "ws-confirm-ok" : "ws-confirm-cancel"))!;
+  await btn.trigger("click");
+  await flushPromises();
+}
+
 beforeEach(() => {
   mocks.invokeMock.mockReset();
-  mocks.confirmMock.mockReset();
-  mocks.confirmMock.mockReturnValue(true);
   mocks.pickDirMock.mockReset();
   mocks.pickDirMock.mockResolvedValue(null);
   mocks.saveMock.mockReset();
   mocks.saveMock.mockResolvedValue(null);
-  window.confirm = mocks.confirmMock as unknown as typeof window.confirm;
 });
 
 describe("WorkspaceManager", () => {
@@ -111,7 +116,7 @@ describe("WorkspaceManager", () => {
     expect(rows[1].find(".row-switch").exists()).toBe(true);
   });
 
-  it("切换前弹确认框，确认后调用 workspace_switch_cmd 并刷新列表", async () => {
+  it("切换前弹确认浮层，确认后调用 workspace_switch_cmd 并刷新列表", async () => {
     setupBackend();
     const wrapper = await mountManager();
     mocks.invokeMock.mockClear();
@@ -120,9 +125,8 @@ describe("WorkspaceManager", () => {
     const switchBtn = rows[1].findAll("button").find((b) => b.text() === "切换")!;
     await switchBtn.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true, "工作空间 B");
 
-    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
-    expect(String(mocks.confirmMock.mock.calls[0][0])).toContain("工作空间 B");
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_switch_cmd", { id: "w-2" });
     const listCalls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "workspace_list_cmd");
     expect(listCalls).toHaveLength(1);
@@ -130,16 +134,15 @@ describe("WorkspaceManager", () => {
     expect(wrapper.findAll(".ws-row")[1].classes()).toContain("active");
   });
 
-  it("取消确认弹窗时不做任何调用", async () => {
+  it("取消确认浮窗时不做任何调用", async () => {
     setupBackend();
     const wrapper = await mountManager();
     mocks.invokeMock.mockClear();
-    mocks.confirmMock.mockReturnValue(false);
 
     await wrapper.findAll(".ws-row")[1].findAll("button").find((b) => b.text() === "切换")!.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, false, "工作空间 B");
 
-    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
     expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "workspace_switch_cmd")).toBe(false);
     expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "workspace_list_cmd")).toBe(false);
   });
@@ -152,6 +155,7 @@ describe("WorkspaceManager", () => {
     const rows = wrapper.findAll(".ws-row");
     await rows[1].findAll("button").find((b) => b.text() === "销毁")!.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true, "无法恢复");
 
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_destroy_cmd", { id: "w-2" });
     const listCalls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "workspace_list_cmd");
@@ -169,6 +173,7 @@ describe("WorkspaceManager", () => {
 
     await wrapper.findAll(".ws-row")[1].findAll("button").find((b) => b.text() === "销毁")!.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true);
 
     const toast = wrapper.get(".ws-toast.error");
     expect(toast.text()).toContain("不能删除当前激活的工作空间");
@@ -204,7 +209,7 @@ describe("WorkspaceManager", () => {
     await flushPromises();
 
     expect(mocks.pickDirMock).toHaveBeenCalledTimes(1);
-    expect(mocks.confirmMock).not.toHaveBeenCalled();
+    expect(wrapper.find(".ws-confirm-mask").exists()).toBe(false);
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_transfer_cmd", {
       id: "w-1",
       destRoot: "C:/ws/a-new",
@@ -230,9 +235,8 @@ describe("WorkspaceManager", () => {
 
     await wrapper.findAll(".ws-row")[0].findAll("button").find((b) => b.text() === "转移")!.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true, "oiistiker_workspace");
 
-    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
-    expect(String(mocks.confirmMock.mock.calls[0][0])).toContain("oiistiker_workspace");
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_transfer_cmd", {
       id: "w-1",
       destRoot: "E:/oiistiker_workspace",
@@ -278,8 +282,8 @@ describe("WorkspaceManager", () => {
     await flushPromises();
     await wrapper.get(".new-run").trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true, "oiistiker_workspace");
 
-    expect(mocks.confirmMock).toHaveBeenCalledTimes(1);
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_create_cmd", {
       path: "E:/oiistiker_workspace",
       name: null,
@@ -314,6 +318,7 @@ describe("WorkspaceManager", () => {
 
     await wrapper.findAll(".ws-row")[1].findAll("button").find((b) => b.text() === "销毁")!.trigger("click");
     await flushPromises();
+    await answerConfirmIn(wrapper, true);
 
     const buttons = wrapper.findAll("button.ws-btn");
     expect(buttons.length).toBeGreaterThan(0);

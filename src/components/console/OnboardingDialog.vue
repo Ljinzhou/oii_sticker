@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { open as pickDirectory } from "@tauri-apps/plugin-dialog";
+import { open as pickDirectory, ask as askDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "../../composables/useTauri";
 
 const emit = defineEmits<{ done: [] }>();
+const SUBDIR_NAME = "oiistiker_workspace";
 const path = ref("");
 const name = ref("未命名工作空间");
 const removeLegacy = ref(false);
@@ -43,15 +44,18 @@ async function confirm() {
   } catch (e) {
     const msg = String(e);
     // 目标目录非空：提示改用其下 oiistiker_workspace 子目录重试
-    if (msg.startsWith("DEST_NOT_EMPTY:") && !path.value.trim().endsWith("oiistiker_workspace")) {
-      const ok = window.confirm(
-        "所选文件夹非空，是否在其中创建「oiistiker_workspace」子文件夹并使用？",
-      );
+    if (msg.startsWith("DEST_NOT_EMPTY:") && !path.value.trim().endsWith(SUBDIR_NAME)) {
       building.value = false;
-      if (ok) {
-        path.value = path.value.replace(/[\\/]+$/, "") + "/oiistiker_workspace";
-        await confirm();
+      const ok = await askDialog(
+        "所选文件夹非空，是否在其中创建「oiistiker_workspace」子文件夹并使用？",
+        { title: "目录非空", kind: "warning" },
+      );
+      if (!ok) {
+        errorMsg.value = "已取消：请选择一个空文件夹作为工作空间目录";
+        return;
       }
+      path.value = path.value.replace(/[\\/]+$/, "") + "/" + SUBDIR_NAME;
+      await confirm();
       return;
     }
     errorMsg.value = msg;

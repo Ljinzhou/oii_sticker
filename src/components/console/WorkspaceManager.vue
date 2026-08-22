@@ -56,6 +56,20 @@ function showOk(text: string) {
   showToast("ok", text);
 }
 
+// —— 确认浮层（Promise 化；不使用 window.confirm——Tauri 下被重定向为异步 IPC 且同步返回值不可靠） ——
+const confirmState = ref<{ message: string; resolve: (v: boolean) => void } | null>(null);
+
+function askConfirm(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmState.value = { message, resolve };
+  });
+}
+
+function answerConfirm(v: boolean) {
+  confirmState.value?.resolve(v);
+  confirmState.value = null;
+}
+
 async function refresh() {
   busyKey.value = "refresh";
   try {
@@ -117,7 +131,7 @@ async function tryCreate(path: string) {
   } catch (e) {
     if (isDestNotEmpty(e)) {
       busyKey.value = null;
-      const ok = window.confirm(
+      const ok = await askConfirm(
         `所选文件夹非空，是否在其中创建「${SUBDIR_NAME}」子文件夹并使用？`,
       );
       if (!ok) return;
@@ -132,7 +146,7 @@ async function tryCreate(path: string) {
 
 // —— 切换 ——
 async function onSwitch(row: WorkspaceEntry) {
-  const ok = window.confirm(`切换到「${row.name}」？所有便签窗口将被关闭，请确认。`);
+  const ok = await askConfirm(`切换到「${row.name}」？所有便签窗口将被关闭，请确认。`);
   if (!ok) return;
   busyKey.value = `switch:${row.id}`;
   try {
@@ -148,7 +162,7 @@ async function onSwitch(row: WorkspaceEntry) {
 
 // —— 销毁 ——
 async function onDestroy(row: WorkspaceEntry) {
-  const ok = window.confirm(
+  const ok = await askConfirm(
     `确定销毁「${row.name}」？该控件的全部便签数据将被删除，无法恢复。`,
   );
   if (!ok) return;
@@ -219,7 +233,7 @@ async function tryTransfer(id: string, dest: string) {
   } catch (e) {
     if (isDestNotEmpty(e)) {
       busyKey.value = null;
-      const ok = window.confirm(
+      const ok = await askConfirm(
         `所选文件夹非空，是否在其中创建「${SUBDIR_NAME}」子文件夹并转移至此？`,
       );
       if (!ok) { transferId.value = null; return; }
@@ -237,6 +251,17 @@ async function tryTransfer(id: string, dest: string) {
 <template>
   <div class="ws-manager">
     <div v-if="toast" class="ws-toast" :class="toast.type">{{ toast.text }}</div>
+
+    <!-- 确认浮层 -->
+    <div v-if="confirmState" class="ws-confirm-mask" @click.self="answerConfirm(false)">
+      <div class="ws-confirm" role="dialog" aria-modal="true">
+        <p class="ws-confirm-msg">{{ confirmState.message }}</p>
+        <div class="ws-inline-actions">
+          <button class="ws-btn ws-confirm-cancel" :disabled="busy" @click="answerConfirm(false)">取消</button>
+          <button class="ws-btn primary ws-confirm-ok" :disabled="busy" @click="answerConfirm(true)">确定</button>
+        </div>
+      </div>
+    </div>
 
     <!-- 当前工作空间 hero 卡 -->
     <section class="ws-hero">
@@ -590,6 +615,33 @@ async function tryTransfer(id: string, dest: string) {
   font-size: 12px;
   color: var(--ink-2);
   background: var(--paper-deep);
+  overflow-wrap: anywhere;
+}
+
+.ws-confirm-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: rgba(20, 16, 8, 0.35);
+}
+
+.ws-confirm {
+  width: min(360px, 86vw);
+  box-sizing: border-box;
+  padding: 18px;
+  border-radius: var(--radius);
+  background: var(--paper-card);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.22);
+  animation: ws-in 140ms ease;
+}
+
+.ws-confirm-msg {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink);
   overflow-wrap: anywhere;
 }
 
