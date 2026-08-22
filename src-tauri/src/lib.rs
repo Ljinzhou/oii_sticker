@@ -282,6 +282,72 @@ fn delete_sticker_cmd(
     Ok(())
 }
 
+// ── 便签分组 ──
+
+#[tauri::command]
+fn group_list_cmd(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<models::StickerGroup>, String> {
+    let groups = state.with_conn(commands::list_groups).map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(groups)
+}
+
+#[tauri::command]
+fn group_create_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<models::StickerGroup, String> {
+    let g = state
+        .with_conn(|c| commands::create_group(c, &name))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(g)
+}
+
+#[tauri::command]
+fn group_rename_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    name: String,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::rename_group(c, id, &name))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+#[tauri::command]
+fn group_delete_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    mode: String,
+) -> Result<usize, String> {
+    let db = state.db_path();
+    let removed = state
+        .with_conn(|c| commands::delete_group(c, id, &mode, &db))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(removed)
+}
+
+/// 移动便签到分组；group_id=None 表示回默认组。
+#[tauri::command]
+fn move_sticker_group_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    sticker_id: i64,
+    group_id: Option<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::move_sticker_group(c, sticker_id, group_id))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
 #[tauri::command]
 fn set_reminder_cmd(
     app: tauri::AppHandle,
@@ -1030,6 +1096,11 @@ pub fn run() {
             create_sticker_cmd,
             update_sticker_cmd,
             delete_sticker_cmd,
+            group_list_cmd,
+            group_create_cmd,
+            group_rename_cmd,
+            group_delete_cmd,
+            move_sticker_group_cmd,
             set_reminder_cmd,
             clear_reminder_cmd,
             get_reminder_cmd,

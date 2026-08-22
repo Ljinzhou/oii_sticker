@@ -5,6 +5,7 @@ export type StickerMode = "display" | "interact" | "edit";
 export interface Sticker {
   id: number;
   parent_id: number | null;
+  group_id: number | null;
   title: string;
   content: string;
   heading_level: number;
@@ -91,6 +92,13 @@ export interface WorkspaceEntry {
   id: string;
   name: string;
   path: string;
+  created_at: string;
+}
+
+export interface StickerGroup {
+  id: number;
+  name: string;
+  sort_order: number;
   created_at: string;
 }
 
