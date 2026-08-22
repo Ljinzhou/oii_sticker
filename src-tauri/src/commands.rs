@@ -148,6 +148,62 @@ pub fn delete_sticker(conn: &Connection, id: i64, db_path: &str) -> Result<()> {
     sticker_repo::delete(conn, id)
 }
 
+// ── 便签分组 ──
+
+pub fn list_groups(conn: &Connection) -> Result<Vec<crate::models::StickerGroup>> {
+    crate::db::group_repo::list(conn)
+}
+
+pub fn create_group(conn: &Connection, name: &str) -> Result<crate::models::StickerGroup> {
+    crate::db::group_repo::create(conn, name)
+}
+
+pub fn rename_group(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    crate::db::group_repo::rename(conn, id, name)
+}
+
+/// 删除分组。mode="with-stickers" 时连带删除组内便签（含 md 与 assets 文件清理），
+/// 返回被删除的便签数量；mode="to-default" 时便签自动回默认组，返回 0。
+///
+/// with-stickers 不能走 [`delete_sticker`] 的常规逐条清理：`group_repo::delete`
+/// 在单事务内已删除便签行后才返回 id 列表，此时按「标题拼文件名」的路径查不到行、
+/// 推不出文件名。因此 md 清理必须改用 `{id}-*.md` 前缀匹配——文件名以自增 id 开头，
+/// 与标题是否被清洗/改名无关，能可靠命中该便签的全部历史文件名。
+pub fn delete_group(conn: &Connection, id: i64, mode: &str, db_path: &str) -> Result<usize> {
+    match mode {
+        "with-stickers" => {
+            let removed = crate::db::group_repo::delete(conn, id, mode)?;
+            let root = ws_root(db_path);
+            let stickers_dir = root.join("stickers");
+            for sid in &removed {
+                // md：{id}-*.md 前缀匹配（原因见函数注释）
+                if let Ok(entries) = std::fs::read_dir(&stickers_dir) {
+                    let prefix = format!("{sid}-");
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        if name.starts_with(&prefix) && name.ends_with(".md") {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+                // 资产目录整体移除
+                let _ = std::fs::remove_dir_all(root.join("assets").join(sid.to_string()));
+            }
+            Ok(removed.len())
+        }
+        "to-default" => {
+            crate::db::group_repo::delete(conn, id, mode)?;
+            Ok(0)
+        }
+        _ => bail!("未知的删除模式：{mode}"),
+    }
+}
+
+pub fn move_sticker_group(conn: &Connection, sticker_id: i64, group_id: Option<i64>) -> Result<()> {
+    crate::db::group_repo::move_sticker(conn, sticker_id, group_id)
+}
+
 // ── 提醒 ──
 
 /// 写入/覆盖便签提醒属性。
@@ -524,6 +580,60 @@ mod tests {
         // 同一连接内再次创建：id 应递增且均成功（函数可复用）
         let id2 = create_welcome_sticker(&conn, &db_path).unwrap();
         assert_ne!(id, id2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// with-stickers 删组：DB 行已被 group_repo 事务删除，md 必须靠 {id}-*.md
+    /// 前缀匹配清理，assets/{id}/ 目录一并移除。
+    #[test]
+    fn delete_group_with_stickers_cleans_md_and_assets() {
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("group-del");
+        let g = crate::db::group_repo::create(&conn, "待删组").unwrap();
+        let id = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker {
+                title: "组内便签".into(),
+                content: "# X".into(),
+                ..Default::default()
+            },
+            &db_path,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stickers SET group_id=?2 WHERE id=?1",
+            rusqlite::params![id, g.id],
+        )
+        .unwrap();
+
+        let file = root.join("stickers").join(layout::sticker_file_name(id, "组内便签"));
+        assert!(file.exists(), "前置：组内便签 md 已落盘");
+        let asset_dir = root.join("assets").join(id.to_string());
+        std::fs::create_dir_all(&asset_dir).unwrap();
+
+        let n = delete_group(&conn, g.id, "with-stickers", &db_path).unwrap();
+        assert_eq!(n, 1);
+        assert!(!file.exists(), "组内便签 md 应被前缀匹配清除");
+        assert!(!asset_dir.exists(), "资产目录应一并移除");
+        assert!(get_sticker(&conn, id, &db_path).unwrap().is_none());
+        assert!(crate::db::group_repo::get(&conn, g.id).unwrap().is_none());
+
+        // to-default：返回 0，便签保留回默认组
+        let g2 = crate::db::group_repo::create(&conn, "保留组").unwrap();
+        let s2 = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker { title: "留用".into(), content: "Y".into(), ..Default::default() },
+            &db_path,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE stickers SET group_id=?2 WHERE id=?1",
+            rusqlite::params![s2, g2.id],
+        )
+        .unwrap();
+        assert_eq!(delete_group(&conn, g2.id, "to-default", &db_path).unwrap(), 0);
+        let f2 = layout::sticker_file_name(s2, "留用");
+        assert!(root.join("stickers").join(&f2).exists(), "to-default 不得删 md");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
