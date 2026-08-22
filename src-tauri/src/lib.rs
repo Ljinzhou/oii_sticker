@@ -696,6 +696,20 @@ fn debug_notify_cmd(app: tauri::AppHandle, title: String, body: String) -> Resul
     Ok(())
 }
 
+/// 用系统默认浏览器打开外部链接（绝不在内嵌 WebView 中导航，避免覆盖便签内容）。
+/// 仅允许 http(s) 协议。
+#[tauri::command]
+fn open_external_cmd(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let lower = url.trim().to_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(format!("仅允许打开 http(s) 链接：{url}"));
+    }
+    app.opener()
+        .open_url(url.trim(), None::<&str>)
+        .map_err(|e| format!("打开链接失败: {e}"))
+}
+
 #[tauri::command]
 fn slash_query_cmd(query: String) -> Vec<SlashDto> {
     slash::matcher::filter(&slash::all_commands(), &query)
@@ -853,53 +867,29 @@ fn workspace_transfer_cmd(
     Ok(())
 }
 
-/// 默认欢迎便签的种植条件：注册表为空（首个工作空间）且迁移无历史便签。
-/// bootstrap 库本身不种欢迎便签，保证不会出现卡在 bootstrap 数据的孤儿窗口。
-fn should_seed_welcome(registry_was_empty: bool, migrated_stickers: usize) -> bool {
-    registry_was_empty && migrated_stickers == 0
-}
-
-/// 首次引导：创建第一个工作空间 + 切换到其 DB。迁移（migrate::run）由 Task 6 接入。
+/// 首次引导：创建第一个工作空间 + 切换到其 DB；全新空库补建默认欢迎便签。
 #[tauri::command]
 fn workspace_bootstrap_cmd(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     path: String,
     name: Option<String>,
-    remove_legacy: bool,
 ) -> Result<models::WorkspaceEntryDto, String> {
     let root = PathBuf::from(&path);
     // 首次引导同样要求目标目录不存在或为空（OnboardingDialog 处理非空确认流）
     workspace::layout::ensure_empty_dest(&root).map_err(|e| e.to_string())?;
-    let registry_was_empty = workspace::layout::load_registry(&state.registry_path())
-        .map(|r| r.workspaces.is_empty() && r.current.is_none())
-        .unwrap_or(true);
     let entry = workspace::cmds::create(&state.registry_path(), &root, name.as_deref())
         .map_err(|e| e.to_string())?;
     let db_path = entry_path_db(&root);
     state.switch_db(&db_path).map_err(|e| e.to_string())?;
-    // 首次启动：旧库（%APPDATA%/stickers.db）→ 新工作空间库全量迁移。
-    // 便签 content 写入 md 文件，元数据/todo/prefs/attrs 入新库。
-    let legacy = workspace::legacy_db_path(
-        state.registry_path().parent().expect("registry 必在 app_data_dir 下"),
-    );
-    let summary = state
-        .with_conn(|c| workspace::migrate::run(&legacy, c, &root))
-        .map_err(|e| e.to_string())?;
-    if remove_legacy {
-        let _ = std::fs::remove_file(&legacy);
-        for ext in ["-wal", "-shm"] {
-            let _ = std::fs::remove_file(PathBuf::from(format!("{}{ext}", legacy.display())));
-        }
-    }
-    // 首个工作空间且无历史便签：补建默认欢迎便签（bootstrap 库不种孤儿）。
-    if should_seed_welcome(registry_was_empty, summary.stickers) {
+    // 全新工作空间：补建默认欢迎便签（md 主存储随 create 一并落盘）。
+    let stickers = state.with_conn(commands::list_stickers).unwrap_or_default();
+    if stickers.is_empty() {
         state
             .with_conn_path(|c, db| commands::create_welcome_sticker(c, db))
             .map_err(|e| format!("创建默认欢迎便签失败：{e}"))?;
-        tracing::info!("[bootstrap] 首个工作空间无历史便签，已创建默认欢迎便签");
+        tracing::info!("[bootstrap] 全新工作空间，已创建默认欢迎便签");
     }
-    tracing::info!("[bootstrap] 迁移结果：{summary:?}");
     events::emit_push_update(&app, 0); // 主控台刷新
     Ok(workspace_to_dto(entry))
 }
@@ -918,35 +908,53 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .setup(|app| {
-            // 数据层初始化：注册表决定 boot 库（当前工作空间库或 bootstrap 库）
-            // + 迁移 + 配置快照。旧版 stickers.db 路径保留供后续迁移（Task 6）。
+            // 数据层初始化：解析注册表中的有效工作控件并打开其数据库。
+            // 无任何有效工作控件时使用内存占位库（不落盘）——前端首次引导
+            // 创建真实工作空间后再 switch_db 切换；启动路径绝不无声重建目录。
             let app_data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("获取 app_data_dir 失败: {e}"))?;
-            let db_path = workspace::boot_db_path(&app_data_dir);
-            let conn = db::connection::open(&db_path)
-                .map_err(|e| format!("打开数据库失败: {e}"))?;
-            db::schema::run_migrations(&conn).map_err(|e| format!("数据库迁移失败: {e}"))?;
-            let config = db::config_repo::load_all(&conn)
-                .map_err(|e| format!("读取配置失败: {e}"))?;
-            let legacy_db = workspace::legacy_db_path(&app_data_dir);
+            // 程序级目录只保留 workspaces.json：清掉旧版单库与 bootstrap 临时库。
+            workspace::cleanup_legacy_artifacts(&app_data_dir);
+            let boot = workspace::resolve_boot_workspace(&app_data_dir)
+                .map_err(|e| format!("解析工作空间注册表失败: {e}"))?;
+            for name in &boot.removed_invalid {
+                tracing::warn!("[setup] 工作空间目录已失效，已从注册表移除：{name}");
+            }
+            let (conn, config, db_path) = match &boot.db_path {
+                Some(db) => {
+                    let conn = db::connection::open(db)
+                        .map_err(|e| format!("打开数据库失败: {e}"))?;
+                    db::schema::run_migrations(&conn)
+                        .map_err(|e| format!("数据库迁移失败: {e}"))?;
+                    let config = db::config_repo::load_all(&conn)
+                        .map_err(|e| format!("读取配置失败: {e}"))?;
+                    (conn, config, db.to_string_lossy().into_owned())
+                }
+                None => {
+                    tracing::info!("[setup] 无有效工作空间，使用内存占位库等待首次引导");
+                    let conn = rusqlite::Connection::open_in_memory()
+                        .map_err(|e| format!("打开占位数据库失败: {e}"))?;
+                    db::schema::run_migrations(&conn)
+                        .map_err(|e| format!("数据库迁移失败: {e}"))?;
+                    let config = db::config_repo::load_all(&conn)
+                        .map_err(|e| format!("读取配置失败: {e}"))?;
+                    (conn, config, ":memory:".to_string())
+                }
+            };
             app.manage(AppState::new(
                 conn,
                 config,
-                db_path.to_string_lossy().into_owned(),
+                db_path,
                 app_data_dir.to_string_lossy().into_owned(),
             ));
-            tracing::debug!(
-                "[setup] boot db={} legacy db={}",
-                db_path.display(),
-                legacy_db.display()
-            );
 
             let handle = app.handle().clone();
             let state = app.state::<AppState>().inner().clone();
@@ -970,17 +978,15 @@ pub fn run() {
             reminder::scheduler::spawn(handle.clone(), state.clone());
 
             // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签。
-            // bootstrap 库（尚无注册工作空间）不创建欢迎便签——它会在首次
-            // workspace_bootstrap 迁移成功后补建，避免孤儿便签卡在 bootstrap 数据上。
+            // 内存占位库（尚无注册工作空间，等待首次引导）不创建欢迎便签，
+            // 避免孤儿便签卡在占位数据上。
             let stickers = state
                 .with_conn(commands::list_stickers)
                 .unwrap_or_default();
-            let on_bootstrap_db = workspace::layout::load_registry(&state.registry_path())
-                .map(|r| r.current.is_none())
-                .unwrap_or(true);
+            let on_placeholder_db = boot.db_path.is_none();
             if stickers.is_empty() {
-                if on_bootstrap_db {
-                    tracing::info!("[setup] 启动于 bootstrap 库（未注册工作空间），跳过默认便签创建");
+                if on_placeholder_db {
+                    tracing::info!("[setup] 启动于内存占位库（未注册工作空间），跳过默认便签创建");
                 } else {
                     // 真实工作空间空库：创建一条默认便签，便于查看效果
                     let default = commands::welcome_sticker_new();
@@ -1044,6 +1050,7 @@ pub fn run() {
             open_todo_window_cmd,
             close_todo_window_cmd,
             debug_notify_cmd,
+            open_external_cmd,
             main_close_cmd,
             apply_window_state_cmd,
             wake_sticker_cmd,
@@ -1068,12 +1075,61 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    /// I2：欢迎便签只在「首个工作空间 + 无历史便签」时种植；bootstrap 库跳过。
+    /// 启动解析：失效工作控件被移除并回退到有效项；全部失效时返回 None。
     #[test]
-    fn welcome_seed_only_for_first_empty_workspace() {
-        assert!(should_seed_welcome(true, 0), "首个工作空间空库应种欢迎便签");
-        assert!(!should_seed_welcome(true, 1), "有迁移数据则不种欢迎便签");
-        assert!(!should_seed_welcome(false, 0), "非首个工作空间不种欢迎便签");
-        assert!(!should_seed_welcome(false, 1));
+    fn resolve_boot_workspace_removes_invalid_and_falls_back() {
+        let dir = std::env::temp_dir().join(format!("boot-resolve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 有效控件 a（含 data/index.db）；失效控件 b（目录不存在）
+        let root_a = dir.join("ws-a");
+        workspace::layout::ensure_layout(&workspace::layout::Layout::at(&root_a), "A").unwrap();
+        std::fs::create_dir_all(root_a.join("data")).unwrap();
+        std::fs::write(root_a.join("data").join("index.db"), b"").unwrap();
+        let reg_path = dir.join("workspaces.json");
+        let reg = workspace::layout::Registry {
+            current: Some("w-b".into()),
+            workspaces: vec![
+                workspace::layout::WorkspaceEntry { id: "w-a".into(), name: "A".into(), path: root_a.to_string_lossy().into_owned(), created_at: "1".into() },
+                workspace::layout::WorkspaceEntry { id: "w-b".into(), name: "B".into(), path: dir.join("ws-b").to_string_lossy().into_owned(), created_at: "2".into() },
+            ],
+        };
+        workspace::layout::save_registry(&reg_path, &reg).unwrap();
+
+        let boot = workspace::resolve_boot_workspace(&dir).unwrap();
+        assert_eq!(boot.db_path.as_deref(), Some(root_a.join("data").join("index.db")).as_deref());
+        assert_eq!(boot.removed_invalid.len(), 1);
+        // 注册表已清理且 current 回退到有效项
+        let after = workspace::layout::load_registry(&reg_path).unwrap();
+        assert_eq!(after.workspaces.len(), 1);
+        assert_eq!(after.current.as_deref(), Some("w-a"));
+
+        // 全部失效 → None + 注册表清空
+        let _ = std::fs::remove_dir_all(&root_a);
+        let boot = workspace::resolve_boot_workspace(&dir).unwrap();
+        assert!(boot.db_path.is_none());
+        assert_eq!(boot.removed_invalid.len(), 1);
+        let after = workspace::layout::load_registry(&reg_path).unwrap();
+        assert!(after.workspaces.is_empty() && after.current.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 遗留数据清扫：stickers.db 与 bootstrap 目录被删除，workspaces.json 保留。
+    #[test]
+    fn cleanup_legacy_artifacts_only_touches_known_files() {
+        let dir = std::env::temp_dir().join(format!("cleanup-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("bootstrap")).unwrap();
+        std::fs::write(dir.join("stickers.db"), b"x").unwrap();
+        std::fs::write(dir.join("stickers.db-wal"), b"x").unwrap();
+        std::fs::write(dir.join("workspaces.json"), b"{}").unwrap();
+
+        workspace::cleanup_legacy_artifacts(&dir);
+
+        assert!(!dir.join("stickers.db").exists());
+        assert!(!dir.join("stickers.db-wal").exists());
+        assert!(!dir.join("bootstrap").exists());
+        assert!(dir.join("workspaces.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

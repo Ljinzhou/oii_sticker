@@ -65,7 +65,7 @@ describe("OnboardingDialog", () => {
     expect(wrapper.emitted("done")).toBeUndefined();
   });
 
-  it("带路径确认时以 { path, name, removeLegacy } 调用 bootstrap 并 emit done", async () => {
+  it("带路径确认时以 { path, name } 调用 bootstrap 并 emit done", async () => {
     const wrapper = await mountDialog();
     mocks.invokeMock.mockClear();
     mocks.invokeMock.mockImplementation((cmd: string) => {
@@ -83,7 +83,6 @@ describe("OnboardingDialog", () => {
     expect(mocks.invokeMock).toHaveBeenCalledWith("workspace_bootstrap_cmd", {
       path: "C:/ws",
       name: "未命名工作空间",
-      removeLegacy: false,
     });
     expect(wrapper.emitted("done")).toHaveLength(1);
   });
