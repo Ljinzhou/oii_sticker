@@ -21,10 +21,23 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 完整历史：守门步骤需要判定 tag 是否属于 master 祖先链
+
+      - name: Guard · 仅允许 master 历史上的 tag 发布
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin master --no-tags
+          if ! git merge-base --is-ancestor "${GITHUB_REF_NAME}" FETCH_HEAD; then
+            echo "::error::Tag ${GITHUB_REF_NAME} 不在 master 分支历史中。请先把代码合并到 master，再在 master 上打 tag 发布。"
+            exit 1
+          fi
+          echo "✅ ${GITHUB_REF_NAME} 位于 master 历史，允许发布"
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - uses: actions/setup-node@v4
         with:
