@@ -40,7 +40,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMyQTUwQjczMkNCN0M0OEIKUldTTHhMY3Njd3Vsd2pqcEFYSUZBWTYwZVRFVi9LMWFONy9oeDEwVitWaEFLbHZaSlZvSmhjVUYK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZEQUExRkYyNzA3QjYzMEQKUldRTlkzdHc4aCtxL2JVQ1hRNHlDSzlLWnlTMFRmZEpUWXh3UE5xQWUyTE1CVFd2c2RmYVlqU0wK",
       "endpoints": [
         "https://github.com/Ljinzhou/oii_sticker/releases/latest/download/latest.json"
       ],
