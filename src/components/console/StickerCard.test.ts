@@ -153,7 +153,8 @@ describe("StickerCard 更多菜单", () => {
     await editInput.trigger("keydown.enter");
     await flushPromises();
     const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "update_sticker_cmd")!;
-    expect(call![1]).toEqual({ id: s.id, patch: { title: "新标题" } });
+    // 标题 = 内容中第一个 # 一级标题：改名必须同步改写内容，否则保存后会被覆盖
+    expect(call![1]).toEqual({ id: s.id, patch: { title: "新标题", content: "# 新标题" } });
     expect(wrapper.find(".card-title-edit").exists()).toBe(false);
 
     // Esc 取消：不产生第二次 update

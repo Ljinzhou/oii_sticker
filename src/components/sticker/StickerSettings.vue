@@ -118,7 +118,7 @@ onMounted(load);
     <div class="panel">
       <header>
         <h2>便签设置</h2>
-        <button class="close" @click="emit('close')">✕</button>
+        <button class="close" @click="emit('close')"><i class="ri-close-line"></i></button>
       </header>
 
       <section class="group">
@@ -163,7 +163,7 @@ onMounted(load);
           />
           <span class="val">{{ autoScrollSpeed }} px/s</span>
         </label>
-        <button class="link" @click="resetPrefs">↺ 恢复默认偏好</button>
+        <button class="link" @click="resetPrefs"><i class="ri-restart-line"></i> 恢复默认偏好</button>
       </section>
 
       <section class="group">
@@ -234,9 +234,17 @@ h2 {
 .close {
   border: none;
   background: none;
-  font-size: 14px;
+  font-size: 16px;
   color: #999;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+
+.link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .group {

@@ -204,12 +204,12 @@ onBeforeUnmount(() => {
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
       <div class="actions">
-        <button class="btn primary" @click="createSticker">＋ 新建便签</button>
-        <button class="btn" @click="notes.refresh()">刷新</button>
-        <button class="btn" @click="showSettings = true">系统设置</button>
+        <button class="btn primary" @click="createSticker"><i class="ri-add-line"></i>新建便签</button>
+        <button class="btn" @click="notes.refresh()"><i class="ri-refresh-line"></i>刷新</button>
+        <button class="btn" @click="showSettings = true"><i class="ri-settings-3-line"></i>系统设置</button>
         <span class="win-ctl">
-          <button class="btn ctl" title="最小化" @click="minimizeWindow">─</button>
-          <button class="btn ctl close" title="关闭" @click="closeWindow">✕</button>
+          <button class="btn ctl" title="最小化" @click="minimizeWindow"><i class="ri-subtract-line"></i></button>
+          <button class="btn ctl close" title="关闭" @click="closeWindow"><i class="ri-close-line"></i></button>
         </span>
       </div>
     </header>
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
             <button class="btn small primary" @click="onCreateGroup">确定</button>
             <button class="btn small" @click="creatingGroup = false">取消</button>
           </template>
-          <button v-else class="btn small" @click="creatingGroup = true">＋ 新建分组</button>
+          <button v-else class="btn small" @click="creatingGroup = true"><i class="ri-add-line"></i>新建分组</button>
         </div>
       </div>
 
@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
       <template v-if="viewMode === 'section'">
         <div v-for="sec in groupSections" :key="sec.key" class="group-block">
           <header class="group-head" @click="toggleCollapse(sec.key)">
-            <span class="caret">{{ collapsed[sec.key] ? "▸" : "▾" }}</span>
+            <span class="caret"><i :class="collapsed[sec.key] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
             <input
               v-if="renamingGroup != null && renamingGroup === sec.groupId"
               v-model="groupNameDraft"
@@ -260,7 +260,7 @@ onBeforeUnmount(() => {
               title="分组操作"
               @click.stop="groupMenuFor = groupMenuFor === sec.key ? null : sec.key"
             >
-              ⋯
+              <i class="ri-more-2-fill"></i>
             </button>
             <div v-if="!sec.isDefault && groupMenuFor === sec.key" class="dropdown" @click.stop>
               <button @click="startRenameGroup({ id: sec.groupId!, name: sec.name }); groupMenuFor = null">
@@ -354,7 +354,7 @@ onBeforeUnmount(() => {
           <span>连同便签一起删除</span>
         </label>
         <p v-if="confirmingWithStickers && deleteChoice === 'with-stickers'" class="warn-line">
-          ⚠ 将永久删除这 {{ deletingGroup.count }} 张便签，不可恢复。再次点击「确认」执行。
+          <i class="ri-alert-fill warn-icon"></i>将永久删除这 {{ deletingGroup.count }} 张便签，不可恢复。再次点击「确认」执行。
         </p>
         <div class="confirm-actions">
           <button class="btn" @click="deletingGroup = null; confirmingWithStickers = false">取消</button>
@@ -454,6 +454,22 @@ onBeforeUnmount(() => {
   color: #d33;
 }
 
+/* remixicon 图标与按钮文字对齐 */
+.btn .ri {
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.btn.ctl .ri {
+  margin-right: 0;
+}
+
+.warn-icon {
+  vertical-align: -2px;
+  margin-right: 5px;
+  color: #c0392b;
+}
+
 .list {
   flex: 1;
   padding: 14px 18px;
@@ -542,9 +558,13 @@ onBeforeUnmount(() => {
 }
 
 .caret {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
   color: #998a66;
-  width: 12px;
+  width: 18px;
   flex: none;
 }
 

@@ -10,6 +10,7 @@ import StickerEditorLive from "./StickerEditorLive.vue";
 import SlashMenu from "../slash/SlashMenu.vue";
 import type { SlashItem, TodoBlock } from "../../types";
 import type { SlashAnchor } from "../slash/types";
+import { extractTitleFromContent } from "../../utils/sticker-title";
 
 const props = defineProps<{
   content: string;
@@ -27,6 +28,26 @@ const slashFrom = ref(0);
 const slashTo = ref(0);
 const slashSelected = ref(0);
 const slashAnchor = ref<SlashAnchor>({ left: 16, top: 52 });
+// 斜杠菜单是否打开（编辑内核据此把 ↑/↓/Enter/Esc 让给菜单）
+const slashOpen = computed(() => slashItems.value.length > 0);
+
+/** 上下箭头循环切换菜单高亮项。 */
+function moveSlashSelection(dir: 1 | -1) {
+  const n = slashItems.value.length;
+  if (!n) return;
+  slashSelected.value = (slashSelected.value + dir + n) % n;
+}
+
+/** 回车选中当前高亮项。 */
+function confirmSlash() {
+  const item = slashItems.value[slashSelected.value];
+  if (item) void selectSlash(item);
+}
+
+function closeSlash() {
+  slashItems.value = [];
+  slashSelected.value = 0;
+}
 const createdTodoIds = new Set<string>();
 
 // 编辑模式形态（system_config editor_mode：markdown | live，默认 markdown）
@@ -35,26 +56,17 @@ const isLive = computed(() => editorMode.value === "live");
 // 编辑模式下文字字号（edit_font_size，默认 14）
 const editFontSize = computed(() => Number(settings.get("edit_font_size", "14")));
 const editFontFamily = computed(() => settings.editFontFamily);
-// 是否显示行号（editor_line_numbers，默认关）
-const showLineNumbers = computed(() => settings.get("editor_line_numbers", "0") === "1");
-
-/** 从 markdown 第一行提取标题（`# xxx` → xxx）。 */
-function extractTitle(text: string): string {
-  const first = text.split("\n").find((l) => l.trim().length > 0) ?? "";
-  const trimmed = first.trim();
-  if (trimmed.startsWith("# ")) {
-    return trimmed.slice(2).trim();
-  }
-  return trimmed.slice(0, 30);
-}
+// 是否显示行号（editor_line_numbers，默认开；及时预览与 Markdown 两种模式共用）
+const showLineNumbers = computed(() => settings.get("editor_line_numbers", "1") === "1");
 
 /** 保存：Markdown 原文直接落库，退出后进入交互模式才渲染。
- *  及时预览模式下先 flush（防抖窗口内的输入立即回写，不丢内容）。 */
+ *  及时预览模式下先 flush（防抖窗口内的输入立即回写，不丢内容）。
+ *  标题取内容中「第一个一级标题」（可不在第一行）。 */
 async function save() {
   if (isLive.value) {
     liveRef.value?.flush();
   }
-  const title = extractTitle(draft.value);
+  const title = extractTitleFromContent(draft.value);
   try {
     await invoke("update_sticker_cmd", {
       id: props.stickerId,
@@ -117,12 +129,32 @@ defineExpose({ save, discard });
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
+      :slash-open="slashOpen"
       @slash="openSlash"
-      @slash-close="slashItems = []"
+      @slash-close="closeSlash"
+      @slash-nav="moveSlashSelection"
+      @slash-confirm="confirmSlash"
+      @slash-cancel="closeSlash"
       @open-todo="openTodo"
     />
-    <StickerEditorLive v-else ref="liveRef" v-model="draft" :font-size="editFontSize" :font-family="editFontFamily" :todo-blocks="props.todoBlocks ?? []" @save="save" @slash="openSlash" @slash-close="slashItems = []" @open-todo="openTodo" />
-    <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" :anchor="slashAnchor" @select="selectSlash" @close="slashItems = []" />
+    <StickerEditorLive
+      v-else
+      ref="liveRef"
+      v-model="draft"
+      :font-size="editFontSize"
+      :font-family="editFontFamily"
+      :show-line-numbers="showLineNumbers"
+      :todo-blocks="props.todoBlocks ?? []"
+      :slash-open="slashOpen"
+      @save="save"
+      @slash="openSlash"
+      @slash-close="closeSlash"
+      @slash-nav="moveSlashSelection"
+      @slash-confirm="confirmSlash"
+      @slash-cancel="closeSlash"
+      @open-todo="openTodo"
+    />
+    <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" :anchor="slashAnchor" @select="selectSlash" @hover="slashSelected = $event" @close="closeSlash" />
   </div>
 </template>
 

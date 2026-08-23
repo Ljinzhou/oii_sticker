@@ -29,6 +29,7 @@ async function setCloseBehavior(v: string) {
 
 // Debug 状态
 const notifyResult = ref("");
+const notifyError = ref(false);
 const dbInfo = ref<{ user_version: number; tables: string[]; db_path: string; config_keys: number } | null>(null);
 const debugLog = ref<string[]>([]);
 
@@ -49,15 +50,17 @@ async function toggleAutoStart() {
 
 async function sendTestNotify() {
   notifyResult.value = "发送中…";
+  notifyError.value = false;
   try {
     await invoke("debug_notify_cmd", {
       title: "oii_sticker 测试通知",
       body: "这是一条来自 Debug 菜单的测试通知。",
     });
-    notifyResult.value = "已发送 ✅（请查看系统通知）";
+    notifyResult.value = "已发送（请查看系统通知）";
     log("测试通知已发送");
   } catch (e) {
     notifyResult.value = `发送失败：${e}`;
+    notifyError.value = true;
     log(`测试通知失败：${e}`);
   }
 }
@@ -162,7 +165,7 @@ onMounted(async () => {
           />
         </label>
         <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
-        <p class="hint">点击主控台右上角 ✕ 时的行为（隐藏后可从托盘图标恢复）。</p>
+        <p class="hint">点击主控台右上角「关闭」按钮时的行为（隐藏后可从托盘图标恢复）。</p>
       </div>
 
       <!-- 便签默认 -->
@@ -211,10 +214,10 @@ onMounted(async () => {
           />
         </label>
         <label class="row">
-          <span>编辑模式显示行号</span>
+          <span>编辑模式显示行号（及时预览 / Markdown）</span>
           <input
             type="checkbox"
-            :checked="settings.get('editor_line_numbers', '0') === '1'"
+            :checked="settings.get('editor_line_numbers', '1') === '1'"
             @change="(e) => settings.set('editor_line_numbers', (e.target as HTMLInputElement).checked ? '1' : '0')"
           />
         </label>
@@ -226,7 +229,7 @@ onMounted(async () => {
           </select>
         </label>
         <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
-        <p class="hint">开启后在编辑模式左侧显示 Markdown 文本的行号。</p>
+        <p class="hint">开启后，及时预览与 Markdown 两种编辑模式的左侧都会显示行号（默认开启）。</p>
         <p class="hint">可在便签编辑模式左上角开关及时切换，此处为全局默认。</p>
       </div>
 
@@ -263,11 +266,11 @@ onMounted(async () => {
         </label>
         <p class="hint">开启后输出详细的操作/命令/事件日志（控制台）。</p>
         <div class="debug-actions">
-          <button class="btn" @click="sendTestNotify">🔔 发送测试通知</button>
-          <button class="btn" @click="checkDbHealth">🗄 数据库健康检查</button>
-          <button class="btn" @click="createTestSticker">📝 创建测试便签</button>
+          <button class="btn" @click="sendTestNotify"><i class="ri-notification-3-line"></i>发送测试通知</button>
+          <button class="btn" @click="checkDbHealth"><i class="ri-database-2-line"></i>数据库健康检查</button>
+          <button class="btn" @click="createTestSticker"><i class="ri-sticky-note-add-line"></i>创建测试便签</button>
         </div>
-        <p v-if="notifyResult" class="result">{{ notifyResult }}</p>
+        <p v-if="notifyResult" class="result" :class="{ error: notifyError }"><i v-if="!notifyError" class="ri-checkbox-circle-fill result-ok"></i>{{ notifyResult }}</p>
         <pre v-if="dbInfo" class="db-info">
 数据库版本：v{{ dbInfo.user_version }}
 配置键数量：{{ dbInfo.config_keys }}
@@ -441,6 +444,21 @@ h3 {
   font-size: 12px;
   color: #2e7d32;
   margin: 4px 0;
+}
+
+.result.error {
+  color: #c0392b;
+}
+
+.result-ok {
+  color: #2e7d32;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.debug-actions .btn .ri {
+  vertical-align: -2px;
+  margin-right: 5px;
 }
 
 .db-info {

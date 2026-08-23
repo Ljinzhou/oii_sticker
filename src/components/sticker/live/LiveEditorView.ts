@@ -1,13 +1,40 @@
 // 及时预览编辑器的 CodeMirror 6 内核（Obsidian Live Preview 同款技术栈）。
 // Phase A：基础集成——行号/折行/缩进/markdown 语法高亮、双向同步、Ctrl+S、字号自适应。
 // 注：每个便签窗口是独立 webview，模块级单例 compartment 在同一窗口内唯一。
-import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
-import { basicSetup } from "codemirror";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
+import {
+  EditorView,
+  crosshairCursor,
+  drawSelection,
+  dropCursor,
+  highlightActiveLine,
+  highlightSpecialChars,
+  keymap,
+  rectangularSelection,
+} from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { indentWithTab } from "@codemirror/commands";
+import {
+  HighlightStyle,
+  bracketMatching,
+  defaultHighlightStyle,
+  indentOnInput,
+  syntaxHighlighting,
+} from "@codemirror/language";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+} from "@codemirror/autocomplete";
 import { tags } from "@lezer/highlight";
+import { fontFamilyTheme, fontSizeTheme, lightTheme, makeShowLineNumbers } from "./editorTheme";
+import { reportSlash } from "./editorSlash";
 import { liveBlockDecorationsField, liveDecorationsPlugin, liveTodoBlocksField, setLiveTodoBlocks } from "./liveDecorations";
 import { refreshLivePreview } from "./liveEffects";
 import {
@@ -27,6 +54,8 @@ export interface LiveViewOptions {
   doc: string;
   fontSize: number;
   fontFamily?: string;
+  /** 是否显示行号（系统设置 editor_line_numbers 统一控制，默认 true）。 */
+  showLineNumbers?: boolean;
   /** 文档变化（用户编辑）→ 防抖回写由调用方处理。 */
   onDocChange: (doc: string) => void;
   /** Ctrl+S。 */
@@ -36,43 +65,45 @@ export interface LiveViewOptions {
   onSlashClose?: () => void;
   onTodoOpen?: (id: string) => void;
   todoBlocks?: TodoBlock[];
+  /** 斜杠菜单是否打开：打开时 ↑/↓/Enter/Esc 交给菜单处理，不再移动光标/换行。 */
+  slashOpen?: () => boolean;
+  onSlashNav?: (dir: 1 | -1) => void;
+  onSlashConfirm?: () => void;
+  onSlashCancel?: () => void;
 }
-
-/** 便签浅色背景下的编辑器主题（透明背景、继承颜色、细行号）。 */
-const lightTheme = EditorView.theme({
-  "&": {
-    backgroundColor: "transparent",
-    color: "inherit",
-    height: "100%",
-  },
-  "&.cm-focused": { outline: "none" },
-  ".cm-scroller": {
-    lineHeight: "1.7",
-  },
-  ".cm-content": {
-    caretColor: "#333",
-    padding: "8px 6px",
-  },
-  ".cm-gutters": {
-    backgroundColor: "transparent",
-    border: "none",
-    color: "rgba(0, 0, 0, 0.3)",
-  },
-  ".cm-line": { padding: "0" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-    backgroundColor: "rgba(79, 124, 255, 0.25) !important",
-  },
-});
 
 const liveHighlightStyle = HighlightStyle.define([
   { tag: tags.heading, textDecoration: "none" },
 ]);
 
-/** 字号主题（compartment 热替换）。 */
-function fontSizeTheme(size: number) {
-  return EditorView.theme({ "&": { fontSize: `${size}px` } });
-}
+/**
+ * 与 basicSetup 等价的基础扩展，区别：不内置 lineNumbers()/foldGutter()——
+ * 行号由 makeShowLineNumbers 的 compartment 统一控制（开关来自系统设置
+ * editor_line_numbers，与 Markdown 编辑模式共用同一份行号显示代码）。
+ */
+const liveBaseSetup = [
+  highlightSpecialChars(),
+  history(),
+  drawSelection(),
+  dropCursor(),
+  EditorState.allowMultipleSelections.of(true),
+  indentOnInput(),
+  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  bracketMatching(),
+  closeBrackets(),
+  autocompletion(),
+  rectangularSelection(),
+  crosshairCursor(),
+  highlightActiveLine(),
+  keymap.of([
+    ...closeBracketsKeymap,
+    ...defaultKeymap,
+    ...historyKeymap,
+    ...completionKeymap,
+  ]),
+];
 
+/** 字号主题（compartment 热替换）。 */
 function runLiveTransform(
   view: EditorView,
   build: typeof buildEnterTransaction,
@@ -96,47 +127,58 @@ function runFormat(view: EditorView, prefix: string, suffix: string, userEvent: 
 
 let fontSizeCompartment: Compartment | null = null;
 let fontFamilyCompartment: Compartment | null = null;
-
-function fontFamilyTheme(family: string) {
-  return EditorView.theme({
-    ".cm-scroller, .cm-content, .cm-gutters": { fontFamily: family },
-  });
-}
-
-function slashAnchorAtSelection(view: EditorView): SlashAnchor {
-  const coords = view.coordsAtPos(view.state.selection.main.head);
-  const host = view.dom.getBoundingClientRect();
-  if (!coords) return { left: 6, top: 30 };
-  return {
-    left: Math.max(0, coords.left - host.left),
-    top: Math.max(0, coords.bottom - host.top + 6),
-  };
-}
-
-function reportSlash(view: EditorView, opts: LiveViewOptions): void {
-  const doc = view.state.doc.toString();
-  const head = view.state.selection.main.head;
-  const match = /(?:^|\n)\/([^\s\/]*)$/.exec(doc.slice(0, head));
-  if (!match) {
-    opts.onSlashClose?.();
-    return;
-  }
-  const from = head - match[0].length + (match[0].startsWith("\n") ? 1 : 0);
-  opts.onSlash?.(match[1], from, head, slashAnchorAtSelection(view));
-}
+let lineNumberCompartment: Compartment | null = null;
 
 /** 创建 CM6 编辑器实例。 */
 export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): EditorView {
   fontSizeCompartment = new Compartment();
   fontFamilyCompartment = new Compartment();
+  lineNumberCompartment = new Compartment();
   const state = EditorState.create({
     doc: opts.doc,
     extensions: [
-      basicSetup,
+      liveBaseSetup,
       markdown({ base: markdownLanguage }), // 含 GFM：删除线/任务列表/表格/自动链接
       syntaxHighlighting(liveHighlightStyle),
-      keymap.of([
-        { key: "Enter", run: (view) => runLiveTransform(view, buildEnterTransaction) },
+      lineNumberCompartment.of(makeShowLineNumbers(opts.showLineNumbers ?? true)),
+      // 自定义键位设为最高优先级：markdown 语言自带 Prec.high 的 Enter（列表续行）必须在斜杠菜单之后生效
+      Prec.highest(keymap.of([
+        // 斜杠菜单打开时优先接管键盘：上下切换菜单项、回车选中、Esc 关闭
+        {
+          key: "ArrowDown",
+          run: () => {
+            if (!opts.slashOpen?.()) return false;
+            opts.onSlashNav?.(1);
+            return true;
+          },
+        },
+        {
+          key: "ArrowUp",
+          run: () => {
+            if (!opts.slashOpen?.()) return false;
+            opts.onSlashNav?.(-1);
+            return true;
+          },
+        },
+        {
+          key: "Enter",
+          run: (view) => {
+            // 斜杠菜单打开：回车 = 选中当前高亮项；关闭：走列表续行等智能变换
+            if (opts.slashOpen?.()) {
+              opts.onSlashConfirm?.();
+              return true;
+            }
+            return runLiveTransform(view, buildEnterTransaction);
+          },
+        },
+        {
+          key: "Escape",
+          run: () => {
+            if (!opts.slashOpen?.()) return false;
+            opts.onSlashCancel?.();
+            return true;
+          },
+        },
         { key: "Tab", run: (view) => runTableOrLiveTransform(view, 1) },
         { key: "Shift-Tab", run: (view) => runTableOrLiveTransform(view, -1) },
         { key: "Backspace", run: (view) => runLiveTransform(view, buildBackspaceTransaction) },
@@ -145,7 +187,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         { key: "Mod-Shift-x", run: (view) => runFormat(view, "~~", "~~", "input.format.strike") },
         indentWithTab,
         { key: "Mod-s", run: () => { opts.onSave(); return true; } },
-      ]),
+      ])),
       EditorView.lineWrapping,
       liveTodoBlocksField.init(() => opts.todoBlocks ?? []),
       liveBlockDecorationsField,
@@ -155,7 +197,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
           const doc = u.state.doc.toString();
           opts.onDocChange(doc);
         }
-        if (u.docChanged || u.selectionSet) reportSlash(u.view, opts);
+        if (u.docChanged || u.selectionSet) reportSlash(u.view, (query, from, to, anchor) => opts.onSlash?.(query, from, to, anchor), () => opts.onSlashClose?.());
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
       fontFamilyCompartment.of(fontFamilyTheme(opts.fontFamily ?? "Microsoft YaHei")),
@@ -200,6 +242,14 @@ export function setLiveFontFamily(view: EditorView, fontFamily: string): void {
   if (!fontFamilyCompartment) return;
   view.dispatch({
     effects: fontFamilyCompartment.reconfigure(fontFamilyTheme(fontFamily)),
+  });
+}
+
+/** 更新行号显示（与 Markdown 编辑模式共用同一个 editor_line_numbers 开关）。 */
+export function setLiveLineNumbers(view: EditorView, show: boolean): void {
+  if (!lineNumberCompartment) return;
+  view.dispatch({
+    effects: lineNumberCompartment.reconfigure(makeShowLineNumbers(show)),
   });
 }
 

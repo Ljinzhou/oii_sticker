@@ -332,7 +332,7 @@ async function tryTransfer(id: string, dest: string) {
         <!-- 新建（虚线卡片）：系统目录选择 → 名称确认条 -->
         <div class="ws-new">
           <button v-if="!creating" class="ws-new-trigger" :disabled="busy" @click="openCreate">
-            + 新建工作空间
+            <i class="ri-add-line"></i> 新建工作空间
           </button>
           <div v-else class="ws-inline">
             <div class="ws-picked-path">{{ pickedNewPath }}</div>
@@ -683,6 +683,11 @@ async function tryTransfer(id: string, dest: string) {
 
 .ws-new-trigger:hover:not(:disabled) {
   color: #3e6bf0;
+}
+
+.ws-new-trigger .ri {
+  vertical-align: -2px;
+  margin-right: 4px;
 }
 
 /* —— 空态 / 加载 —— */
