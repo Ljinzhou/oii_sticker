@@ -30,7 +30,6 @@ function mkSticker(id: number, group_id: number | null, title = `便签${id}`): 
     always_on_top: false,
     auto_scroll: false,
     is_completed: false,
-    alert_active: false,
     display_mode: "edit",
     created_at: "",
     updated_at: "",
@@ -84,13 +83,14 @@ describe("StickerCard 更多菜单", () => {
 
     await openMenu(wrapper);
     expect(wrapper.find(".card-dropdown").exists()).toBe(true);
-    // 直接子按钮：重命名 / 转移分组 / 移出分组 / 删除便签
+    // 直接子按钮：重命名 / 转移分组 / 移出分组 / 重置窗口大小与位置 / 删除便签
     const items = wrapper.findAll(".card-dropdown > button").map((b) => b.text());
-    expect(items).toHaveLength(4);
+    expect(items).toHaveLength(5);
     expect(items[0]).toContain("重命名");
     expect(items[1]).toContain("转移分组");
     expect(items[2]).toBe("移出分组");
-    expect(items[3]).toContain("删除便签");
+    expect(items[3]).toBe("重置窗口大小与位置");
+    expect(items[4]).toContain("删除便签");
 
     // 再点 ⋯ 关闭（toggle 自身开合）
     await openMenu(wrapper);
@@ -167,6 +167,22 @@ describe("StickerCard 更多菜单", () => {
     expect(wrapper.find(".card-title-edit").exists()).toBe(false);
     const calls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "update_sticker_cmd");
     expect(calls).toHaveLength(1);
+  });
+
+  it("重置窗口大小与位置：点击菜单项触发 resetWindow 事件", async () => {
+    const s = mkSticker(7, null);
+    const wrapper = mountCard(s);
+    await openMenu(wrapper);
+    const btn = wrapper
+      .findAll(".card-dropdown > button")
+      .find((b) => b.text() === "重置窗口大小与位置")!;
+    expect(btn).toBeDefined();
+    await btn.trigger("click");
+    await flushPromises();
+    const emitted = wrapper.emitted("resetWindow");
+    expect(emitted).toBeTruthy();
+    expect((emitted![0]![0] as Sticker).id).toBe(s.id);
+    expect(wrapper.find(".card-dropdown").exists()).toBe(false); // 点击后菜单关闭
   });
 
   it("转移分组子菜单只列出其他分组，点击调用 move_sticker_group_cmd", async () => {

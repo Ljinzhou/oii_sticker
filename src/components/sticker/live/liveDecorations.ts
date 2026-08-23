@@ -496,6 +496,11 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     if (r.kind === "task") {
       // 块级语义：光标所在行显示 [ ] 文本
       if (r.from < curLine.to && r.to > curLine.from) continue;
+    } else if (r.className === "live-link") {
+      // 链接整行规则：光标位于链接所在行时（无论光标在行内何处）显示源码
+      // [text](url)，其余行渲染为可点击的链接文本。
+      const linkLine = doc.lineAt(r.from);
+      if (linkLine.number === curLine.number) continue;
     } else {
       const cursorIn = sel.from >= r.from && sel.from < r.to;
       const selOverlap = sel.from < r.to && sel.to > r.from;

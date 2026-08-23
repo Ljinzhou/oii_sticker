@@ -8,6 +8,7 @@ const props = defineProps<{ sticker: Sticker; isOpen: boolean }>();
 const emit = defineEmits<{
   toggle: [s: Sticker]; // 显示/隐藏窗口
   remove: [s: Sticker]; // 打开删除确认弹窗
+  resetWindow: [s: Sticker]; // 重置窗口大小与位置
 }>();
 
 const notes = useNotesStore();
@@ -79,6 +80,11 @@ function requestRemove() {
   emit("remove", props.sticker);
 }
 
+async function requestResetWindow() {
+  closeMenu();
+  emit("resetWindow", props.sticker);
+}
+
 // document 级 pointerdown 关闭菜单（跨卡片互斥）：
 // - 本卡 ⋯ 按钮：pointerdown 先于 click，忽略以免双切换（由 toggleMenu 自管开合）
 // - 本卡下拉菜单内部：交给 @click.stop 的菜单项处理，不关闭
@@ -146,6 +152,7 @@ onBeforeUnmount(() => {
             <p v-if="otherGroups.length === 0" class="submenu-empty">无其他分组</p>
           </div>
           <button :disabled="props.sticker.group_id == null" @click="moveOut">移出分组</button>
+          <button @click="requestResetWindow">重置窗口大小与位置</button>
           <hr class="menu-sep" />
           <button class="danger-item" @click="requestRemove">删除便签</button>
         </div>
@@ -154,7 +161,6 @@ onBeforeUnmount(() => {
     <div class="card-preview">{{ preview(props.sticker) }}</div>
     <div class="card-foot">
       <span class="id">#{{ props.sticker.id }}</span>
-      <span class="size">{{ props.sticker.width }}×{{ props.sticker.height }}</span>
     </div>
   </div>
 </template>

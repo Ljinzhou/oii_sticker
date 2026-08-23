@@ -24,7 +24,6 @@ const sticker = ref<Sticker | null>(null);
 const todoBlocks = ref<TodoBlock[]>([]);
 const mode = ref<StickerMode>("display");
 const showSettings = ref(false);
-const alertActive = ref(false);
 /** Todo 窗口在场（用户正在编辑 Todo）：interact 期间不自动收起回展示模式。 */
 const todoPresent = ref(false);
 const unlisteners: UnlistenFn[] = [];
@@ -249,11 +248,6 @@ function releaseData() {
 onMounted(async () => {
   await load();
   unlisteners.push(
-    await listen<boolean>("sticky://alert-active", (active) => {
-      alertActive.value = active;
-    }),
-  );
-  unlisteners.push(
     await listen<number>("sticky://push-update", (id) => {
       if (id === stickerId) load();
     }),
@@ -296,7 +290,7 @@ onBeforeUnmount(() => {
   <div
     class="sticker"
     :style="cardStyle"
-    :class="{ display: mode === 'display', alert: alertActive }"
+    :class="{ display: mode === 'display' }"
     tabindex="0"
     @dblclick="onDblClick"
     @click="onInteract"
@@ -383,10 +377,6 @@ onBeforeUnmount(() => {
 
 .sticker.display {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-}
-
-.sticker.alert {
-  box-shadow: 0 0 0 3px #ff9f43, 0 6px 24px rgba(0, 0, 0, 0.2);
 }
 
 .body {

@@ -5,15 +5,14 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
 
 mod commands;
 mod db;
-mod datetime;
 mod editing;
 mod events;
 mod models;
 mod platform;
-mod reminder;
 mod slash;
 mod state;
 mod workspace;
@@ -22,42 +21,6 @@ use commands::create_sticker;
 use db::sticker_repo::NewSticker;
 use platform::tray::TrayAction;
 use state::AppState;
-
-/// 数据库健康检查：返回 schema 版本、表清单与路径（供前端验证）。
-#[derive(Serialize)]
-struct DbHealth {
-    user_version: u32,
-    tables: Vec<String>,
-    db_path: String,
-    config_keys: usize,
-}
-
-#[tauri::command]
-fn db_health(state: State<'_, AppState>) -> Result<DbHealth, String> {
-    state
-        .with_conn(|conn| {
-            let user_version: u32 = conn
-                .query_row("PRAGMA user_version", [], |r| r.get(0))
-                .map_err(|e| anyhow::anyhow!("读取 user_version 失败: {e}"))?;
-            let tables: Vec<String> = conn
-                .prepare(
-                    "SELECT name FROM sqlite_master
-                      WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-                )
-                .map_err(|e| anyhow::anyhow!("读取表清单失败: {e}"))?
-                .query_map([], |r| r.get(0))
-                .map_err(|e| anyhow::anyhow!("读取表清单失败: {e}"))?
-                .collect::<rusqlite::Result<_>>()
-                .map_err(|e| anyhow::anyhow!("读取表清单失败: {e}"))?;
-            Ok(DbHealth {
-                user_version,
-                tables,
-                db_path: state.db_path().to_string(),
-                config_keys: state.config().entries.len(),
-            })
-        })
-        .map_err(|e| e.to_string())
-}
 
 /// 便签窗口创建参数（避免 create_sticker_win 参数过多）。
 #[derive(Clone)]
@@ -97,6 +60,19 @@ impl StickerWinArgs {
     }
 }
 
+/// 便签窗口最小尺寸（逻辑像素）。交互/编辑模式下禁止缩到比这更小，
+/// 避免用户不小心把窗口缩得无法再用边缘拖拽调整大小。
+const STICKER_MIN_W: f64 = 240.0;
+const STICKER_MIN_H: f64 = 170.0;
+
+/// 便签“重置窗口大小与位置”的默认尺寸（与新建便签默认一致）。
+const STICKER_DEFAULT_W: f64 = 400.0;
+const STICKER_DEFAULT_H: f64 = 500.0;
+
+/// 开机自启时附加的命令行参数（Windows 注册表 / macOS LaunchAgent / Linux XDG 均写入）。
+/// 程序据此识别“由登录自启拉起”，从而不弹出主控台窗口（托盘仍在，可随时呼出）。
+pub const AUTOSTART_ARG: &str = "--autostart";
+
 /// 创建一个独立便签窗口（透明、无边框、不出现在任务栏、不可最大化），label = `sticker-<id>`。
 /// 创建后立即应用置顶（Builder 不提供置顶选项，须显式 set_always_on_top）。
 fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Result<WebviewWindow> {
@@ -104,6 +80,7 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(&args.title)
         .inner_size(args.w as f64, args.h as f64)
+        .min_inner_size(STICKER_MIN_W, STICKER_MIN_H)
         .position(args.x as f64, args.y as f64)
         .transparent(true)
         .decorations(false)
@@ -345,40 +322,111 @@ fn move_sticker_group_cmd(
     Ok(())
 }
 
+/// 抓取网页 <title>，供及时预览「粘贴链接自动转 [title](url)」使用。
+/// 非 http(s) 链接 / 请求失败 / 无 <title> 时返回 None（前端保持 `[](url)` 占位）。
 #[tauri::command]
-fn set_reminder_cmd(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    attrs: models::StickerAttrs,
-) -> Result<(), String> {
-    state
-        .with_conn(|c| commands::set_reminder(c, &attrs))
-        .map_err(|e| e.to_string())?;
-    events::emit_push_update(&app, attrs.sticker_id);
-    Ok(())
+async fn fetch_page_title_cmd(url: String) -> Result<Option<String>, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Ok(None);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) oii_sticker/0.1")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败：{e}"))?;
+    let resp = client
+        .get(trimmed)
+        .send()
+        .await
+        .map_err(|e| format!("请求 {trimmed} 失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let bytes = resp.bytes().await.map_err(|e| format!("读取响应失败：{e}"))?;
+    let head_size = bytes.len().min(512 * 1024);
+    let html = String::from_utf8_lossy(&bytes[..head_size]);
+    Ok(extract_page_title(&html))
 }
 
-#[tauri::command]
-fn clear_reminder_cmd(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<(), String> {
-    state
-        .with_conn(|c| commands::clear_reminder(c, id))
-        .map_err(|e| e.to_string())?;
-    events::emit_push_update(&app, id);
-    Ok(())
-}
+/// 从 HTML 中提取 `<title>…</title>` 文本（去标签/HTML 实体/空白，超长截断 120 字符）。
+fn extract_page_title(html: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let tag = lower.find("<title")?;
+    let open = html[tag..].find('>')? + tag + 1;
+    let close = lower[open..].find("</title")? + open;
+    if close <= open {
+        return None;
+    }
+    let raw = &html[open..close];
 
-#[tauri::command]
-fn get_reminder_cmd(
-    state: State<'_, AppState>,
-    id: i64,
-) -> Result<Option<models::StickerAttrs>, String> {
-    state
-        .with_conn(|c| commands::get_reminder(c, id))
-        .map_err(|e| e.to_string())
+    // 去除内部标签
+    let mut text = String::with_capacity(raw.len());
+    let mut in_tag = false;
+    for ch in raw.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+
+    // 还原常见 HTML 实体
+    let named = [
+        ("&amp;", "&"),
+        ("&lt;", "<"),
+        ("&gt;", ">"),
+        ("&quot;", "\""),
+        ("&#39;", "'"),
+        ("&apos;", "'"),
+        ("&nbsp;", " "),
+    ];
+    for (from, to) in named {
+        text = text.replace(from, to);
+    }
+    // 数字实体（十进制/十六进制字符码）
+    let chars: Vec<char> = text.chars().collect();
+    let mut decoded = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '&' && i + 2 < chars.len() && chars[i + 1] == '#' {
+            let mut j = i + 2;
+            let mut radix = 10;
+            if chars[j] == 'x' || chars[j] == 'X' {
+                radix = 16;
+                j += 1;
+            }
+            let start = j;
+            while j < chars.len() && chars[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == ';' && j > start {
+                let code_str: String = chars[start..j].iter().collect();
+                if let Ok(code) = u32::from_str_radix(&code_str, radix) {
+                    if let Some(c) = char::from_u32(code) {
+                        decoded.push(c);
+                        i = j + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        decoded.push(chars[i]);
+        i += 1;
+    }
+
+    let joined: String = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut title = trimmed.to_string();
+    if title.chars().count() > 120 {
+        title = title.chars().take(120).collect::<String>() + "…";
+    }
+    Some(title)
 }
 
 #[tauri::command]
@@ -621,6 +669,89 @@ struct SlashDto {
     template: String,
 }
 
+
+/// 开机自启在设置页需要的平台信息：状态 + 平台机制 + 启动参数 + 可执行文件。
+#[derive(Serialize)]
+pub struct AutostartInfo {
+    /// 当前是否启用了开机自启
+    pub enabled: bool,
+    /// 运行平台：windows / macos / linux / unsupported
+    pub platform: &'static str,
+    /// 各平台采用的自启动机制描述
+    pub mechanism: &'static str,
+    /// 自启动时附加的命令行参数（与插件注册保持一致）
+    pub launch_args: Vec<String>,
+    /// 将由系统于登录时拉起（可执行）的路径
+    pub executable: String,
+    /// 登录自启启动时主控台是否自动隐藏（--autostart 生效时为 true）
+    pub hides_main_on_autostart: bool,
+}
+
+/// 当前运行平台标识。
+pub fn autostart_platform() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "windows" }
+    #[cfg(target_os = "macos")]
+    { "macos" }
+    #[cfg(target_os = "linux")]
+    { "linux" }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "unsupported" }
+}
+
+/// 各平台的自启动机制说明（与 tauri-plugin-autostart 的实现一一对应）。
+pub fn autostart_mechanism() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "注册表 Run 键（HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run）" }
+    #[cfg(target_os = "macos")]
+    { "macOS LaunchAgent（~/Library/LaunchAgents）" }
+    #[cfg(target_os = "linux")]
+    { "XDG 桌面自动启动（~/.config/autostart；AppImage 使用镜像路径）" }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    { "当前平台暂不支持系统级自启动" }
+}
+
+/// 汇总当前自启动状态（插件状态 + 平台信息）。
+fn current_autostart_info(app: &tauri::AppHandle) -> AutostartInfo {
+    let enabled = AutostartManagerExt::autolaunch(app)
+        .is_enabled()
+        .unwrap_or(false);
+    AutostartInfo {
+        enabled,
+        platform: autostart_platform(),
+        mechanism: autostart_mechanism(),
+        launch_args: vec![AUTOSTART_ARG.to_string()],
+        executable: std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| String::new()),
+        hides_main_on_autostart: true,
+    }
+}
+
+/// 读取开机自启状态（供设置页展示当前平台机制与开关状态）。
+#[tauri::command]
+fn autostart_get_cmd(app: tauri::AppHandle) -> Result<AutostartInfo, String> {
+    Ok(current_autostart_info(&app))
+}
+
+/// 开启/关闭开机自启；始终返回操作后的最新状态（含平台机制信息）。
+#[tauri::command]
+fn autostart_set_cmd(app: tauri::AppHandle, enabled: bool) -> Result<AutostartInfo, String> {
+    let launch = AutostartManagerExt::autolaunch(&app);
+    if enabled {
+        launch
+            .enable()
+            .map_err(|e| format!("开启开机自启失败：{e}"))?;
+        tracing::info!("[autostart] 已开启开机自启（{}）", autostart_mechanism());
+    } else {
+        launch
+            .disable()
+            .map_err(|e| format!("关闭开机自启失败：{e}"))?;
+        tracing::info!("[autostart] 已关闭开机自启");
+    }
+    Ok(current_autostart_info(&app))
+}
+
 /// 关闭主控台：按 system_config `main_close_behavior` 决定行为
 /// （"hide" 隐藏到托盘 / "quit" 退出程序，默认 hide）。
 #[tauri::command]
@@ -670,8 +801,12 @@ fn apply_window_state_cmd(
             win.set_ignore_cursor_events(true)
                 .map_err(|e| format!("设置点击穿透失败: {e}"))?;
         } else {
-            win.set_min_size(None::<tauri::Size>)
-                .map_err(|e| format!("清除最小尺寸失败: {e}"))?;
+            // 交互/编辑模式：解除 display 锁定的尺寸，但仍保留最小窗口尺寸，
+            // 防止用户把窗口缩到无法再调整。
+            win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+                STICKER_MIN_W, STICKER_MIN_H,
+            ))))
+            .map_err(|e| format!("设置最小尺寸失败: {e}"))?;
             win.set_max_size(None::<tauri::Size>)
                 .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
             win.set_resizable(true)
@@ -680,6 +815,91 @@ fn apply_window_state_cmd(
                 .map_err(|e| format!("取消穿透失败: {e}"))?;
         }
         tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display}");
+    }
+    Ok(())
+}
+
+/// 重置便签窗口大小与位置：恢复默认 400×500 并居中到当前显示器；
+/// 窗口未打开时写入默认几何（下次显示/重启恢复时生效）；
+/// 展示模式保持尺寸锁定与点击穿透。
+#[tauri::command]
+fn reset_sticker_window_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    is_display: bool,
+) -> Result<(), String> {
+    state.set_display_window(id, is_display);
+    let label = format!("sticker-{id}");
+    if let Some(win) = app.get_webview_window(&label) {
+        // 1) 先解除展示模式的尺寸锁，再恢复默认尺寸
+        let _ = win.set_min_size(None::<tauri::Size>);
+        let _ = win.set_max_size(None::<tauri::Size>);
+        win.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
+            STICKER_DEFAULT_W, STICKER_DEFAULT_H,
+        )))
+        .map_err(|e| format!("重置窗口尺寸失败: {e}"))?;
+        // 2) 居中到当前显示器（物理像素→逻辑像素换算）
+        if let Some(mon) = win
+            .current_monitor()
+            .map_err(|e| format!("读取显示器失败: {e}"))?
+        {
+            let scale = mon.scale_factor();
+            let mw = mon.size().width as f64 / scale;
+            let mh = mon.size().height as f64 / scale;
+            let x = ((mw - STICKER_DEFAULT_W) / 2.0).max(0.0);
+            let y = ((mh - STICKER_DEFAULT_H) / 2.0).max(0.0);
+            let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)));
+        }
+        // 3) 恢复窗口态：展示模式重新锁尺寸并全穿透；交互模式保持可调整
+        if is_display {
+            let size = win.outer_size().map_err(|e| format!("读取尺寸失败: {e}"))?;
+            win.set_min_size(Some(size))
+                .map_err(|e| format!("设置最小尺寸失败: {e}"))?;
+            win.set_max_size(Some(size))
+                .map_err(|e| format!("设置最大尺寸失败: {e}"))?;
+            win.set_resizable(false)
+                .map_err(|e| format!("设置 resize 失败: {e}"))?;
+            win.set_ignore_cursor_events(true)
+                .map_err(|e| format!("设置点击穿透失败: {e}"))?;
+        } else {
+            win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+                STICKER_MIN_W, STICKER_MIN_H,
+            ))))
+            .map_err(|e| format!("设置最小尺寸失败: {e}"))?;
+            win.set_max_size(None::<tauri::Size>)
+                .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
+            win.set_resizable(true)
+                .map_err(|e| format!("设置 resize 失败: {e}"))?;
+            win.set_ignore_cursor_events(false)
+                .map_err(|e| format!("取消穿透失败: {e}"))?;
+        }
+        // 4) 落库：新几何 + 显示态（重启/崩溃恢复按此还原）
+        let pos = win.outer_position().map_err(|e| format!("读取位置失败: {e}"))?;
+        let size = win.outer_size().map_err(|e| format!("读取尺寸失败: {e}"))?;
+        state
+            .with_conn(|c| {
+                db::sticker_repo::update_window_bounds(
+                    c, id, pos.x, pos.y, size.width as i32, size.height as i32,
+                )
+            })
+            .map_err(|e| format!("保存窗口几何失败: {e}"))?;
+        tracing::info!("[cmd] reset_sticker_window id={id} 已重置为 400x500 并居中");
+    } else {
+        // 窗口未打开：写入默认几何，供下次显示/重启恢复使用
+        state
+            .with_conn(|c| {
+                db::sticker_repo::update_window_bounds(
+                    c,
+                    id,
+                    200,
+                    150,
+                    STICKER_DEFAULT_W as i32,
+                    STICKER_DEFAULT_H as i32,
+                )
+            })
+            .map_err(|e| format!("保存默认几何失败: {e}"))?;
+        tracing::info!("[cmd] reset_sticker_window id={id} 窗口未打开，已写入默认几何");
     }
     Ok(())
 }
@@ -711,12 +931,16 @@ async fn wake_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> 
     win.set_ignore_cursor_events(false)
         .map_err(|e| format!("取消穿透失败: {e}"))?;
     win.set_resizable(true).map_err(|e| format!("设置 resize 失败: {e}"))?;
-    win.set_min_size(None::<tauri::Size>)
-        .map_err(|e| format!("清除最小尺寸失败: {e}"))?;
+    win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(
+        STICKER_MIN_W, STICKER_MIN_H,
+    ))))
+    .map_err(|e| format!("设置最小尺寸失败: {e}"))?;
     win.set_max_size(None::<tauri::Size>)
         .map_err(|e| format!("清除最大尺寸失败: {e}"))?;
     let _ = win.show();
     let _ = win.set_focus();
+    // 标记为显示态（启动/崩溃恢复时按此决定是否重建窗口）
+    let _ = state.with_conn(|c| db::sticker_repo::update_window_hidden(c, id, false));
     // 前端隐藏时已释放内容引用（releaseData）；重开必须推送刷新事件，
     // 让 StickerWindow 的 sticky://push-update 监听重新 load() 恢复数据。
     events::emit_push_update(&app, id);
@@ -745,6 +969,10 @@ fn hide_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         win.hide().map_err(|e| format!("隐藏窗口失败: {e}"))?;
         tracing::info!("[cmd] hide_sticker id={id}");
+        // 持久化隐藏状态：即使程序被异常终止，下次启动也不会再自动显示
+        if let Some(state) = app.try_state::<AppState>() {
+            let _ = state.with_conn(|c| db::sticker_repo::update_window_hidden(c, id, true));
+        }
         // 广播 push-update：主控台收到后刷新 openIds，把按钮切到"显示"
         events::emit_push_update(&app, id);
     } else {
@@ -753,10 +981,124 @@ fn hide_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+/// 程序退出前保存各便签窗口的显示/隐藏状态与位置/尺寸：
+/// - 当前可见的窗口 → 记录最新几何并标记为显示；
+/// - 隐藏/无窗口的便签 → 标记为隐藏（保留上次几何，重新显示时恢复）。
+/// 供启动时只恢复上次"显示"的便签，并在关闭时的位置/尺寸展示。
+fn persist_sticker_window_states(app: &tauri::AppHandle) {
+    use std::collections::HashMap;
+    // label → (visible, x, y, w, h)；不可见窗口不记录几何（沿用库内旧值）。
+    let mut live: HashMap<i64, (bool, i32, i32, i32, i32)> = HashMap::new();
+    for (label, win) in app.webview_windows() {
+        let Some(id) = label
+            .strip_prefix("sticker-")
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let visible = win.is_visible().unwrap_or(false);
+        if visible {
+            let x = win.outer_position().map(|p| p.x).unwrap_or(0);
+            let y = win.outer_position().map(|p| p.y).unwrap_or(0);
+            let w = win.outer_size().map(|s| s.width as i32).unwrap_or(0);
+            let h = win.outer_size().map(|s| s.height as i32).unwrap_or(0);
+            live.insert(id, (true, x, y, w, h));
+        } else {
+            live.insert(id, (false, 0, 0, 0, 0));
+        }
+    }
+
+    let state = app.state::<AppState>().inner().clone();
+    let stickers = state.with_conn(db::sticker_repo::list_all).unwrap_or_default();
+    let mut saved = 0usize;
+    for s in stickers {
+        let ok = match live.get(&s.id) {
+            Some(&(true, x, y, w, h)) => state
+                .with_conn(|c| db::sticker_repo::update_window_bounds(c, s.id, x, y, w, h))
+                .is_ok(),
+            _ => state
+                .with_conn(|c| db::sticker_repo::update_window_hidden(c, s.id, true))
+                .is_ok(),
+        };
+        if ok {
+            saved += 1;
+        }
+    }
+    tracing::info!("[exit] 已保存 {saved} 个便签窗口状态（显示/隐藏 + 几何）");
+}
+
+/// 检查更新：查询 GitHub 最新 release 版本号并对比当前版本。
+/// 返回最新版本号、是否有更新、当前版本号。
+#[derive(Serialize)]
+struct UpdateInfo {
+    latest: Option<String>,
+    current: String,
+    has_update: bool,
+    error: Option<String>,
+}
+
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+const GITHUB_REPO: &str = "Ljinzhou/oii_sticker";
+
 #[tauri::command]
-fn debug_notify_cmd(app: tauri::AppHandle, title: String, body: String) -> Result<(), String> {
-    crate::platform::notify::send(&app, &title, &body);
-    Ok(())
+async fn check_update_cmd() -> UpdateInfo {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("oii_sticker/check-update")
+        .build()
+        .map_err(|e| format!("HTTP 客户端初始化失败：{e}"));
+    let client = match client {
+        Ok(c) => c,
+        Err(e) => {
+            return UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(e) }
+        }
+    };
+    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
+    match client.get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.text().await {
+                Ok(body) => {
+                    // 手动解析 JSON 中 "tag_name":"..." 字段，避免额外引入 serde_json。
+                    let latest = extract_json_tag_name(&body);
+                    let has_update = latest.as_deref().map(|l| semantic_newer(l, APP_VERSION)).unwrap_or(false);
+                    UpdateInfo { latest, current: APP_VERSION.to_string(), has_update, error: None }
+                }
+                Err(e) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(format!("读取更新信息失败：{e}")) },
+            }
+        }
+        Ok(_) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some("仓库无发布版本或检查失败".to_string()) },
+        Err(e) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(format!("网络请求失败：{e}")) },
+    }
+}
+
+/// 从 GitHub release JSON 中提取 `"tag_name": "..."` 的值（简单字符串解析）。
+fn extract_json_tag_name(body: &str) -> Option<String> {
+    let key = "\"tag_name\"";
+    let idx = body.find(key)?;
+    let after = &body[idx + key.len()..];
+    let colon = after.find(':')?;
+    let value = after[colon + 1..].trim_start();
+    let value = value.trim_start_matches('"');
+    let end = value.find('"')?;
+    let raw = &value[..end];
+    if raw.is_empty() {
+        None
+    } else {
+        Some(raw.trim_start_matches('v').to_string())
+    }
+}
+
+/// 比较两个点分语义版本，`newer` 是否晚于 `cur`（仅比较前三位数字）。
+fn semantic_newer(newer: &str, cur: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse::<u32>().ok()).collect() };
+    let a = parse(newer);
+    let b = parse(cur);
+    for (x, y) in a.iter().zip(b.iter()) {
+        if x != y {
+            return x > y;
+        }
+    }
+    a.len() > b.len()
 }
 
 /// 用系统默认浏览器打开外部链接（绝不在内嵌 WebView 中导航，避免覆盖便签内容）。
@@ -959,8 +1301,8 @@ fn workspace_bootstrap_cmd(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 初始化 tracing 日志：默认 debug 级别（调试模式默认开启，输出详细
-    // 操作/事件日志）；可用 RUST_LOG 环境变量覆盖。
+    // 初始化 tracing 日志：默认 debug 级别，输出详细操作/事件日志；
+    // 可用 RUST_LOG 环境变量覆盖。
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -969,14 +1311,26 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // 开机自启：三平台统一由官方插件管理（Windows 注册表 Run 键 /
+        // macOS LaunchAgent / Linux XDG autostart）；携带 --autostart 参数，
+        // 供程序识别"由登录自启拉起"，避免每次登录都弹出主控台窗口。
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![crate::AUTOSTART_ARG]),
         ))
         .setup(|app| {
+            // 开机自启拉起（--autostart）：主控台窗口不弹出（托盘仍在，可随时呼出），
+            // 便签窗口照常按上次会话恢复——这正是"开机即见便签"的预期体验。
+            let from_autostart = std::env::args().any(|a| a == crate::AUTOSTART_ARG);
+            if from_autostart {
+                if let Some(main_win) = app.get_webview_window("main") {
+                    let _ = main_win.hide();
+                }
+                tracing::info!("[setup] 由开机自启拉起（{}），主控台已隐藏", crate::AUTOSTART_ARG);
+            }
+
             // 数据层初始化：解析注册表中的有效工作控件并打开其数据库。
             // 无任何有效工作控件时使用内存占位库（不落盘）——前端首次引导
             // 创建真实工作空间后再 switch_db 切换；启动路径绝不无声重建目录。
@@ -1037,9 +1391,6 @@ pub fn run() {
             // 全局鼠标钩子：display 全穿透 + 右键双击唤醒
             platform::mouse_hook::install(&handle)?;
 
-            // 提醒调度器（10s 周期）
-            reminder::scheduler::spawn(handle.clone(), state.clone());
-
             // 启动恢复：为数据库中已有便签重建窗口；空库则创建默认展示便签。
             // 内存占位库（尚无注册工作空间，等待首次引导）不创建欢迎便签，
             // 避免孤儿便签卡在占位数据上。
@@ -1064,6 +1415,12 @@ pub fn run() {
                 }
             } else {
                 for s in stickers {
+                    // 上次退出时被关闭（隐藏）的便签：不创建窗口，保持关闭状态；
+                    // 需要时由主控台"显示"按钮经 wake_sticker_cmd 按记录重建。
+                    if s.window_hidden {
+                        tracing::info!("[setup] 便签 #{} 上次为隐藏状态，跳过窗口创建", s.id);
+                        continue;
+                    }
                     if let Ok(win) = create_sticker_win(&handle, StickerWinArgs::from_sticker(&s)) {
                         // 启动即按持久化模式同步窗口状态（display → 穿透+锁尺寸），
                         // 不依赖前端加载完成，确保展示模式立即生效。
@@ -1087,7 +1444,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            db_health,
             list_stickers_cmd,
             get_sticker_cmd,
             create_sticker_cmd,
@@ -1098,9 +1454,7 @@ pub fn run() {
             group_rename_cmd,
             group_delete_cmd,
             move_sticker_group_cmd,
-            set_reminder_cmd,
-            clear_reminder_cmd,
-            get_reminder_cmd,
+            fetch_page_title_cmd,
             get_config_cmd,
             set_config_cmd,
             update_sticker_prefs_cmd,
@@ -1117,10 +1471,13 @@ pub fn run() {
             reorder_todo_cmd,
             open_todo_window_cmd,
             close_todo_window_cmd,
-            debug_notify_cmd,
             open_external_cmd,
+            check_update_cmd,
+            autostart_get_cmd,
+            autostart_set_cmd,
             main_close_cmd,
             apply_window_state_cmd,
+            reset_sticker_window_cmd,
             wake_sticker_cmd,
             list_open_sticker_ids_cmd,
             hide_sticker_cmd,
@@ -1135,8 +1492,18 @@ pub fn run() {
             workspace_transfer_cmd,
             workspace_bootstrap_cmd
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // 退出前（含窗口仍存活时）保存所有便签的显示/隐藏与位置尺寸，
+            // 供下次启动恢复"上次显示的那些便签"及其几何。
+            match event {
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                    persist_sticker_window_states(app);
+                }
+                _ => {}
+            }
+        });
 }
 
 #[cfg(test)]
@@ -1200,4 +1567,31 @@ mod tests {
         assert!(dir.join("workspaces.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// HTML <title> 提取：去标签/实体/空白，空标题返回 None。
+    #[test]
+    fn extract_page_title_parses_html() {
+        assert_eq!(
+            extract_page_title("<html><head><title>  哔哩哔哩 (゜-゜)つロ 干杯~-bilibili </title></head></html>").as_deref(),
+            Some("哔哩哔哩 (゜-゜)つロ 干杯~-bilibili")
+        );
+        assert_eq!(extract_page_title("<title>A &amp; B</title>").as_deref(), Some("A & B"));
+        assert_eq!(extract_page_title("no title here"), None);
+        assert_eq!(extract_page_title("<title></title>"), None);
+        assert_eq!(extract_page_title("<TITLE>Hello</TITLE>").as_deref(), Some("Hello"));
+    }
+
+    /// 自启动平台信息：按 target_os 编译生成，描述非空且与各平台机制对应。
+    #[test]
+    fn autostart_platform_info_described() {
+        assert!(!autostart_platform().is_empty());
+        assert!(!autostart_mechanism().is_empty());
+        match autostart_platform() {
+            "windows" => assert!(autostart_mechanism().contains("Run"), "Windows 应为注册表 Run 键机制"),
+            "macos" => assert!(autostart_mechanism().contains("LaunchAgent"), "macOS 应为 LaunchAgent 机制"),
+            "linux" => assert!(autostart_mechanism().contains("autostart"), "Linux 应为 XDG autostart 机制"),
+            other => panic!("未预期平台：{other}"),
+        }
+    }
 }
+

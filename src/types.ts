@@ -18,8 +18,9 @@ export interface Sticker {
   always_on_top: boolean;
   auto_scroll: boolean;
   is_completed: boolean;
-  alert_active: boolean;
   display_mode: string;
+  /** 上次退出时窗口是否隐藏（true=隐藏，启动不显示）；由后端维护。 */
+  window_hidden?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -51,16 +52,7 @@ export interface StickerPatch {
   always_on_top?: boolean | null;
   auto_scroll?: boolean | null;
   is_completed?: boolean | null;
-  alert_active?: boolean | null;
   display_mode?: string | null;
-}
-
-export interface StickerAttrs {
-  sticker_id: number;
-  due_date: string | null;
-  remind_at: string | null;
-  remind_rule: string | null;
-  is_recurring: boolean;
 }
 
 export interface StickerPrefs {

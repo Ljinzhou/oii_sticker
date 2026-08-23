@@ -41,7 +41,6 @@ const sticker = {
   always_on_top: false,
   auto_scroll: false,
   is_completed: false,
-  alert_active: false,
   display_mode: "interact",
   created_at: "",
   updated_at: "",

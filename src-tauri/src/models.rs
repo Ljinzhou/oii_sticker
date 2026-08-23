@@ -1,7 +1,7 @@
 //! 全局数据模型定义。
 //!
-//! 所有结构体与 SQLite 表 1:1 对应（数据结构对齐旧项目 `oi_sticker`，
-//! 保证旧 `stickers.db` 兼容）；相比源项目补充了 serde 派生，供 Tauri
+//! 所有结构体与 SQLite 表 1:1 对应（结构保证旧版 `stickers.db` 兼容）；
+//! 相比源项目补充了 serde 派生，供 Tauri
 //! 命令与前端 `invoke` 传参/返回使用。
 
 use serde::{Deserialize, Serialize};
@@ -27,13 +27,13 @@ pub struct Sticker {
     pub always_on_top: bool,
     pub auto_scroll: bool,
     pub is_completed: bool,
-    /// 运行时标记，提醒触发后由 scheduler 写入。
-    pub alert_active: bool,
     /// 所属分组 id；NULL 表示默认分组（v12）。
     pub group_id: Option<i64>,
     /// 窗口模式字符串（"display"/"interact"/"edit"），落库持久化；
     /// 类型安全访问用 [`Sticker::mode`]。
     pub display_mode: String,
+    /// 上次退出时该便签窗口是否隐藏（0 显示，1 隐藏）；启动恢复用。
+    pub window_hidden: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -95,19 +95,6 @@ impl Sticker {
     pub fn mode(&self) -> StickerMode {
         StickerMode::parse(&self.display_mode)
     }
-}
-
-/// 便签附加属性，对应 SQLite `sticker_attrs` 表（提醒数据）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct StickerAttrs {
-    pub sticker_id: i64,
-    /// 截止日期 ISO 8601
-    pub due_date: Option<String>,
-    /// 下次提醒时间
-    pub remind_at: Option<String>,
-    /// 提醒规则字符串，例如 "1d"、"12h"、"weekly"
-    pub remind_rule: Option<String>,
-    pub is_recurring: bool,
 }
 
 /// 便签窗口个性化偏好，对应 SQLite `sticker_prefs` 表。

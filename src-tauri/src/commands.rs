@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
 use crate::db::sticker_repo::NewSticker;
 use crate::editing;
-use crate::models::{EffectivePrefs, Sticker, StickerAttrs, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
+use crate::models::{EffectivePrefs, Sticker, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
 use crate::workspace::{layout, md_store};
 
 // ── 便签 CRUD ──
@@ -204,29 +204,6 @@ pub fn move_sticker_group(conn: &Connection, sticker_id: i64, group_id: Option<i
     crate::db::group_repo::move_sticker(conn, sticker_id, group_id)
 }
 
-// ── 提醒 ──
-
-/// 写入/覆盖便签提醒属性。
-pub fn set_reminder(conn: &Connection, attrs: &StickerAttrs) -> Result<()> {
-    sticker_repo::upsert_attrs(conn, attrs)
-}
-
-/// 清除便签提醒属性（写空字段，保留行）。
-pub fn clear_reminder(conn: &Connection, sticker_id: i64) -> Result<()> {
-    sticker_repo::upsert_attrs(
-        conn,
-        &StickerAttrs {
-            sticker_id,
-            ..Default::default()
-        },
-    )
-}
-
-/// 读取便签提醒属性。
-pub fn get_reminder(conn: &Connection, sticker_id: i64) -> Result<Option<StickerAttrs>> {
-    sticker_repo::get_attrs(conn, sticker_id)
-}
-
 // ── 偏好 ──
 
 /// 写入/覆盖便签偏好。
@@ -381,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn sticker_lifecycle_and_reminder() {
+    fn sticker_lifecycle() {
         let conn = test_conn();
         let (root, db_path) = tmp_ws("life");
         let id = create_sticker(
@@ -394,23 +371,6 @@ mod tests {
             &db_path,
         )
         .unwrap();
-
-        // 提醒写入/读取/清除
-        set_reminder(
-            &conn,
-            &StickerAttrs {
-                sticker_id: id,
-                remind_at: Some("2026-12-25 08:00:00".into()),
-                remind_rule: Some("yearly:12-25".into()),
-                is_recurring: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let attrs = get_reminder(&conn, id).unwrap().unwrap();
-        assert_eq!(attrs.remind_rule.as_deref(), Some("yearly:12-25"));
-        clear_reminder(&conn, id).unwrap();
-        assert!(get_reminder(&conn, id).unwrap().unwrap().remind_at.is_none());
 
         // todo 翻转并落库
         assert!(toggle_todo_in_sticker(&conn, id, 0, &db_path).unwrap());

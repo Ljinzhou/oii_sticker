@@ -331,4 +331,24 @@ describe("buildLiveDecorations", () => {
     expect(count).toBe(0);
     view.destroy();
   });
+
+  it("链接按所在行渲染：光标在链接行显示源码 [text](url)，其他行渲染链接文本", () => {
+    const view = makeView("普通行\n[链](https://x.com)", 0);
+
+    // 光标在第一行：第二行的链接应渲染
+    let count = 0;
+    buildLiveDecorations(view).between(0, view.state.doc.length, () => {
+      count++;
+    });
+    expect(count).toBe(1);
+
+    // 光标移到链接所在行（任意位置）→ 链接显示源码，不再渲染为链接文本
+    view.dispatch({ selection: { anchor: view.state.doc.line(2).from + 1 } });
+    count = 0;
+    buildLiveDecorations(view).between(0, view.state.doc.length, () => {
+      count++;
+    });
+    expect(count).toBe(0);
+    view.destroy();
+  });
 });

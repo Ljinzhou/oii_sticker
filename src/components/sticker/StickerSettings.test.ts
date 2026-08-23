@@ -26,7 +26,6 @@ beforeEach(() => {
     if (command === "get_sticker_cmd") {
       return Promise.resolve({ always_on_top: false, auto_scroll: true });
     }
-    if (command === "get_reminder_cmd") return Promise.resolve(null);
     if (command === "update_sticker_prefs_cmd") return Promise.resolve(undefined);
     return Promise.resolve(undefined);
   });

@@ -5,7 +5,6 @@
   "windows": ["main", "sticker-*", "todo-*"],
   "permissions": [
     "core:default",
-    "notification:default",
     "autostart:default",
     "dialog:allow-open",
     "dialog:allow-save",

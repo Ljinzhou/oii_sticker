@@ -1,107 +1,102 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
-import { useNotesStore } from "../../stores/notes";
 import { invoke } from "../../composables/useTauri";
 import WorkspaceManager from "./WorkspaceManager.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const settings = useSettingsStore();
-const notes = useNotesStore();
 
-type MenuKey = "general" | "defaults" | "todo" | "workspace" | "about" | "debug";
+type MenuKey = "general" | "defaults" | "todo" | "workspace" | "about";
 const activeMenu = ref<MenuKey>("general");
 const autoStart = ref(false);
+const autostartBusy = ref(false);
+const autostartError = ref("");
 const closeBehavior = ref("hide");
-const debugMode = ref(true);
 
-async function toggleDebugMode() {
-  debugMode.value = !debugMode.value;
-  await settings.set("debug_mode", debugMode.value ? "1" : "0");
-  log(`调试模式：${debugMode.value ? "开启（详细日志）" : "关闭"}`);
+type AutostartInfo = {
+  enabled: boolean;
+  platform: string;
+  mechanism: string;
+  launch_args: string[];
+  executable: string;
+};
+
+function applyAutostartInfo(info: AutostartInfo) {
+  autoStart.value = info.enabled;
+}
+
+async function refreshAutostart() {
+  autostartError.value = "";
+  try {
+    const info = await invoke<AutostartInfo>("autostart_get_cmd");
+    applyAutostartInfo(info);
+  } catch (e) {
+    autostartError.value = "读取开机自启状态失败：" + String(e);
+  }
+}
+
+async function toggleAutoStart() {
+  const target = !autoStart.value;
+  autostartBusy.value = true;
+  autostartError.value = "";
+  try {
+    const info = await invoke<AutostartInfo>("autostart_set_cmd", { enabled: target });
+    applyAutostartInfo(info);
+    if (info.enabled !== target) {
+      autostartError.value = "系统状态未按预期切换，请重试";
+    }
+  } catch (e) {
+    autoStart.value = !target;
+    autostartError.value = (target ? "开启" : "关闭") + "开机自启失败：" + String(e);
+  } finally {
+    autostartBusy.value = false;
+  }
 }
 
 async function setCloseBehavior(v: string) {
   closeBehavior.value = v;
   await settings.set("main_close_behavior", v);
-  log(`关闭主控台行为：${v === "quit" ? "退出程序" : "隐藏到托盘"}`);
 }
 
-// Debug 状态
-const notifyResult = ref("");
-const notifyError = ref(false);
-const dbInfo = ref<{ user_version: number; tables: string[]; db_path: string; config_keys: number } | null>(null);
-const debugLog = ref<string[]>([]);
+// 关于：更新检测 / 外链
+const updateResult = ref<string>("");
+const updateError = ref(false);
+const checkingUpdate = ref(false);
 
-function log(msg: string) {
-  debugLog.value.unshift(`[${new Date().toLocaleTimeString()}] ${msg}`);
-}
-
-async function toggleAutoStart() {
-  if (autoStart.value) {
-    await invoke("plugin:autostart|disable");
-    autoStart.value = false;
-  } else {
-    await invoke("plugin:autostart|enable");
-    autoStart.value = true;
-  }
-  log(`开机自启：${autoStart.value ? "已启用" : "已禁用"}`);
-}
-
-async function sendTestNotify() {
-  notifyResult.value = "发送中…";
-  notifyError.value = false;
+async function checkUpdate() {
+  checkingUpdate.value = true;
+  updateResult.value = "检查中…";
+  updateError.value = false;
   try {
-    await invoke("debug_notify_cmd", {
-      title: "oii_sticker 测试通知",
-      body: "这是一条来自 Debug 菜单的测试通知。",
-    });
-    notifyResult.value = "已发送（请查看系统通知）";
-    log("测试通知已发送");
+    const info = await invoke<{ latest: string | null; current: string; has_update: boolean; error: string | null }>("check_update_cmd");
+    if (info.error) {
+      updateResult.value = info.error;
+      updateError.value = true;
+    } else if (info.has_update) {
+      updateResult.value = `发现新版本 ${info.latest}（当前 ${info.current}），可前往仓库下载。`;
+    } else {
+      updateResult.value = `已是最新版本（${info.current}）。`;
+    }
   } catch (e) {
-    notifyResult.value = `发送失败：${e}`;
-    notifyError.value = true;
-    log(`测试通知失败：${e}`);
+    updateResult.value = `检查失败：${e}`;
+    updateError.value = true;
+  } finally {
+    checkingUpdate.value = false;
   }
 }
 
-async function checkDbHealth() {
-  try {
-    const info = await invoke<{ user_version: number; tables: string[]; db_path: string; config_keys: number }>("db_health");
-    dbInfo.value = info;
-    log(`DB 健康检查：v${info.user_version}，${info.tables.length} 张表，${info.config_keys} 个配置键`);
-  } catch (e) {
-    log(`DB 健康检查失败：${e}`);
-  }
-}
-
-async function createTestSticker() {
-  try {
-    await notes.create({
-      title: "测试便签",
-      content: "# 测试便签\n\n这是 Debug 菜单创建的测试便签。",
-      pos_x: 250,
-      pos_y: 180,
-      width: 360,
-      height: 420,
-      opacity: settings.opacity,
-      bg_color: "#D6E9FF",
-    });
-    log("测试便签已创建");
-  } catch (e) {
-    log(`创建测试便签失败：${e}`);
-  }
+function openLink(url: string) {
+  invoke("open_external_cmd", { url }).catch((e) => {
+    updateResult.value = `打开链接失败：${e}`;
+    updateError.value = true;
+  });
 }
 
 onMounted(async () => {
   settings.refresh();
-  try {
-    autoStart.value = await invoke<boolean>("plugin:autostart|is_enabled");
-  } catch {
-    autoStart.value = false;
-  }
+  await refreshAutostart();
   closeBehavior.value = settings.get("main_close_behavior", "hide");
-  debugMode.value = settings.get("debug_mode", "1") === "1";
 });
 </script>
 
@@ -121,17 +116,12 @@ onMounted(async () => {
         :class="{ active: activeMenu === 'defaults' }"
         @click="activeMenu = 'defaults'"
       >便签样式</button>
-      <button class="nav-item" :class="{ active: activeMenu === 'todo' }" @click="activeMenu = 'todo'">Todo 默认值</button>
+      <button class="nav-item" :class="{ active: activeMenu === 'todo' }" @click="activeMenu = 'todo'">Todo 设置</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'workspace' }"
         @click="activeMenu = 'workspace'"
       >工作空间</button>
-      <button
-        class="nav-item"
-        :class="{ active: activeMenu === 'debug' }"
-        @click="activeMenu = 'debug'"
-      >Debug</button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'about' }"
@@ -145,8 +135,9 @@ onMounted(async () => {
         <h3>通用</h3>
         <label class="row">
           <span>开机自启</span>
-          <input type="checkbox" :checked="autoStart" @change="toggleAutoStart" />
+          <input type="checkbox" :checked="autoStart" :disabled="autostartBusy" @change="toggleAutoStart" />
         </label>
+        <p v-if="autostartError" class="hint error">{{ autostartError }}</p>
         <label class="row">
           <span>关闭主控台时</span>
           <select :value="closeBehavior" @change="(e) => setCloseBehavior((e.target as HTMLSelectElement).value)">
@@ -228,9 +219,6 @@ onMounted(async () => {
             <option value="live">及时预览（渲染即编辑）</option>
           </select>
         </label>
-        <p class="hint">编辑模式（WYSIWYG）下内容文字的字号，独立于便签正文字号。</p>
-        <p class="hint">开启后，及时预览与 Markdown 两种编辑模式的左侧都会显示行号（默认开启）。</p>
-        <p class="hint">可在便签编辑模式左上角开关及时切换，此处为全局默认。</p>
       </div>
 
       <div v-else-if="activeMenu === 'todo'">
@@ -257,38 +245,43 @@ onMounted(async () => {
         <WorkspaceManager />
       </div>
 
-      <!-- Debug -->
-      <div v-else-if="activeMenu === 'debug'">
-        <h3>Debug 工具</h3>
-        <label class="row">
-          <span>调试模式（详细日志）</span>
-          <input type="checkbox" :checked="debugMode" @change="toggleDebugMode" />
-        </label>
-        <p class="hint">开启后输出详细的操作/命令/事件日志（控制台）。</p>
-        <div class="debug-actions">
-          <button class="btn" @click="sendTestNotify"><i class="ri-notification-3-line"></i>发送测试通知</button>
-          <button class="btn" @click="checkDbHealth"><i class="ri-database-2-line"></i>数据库健康检查</button>
-          <button class="btn" @click="createTestSticker"><i class="ri-sticky-note-add-line"></i>创建测试便签</button>
-        </div>
-        <p v-if="notifyResult" class="result" :class="{ error: notifyError }"><i v-if="!notifyError" class="ri-checkbox-circle-fill result-ok"></i>{{ notifyResult }}</p>
-        <pre v-if="dbInfo" class="db-info">
-数据库版本：v{{ dbInfo.user_version }}
-配置键数量：{{ dbInfo.config_keys }}
-表：{{ dbInfo.tables.join(", ") }}
-路径：{{ dbInfo.db_path }}
-        </pre>
-        <div v-if="debugLog.length" class="log">
-          <div v-for="(l, i) in debugLog" :key="i" class="log-line">{{ l }}</div>
-        </div>
-      </div>
-
       <!-- 关于 -->
       <div v-else-if="activeMenu === 'about'">
         <h3>关于</h3>
-        <p class="about-line"><strong>oii_sticker</strong> v0.1.0</p>
-        <p class="about-line">Tauri 2 + Vue 3 桌面便签应用</p>
-        <p class="about-line">重写自 <code>oi_sticker</code>（GPL v3）</p>
-        <p class="about-line">数据库：SQLite（user_version=5，兼容旧库）</p>
+
+        <h4 class="about-sec">基本信息</h4>
+        <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v0.1.0</span></p>
+
+        <h4 class="about-sec">程序介绍</h4>
+        <p class="about-line">oii_sticker 是一款跨平台桌面便签应用，旨在提供轻量、高效的信息记录体验。聚焦以下能力：</p>
+        <p class="about-line">• 便签：支持窗口拖拽 / 缩放 / 透明度与背景色调整，贴边收纳、托盘中隐藏与恢复。</p>
+        <p class="about-line">• 富文本编辑：Markdown 源码模式与即时预览模式可自由切换，支持代码高亮与数学公式渲染。</p>
+        <p class="about-line">• Todo 任务清单：独立窗口管理待办事项，配合日期预设（今天 / 明天 / 下周）与系统通知提醒。</p>
+        <p class="about-line">• 分组工作空间：将便签按主题分组管理，便于整理与归档。</p>
+
+        <h4 class="about-sec">更新检查</h4>
+        <div class="about-actions">
+          <button class="btn" :disabled="checkingUpdate" @click="checkUpdate">
+            <i class="ri-refresh-line"></i>{{ checkingUpdate ? "检查中…" : "检查更新" }}
+          </button>
+          <button class="btn" @click="openLink('https://github.com/Ljinzhou/oii_sticker/releases')">
+            <i class="ri-download-2-line"></i>查看仓库 / 下载
+          </button>
+        </div>
+        <p v-if="updateResult" class="result" :class="{ error: updateError }">{{ updateResult }}</p>
+
+        <h4 class="about-sec">开源许可</h4>
+        <p class="about-line">本软件遵循 GPL v3 许可分发。</p>
+
+        <h4 class="about-sec">作者</h4>
+        <p class="about-line">李jinzhou（Ljinzhou）</p>
+        <p class="about-line">当前Tokens充足，身份为“天才程序员”！</p>
+        <p class="about-line"><button class="link-btn" @click="openLink('https://github.com/Ljinzhou')"><i class="ri-github-fill"></i>GitHub</button></p>
+        <p class="about-line">邮箱：<span class="copy-mail">771625807@qq.com</span></p>
+
+        <h4 class="about-sec">致谢</h4>
+        <p class="about-line">感谢DeepSeek的惊人智慧，贡献了本项目99.99%的代码</p>
+        <img class="about-credit" src="/thanks-deepseek.png" alt="感谢蓝色大肥鱼" />
       </div>
     </section>
 
@@ -413,11 +406,8 @@ h3 {
   margin: 6px 0 0;
 }
 
-.debug-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 12px;
+.hint.error {
+  color: #c0392b;
 }
 
 .btn {
@@ -440,57 +430,88 @@ h3 {
   color: #fff;
 }
 
-.result {
-  font-size: 12px;
-  color: #2e7d32;
-  margin: 4px 0;
-}
-
-.result.error {
-  color: #c0392b;
-}
-
-.result-ok {
-  color: #2e7d32;
-  vertical-align: -2px;
-  margin-right: 4px;
-}
-
-.debug-actions .btn .ri {
-  vertical-align: -2px;
-  margin-right: 5px;
-}
-
-.db-info {
-  background: rgba(0, 0, 0, 0.04);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 12px;
-  color: #555;
-  margin: 8px 0;
-  font-family: Consolas, monospace;
-  white-space: pre-wrap;
-}
-
-.log {
-  margin-top: 10px;
-  border-top: 1px dashed rgba(0, 0, 0, 0.12);
-  padding-top: 8px;
-  max-height: 200px;
-  overflow-y: auto;
-}
-
-.log-line {
-  font-size: 12px;
-  color: #777;
-  font-family: Consolas, monospace;
-  padding: 2px 0;
-}
-
 .about-line {
   font-size: 13px;
   color: #555;
   margin: 6px 0;
+}
+
+.about-sec {
+  margin: 16px 0 8px;
+  font-size: 13px;
+  color: #888;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.about-sec:first-of-type {
+  margin-top: 4px;
+}
+
+.badge {
+  display: inline-block;
+  background: rgba(79, 124, 255, 0.12);
+  color: #4f7cff;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 12px;
+  vertical-align: 1px;
+}
+
+.about-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.about-actions .btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(79, 124, 255, 0.35);
+  background: rgba(79, 124, 255, 0.06);
+  color: #4f7cff;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 13px;
+  margin-right: 8px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.link-btn:hover {
+  background: rgba(79, 124, 255, 0.12);
+}
+
+.copy-mail {
+  font-family: Consolas, monospace;
+  color: #333;
+  user-select: text;
+  cursor: text;
+}
+
+.about-credit {
+  margin-top: 10px;
+  max-width: 260px;
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.result {
+  font-size: 12px;
+  color: #2e7d32;
+  margin: 6px 0;
+}
+
+.result.error {
+  color: #c0392b;
 }
 
 .foot {

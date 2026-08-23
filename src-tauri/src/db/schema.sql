@@ -1,5 +1,5 @@
 -- === Oi Sticker SQLite Schema (v1) ===
--- 结构对齐旧项目 oi_sticker（保证旧 stickers.db 兼容），注释重写。
+-- 结构保证旧版 stickers.db 兼容，注释重写。
 PRAGMA foreign_keys = ON;
 
 -- 便签主表
@@ -18,8 +18,9 @@ CREATE TABLE stickers (
     always_on_top INTEGER NOT NULL DEFAULT 0,
     auto_scroll INTEGER NOT NULL DEFAULT 0,
     is_completed INTEGER NOT NULL DEFAULT 0,
-    alert_active INTEGER NOT NULL DEFAULT 0,
     display_mode TEXT NOT NULL DEFAULT 'display',
+    -- v14：上次退出时窗口是否隐藏（0 显示/1 隐藏），启动恢复用。
+    window_hidden INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -27,15 +28,6 @@ CREATE TABLE stickers (
 CREATE INDEX idx_stickers_parent ON stickers(parent_id);
 CREATE INDEX idx_stickers_parent_level
     ON stickers(parent_id, heading_level);
-
--- 便签附加属性（提醒规则）
-CREATE TABLE sticker_attrs (
-    sticker_id INTEGER PRIMARY KEY REFERENCES stickers(id) ON DELETE CASCADE,
-    due_date TEXT,
-    remind_at TEXT,
-    remind_rule TEXT,
-    is_recurring INTEGER NOT NULL DEFAULT 0
-);
 
 -- 待办条目
 CREATE TABLE todo_items (
@@ -103,11 +95,6 @@ CREATE TABLE sticker_prefs (
     text_color        TEXT,
     auto_scroll_speed INTEGER
 );
-
--- 提醒扫描索引（v5）：scheduler 每 10s 扫 remind_at 非空行。
-CREATE INDEX idx_attrs_remind
-    ON sticker_attrs(remind_at)
-    WHERE remind_at IS NOT NULL;
 
 -- 独立 Todo 块（v7）：与旧 todo_items 并存，供 <todo-block> 使用。
 CREATE TABLE todo_blocks (

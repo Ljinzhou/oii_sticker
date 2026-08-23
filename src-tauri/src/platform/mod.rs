@@ -3,6 +3,5 @@
 
 pub mod autostart;
 pub mod mouse_hook;
-pub mod notify;
 pub mod tray;
 pub mod window_style;
