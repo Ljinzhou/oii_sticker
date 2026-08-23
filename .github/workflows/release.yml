@@ -97,6 +97,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release download "${GITHUB_REF_NAME}" -p latest.json -O latest.json
+          gh release download "${GITHUB_REF_NAME}" -p latest.json -O latest.json --clobber
           node scripts/gen-update-manifests.mjs latest.json
           gh release upload "${GITHUB_REF_NAME}" latest-m1.json latest-m2.json latest-m3.json latest-m4.json latest-m5.json --clobber
