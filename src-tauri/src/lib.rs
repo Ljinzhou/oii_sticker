@@ -15,6 +15,7 @@ mod models;
 mod platform;
 mod slash;
 mod state;
+mod updater;
 mod workspace;
 
 use commands::create_sticker;
@@ -669,7 +670,6 @@ struct SlashDto {
     template: String,
 }
 
-
 /// 开机自启在设置页需要的平台信息：状态 + 平台机制 + 启动参数 + 可执行文件。
 #[derive(Serialize)]
 pub struct AutostartInfo {
@@ -1027,80 +1027,6 @@ fn persist_sticker_window_states(app: &tauri::AppHandle) {
     tracing::info!("[exit] 已保存 {saved} 个便签窗口状态（显示/隐藏 + 几何）");
 }
 
-/// 检查更新：查询 GitHub 最新 release 版本号并对比当前版本。
-/// 返回最新版本号、是否有更新、当前版本号。
-#[derive(Serialize)]
-struct UpdateInfo {
-    latest: Option<String>,
-    current: String,
-    has_update: bool,
-    error: Option<String>,
-}
-
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const GITHUB_REPO: &str = "Ljinzhou/oii_sticker";
-
-#[tauri::command]
-async fn check_update_cmd() -> UpdateInfo {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .user_agent("oii_sticker/check-update")
-        .build()
-        .map_err(|e| format!("HTTP 客户端初始化失败：{e}"));
-    let client = match client {
-        Ok(c) => c,
-        Err(e) => {
-            return UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(e) }
-        }
-    };
-    let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
-    match client.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.text().await {
-                Ok(body) => {
-                    // 手动解析 JSON 中 "tag_name":"..." 字段，避免额外引入 serde_json。
-                    let latest = extract_json_tag_name(&body);
-                    let has_update = latest.as_deref().map(|l| semantic_newer(l, APP_VERSION)).unwrap_or(false);
-                    UpdateInfo { latest, current: APP_VERSION.to_string(), has_update, error: None }
-                }
-                Err(e) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(format!("读取更新信息失败：{e}")) },
-            }
-        }
-        Ok(_) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some("仓库无发布版本或检查失败".to_string()) },
-        Err(e) => UpdateInfo { latest: None, current: APP_VERSION.to_string(), has_update: false, error: Some(format!("网络请求失败：{e}")) },
-    }
-}
-
-/// 从 GitHub release JSON 中提取 `"tag_name": "..."` 的值（简单字符串解析）。
-fn extract_json_tag_name(body: &str) -> Option<String> {
-    let key = "\"tag_name\"";
-    let idx = body.find(key)?;
-    let after = &body[idx + key.len()..];
-    let colon = after.find(':')?;
-    let value = after[colon + 1..].trim_start();
-    let value = value.trim_start_matches('"');
-    let end = value.find('"')?;
-    let raw = &value[..end];
-    if raw.is_empty() {
-        None
-    } else {
-        Some(raw.trim_start_matches('v').to_string())
-    }
-}
-
-/// 比较两个点分语义版本，`newer` 是否晚于 `cur`（仅比较前三位数字）。
-fn semantic_newer(newer: &str, cur: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse::<u32>().ok()).collect() };
-    let a = parse(newer);
-    let b = parse(cur);
-    for (x, y) in a.iter().zip(b.iter()) {
-        if x != y {
-            return x > y;
-        }
-    }
-    a.len() > b.len()
-}
-
 /// 用系统默认浏览器打开外部链接（绝不在内嵌 WebView 中导航，避免覆盖便签内容）。
 /// 仅允许 http(s) 协议。
 #[tauri::command]
@@ -1311,6 +1237,7 @@ pub fn run() {
         .try_init();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // 开机自启：三平台统一由官方插件管理（Windows 注册表 Run 键 /
@@ -1366,6 +1293,7 @@ pub fn run() {
                     (conn, config, ":memory:".to_string())
                 }
             };
+            app.manage(updater::UpdateState::default());
             app.manage(AppState::new(
                 conn,
                 config,
@@ -1472,7 +1400,9 @@ pub fn run() {
             open_todo_window_cmd,
             close_todo_window_cmd,
             open_external_cmd,
-            check_update_cmd,
+            updater::update_check_cmd,
+            updater::update_download_cmd,
+            updater::update_state_cmd,
             autostart_get_cmd,
             autostart_set_cmd,
             main_close_cmd,
@@ -1594,4 +1524,4 @@ mod tests {
         }
     }
 }
-
+

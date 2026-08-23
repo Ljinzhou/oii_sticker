@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
-import { invoke } from "../../composables/useTauri";
+import { invoke, listen } from "../../composables/useTauri";
 import WorkspaceManager from "./WorkspaceManager.vue";
 
 const emit = defineEmits<{ close: [] }>();
@@ -59,32 +59,115 @@ async function setCloseBehavior(v: string) {
   await settings.set("main_close_behavior", v);
 }
 
-// 关于：更新检测 / 外链
+// 关于：自动更新（后端编排 + 事件驱动，见 src-tauri/src/updater.rs）
+type UpdatePhase =
+  | { phase: "idle" }
+  | { phase: "checking"; current?: string }
+  | { phase: "up_to_date"; current: string }
+  | { phase: "available"; current: string; version: string; notes?: string | null }
+  | { phase: "downloading"; downloaded: number; total: number | null; retrying: boolean }
+  | { phase: "installing" }
+  | { phase: "restarting" }
+  | { phase: "failed"; code: string; message: string; manualUrl: string };
+
+type UpdateError = { kind: string; message: string; manualUrl: string };
+
+const upPhase = ref<string>("idle");
+const upVersion = ref("");
+const upProgressPct = ref<number | null>(null); // null = 总大小未知
+const upRetrying = ref(false);
 const updateResult = ref<string>("");
 const updateError = ref(false);
 const checkingUpdate = ref(false);
 
+function applyPhase(p: UpdatePhase) {
+  upPhase.value = p.phase;
+  upRetrying.value = false;
+  switch (p.phase) {
+    case "checking":
+      break;
+    case "up_to_date":
+      updateResult.value = `已是最新版本（${p.current}）。`;
+      updateError.value = false;
+      break;
+    case "available":
+      upVersion.value = p.version;
+      updateResult.value = "";
+      break;
+    case "downloading":
+      upProgressPct.value = p.total ? Math.min(99, Math.round((p.downloaded / p.total) * 100)) : null;
+      upRetrying.value = p.retrying;
+      break;
+    case "installing":
+      updateResult.value = "下载完成，正在安装…";
+      updateError.value = false;
+      break;
+    case "restarting":
+      updateResult.value = "安装完成，应用即将重启…";
+      updateError.value = false;
+      break;
+    case "failed":
+      updateResult.value = p.message;
+      updateError.value = true;
+      break;
+    default:
+      break;
+  }
+}
+
 async function checkUpdate() {
+  if (["downloading", "installing", "restarting", "checking"].includes(upPhase.value)) return;
   checkingUpdate.value = true;
-  updateResult.value = "检查中…";
+  updateResult.value = "";
   updateError.value = false;
   try {
-    const info = await invoke<{ latest: string | null; current: string; has_update: boolean; error: string | null }>("check_update_cmd");
-    if (info.error) {
-      updateResult.value = info.error;
-      updateError.value = true;
-    } else if (info.has_update) {
-      updateResult.value = `发现新版本 ${info.latest}（当前 ${info.current}），可前往仓库下载。`;
-    } else {
-      updateResult.value = `已是最新版本（${info.current}）。`;
-    }
+    const res = await invoke<{ phase: UpdatePhase }>("update_check_cmd");
+    applyPhase(res.phase);
   } catch (e) {
-    updateResult.value = `检查失败：${e}`;
+    // 后端返回结构化错误 {kind,message,manualUrl}
+    const err = e as Partial<UpdateError>;
+    updateResult.value = err?.message ?? `检查失败：${String(e)}`;
     updateError.value = true;
   } finally {
     checkingUpdate.value = false;
   }
 }
+
+function startUpgrade() {
+  updateError.value = false;
+  invoke("update_download_cmd").catch((e) => {
+    const err = e as Partial<UpdateError>;
+    updateResult.value = err?.message ?? `启动升级失败：${String(e)}`;
+    updateError.value = true;
+  });
+}
+
+/** 打开发布页手动兜底。 */
+function openReleases() {
+  openLink("https://github.com/Ljinzhou/oii_sticker/releases");
+}
+
+let unlisteners: (() => void)[] = [];
+onMounted(async () => {
+  // 重接进行中的更新流程（设置页关闭后后台任务仍在跑）。
+  try {
+    const snapshot = await invoke<UpdatePhase | null>("update_state_cmd");
+    if (snapshot && snapshot.phase !== "idle") applyPhase(snapshot);
+  } catch {
+    /* 状态读取失败不阻塞页面 */
+  }
+  unlisteners.push(
+    await listen<{ downloaded: number; total: number | null }>("updater://progress", (payload) => {
+      upPhase.value = "downloading";
+      upProgressPct.value = payload.total ? Math.min(99, Math.round((payload.downloaded / payload.total) * 100)) : null;
+    }),
+  );
+  unlisteners.push(await listen<UpdatePhase>("updater://phase", (payload) => applyPhase(payload)));
+});
+onUnmounted(() => {
+  unlisteners.forEach((fn) => fn());
+  unlisteners = [];
+});
 
 function openLink(url: string) {
   invoke("open_external_cmd", { url }).catch((e) => {
@@ -261,13 +344,55 @@ onMounted(async () => {
 
         <h4 class="about-sec">更新检查</h4>
         <div class="about-actions">
-          <button class="btn" :disabled="checkingUpdate" @click="checkUpdate">
-            <i class="ri-refresh-line"></i>{{ checkingUpdate ? "检查中…" : "检查更新" }}
+          <!-- 主按钮：随更新状态机变形 -->
+          <button
+            v-if="upPhase === 'available'"
+            class="btn primary"
+            @click="startUpgrade"
+          >
+            <i class="ri-download-cloud-2-line"></i>升级到 v{{ upVersion }}
+          </button>
+          <button
+            v-else-if="upPhase === 'downloading'"
+            class="btn"
+            disabled
+          >
+            <i class="ri-loader-4-line ri-spin"></i>{{ upRetrying ? "切换镜像重试中…" : "下载更新中…" }}{{ upProgressPct !== null ? ` ${upProgressPct}%` : "" }}
+          </button>
+          <button
+            v-else-if="upPhase === 'installing'"
+            class="btn"
+            disabled
+          >
+            <i class="ri-loader-4-line ri-spin"></i>正在安装…
+          </button>
+          <button
+            v-else-if="upPhase === 'restarting'"
+            class="btn"
+            disabled
+          >
+            <i class="ri-restart-line"></i>即将重启…
+          </button>
+          <button
+            v-else
+            class="btn"
+            :disabled="checkingUpdate || upPhase === 'checking'"
+            @click="checkUpdate"
+          >
+            <i class="ri-refresh-line"></i>{{ checkingUpdate || upPhase === "checking" ? "检查中…" : "检查更新" }}
+          </button>
+          <!-- 失败时的手动兜底 -->
+          <button v-if="upPhase === 'failed'" class="btn" @click="openReleases">
+            <i class="ri-external-link-line"></i>打开发布页手动下载
           </button>
           <button class="btn" @click="openLink('https://github.com/Ljinzhou/oii_sticker/releases')">
             <i class="ri-download-2-line"></i>查看仓库 / 下载
           </button>
         </div>
+        <p
+          v-if="upPhase === 'downloading' && updateResult === ''"
+          class="result"
+        >{{ upRetrying ? "网络不稳定，已自动切换到更快的镜像继续。" : "正在通过最快的镜像下载更新包…" }}</p>
         <p v-if="updateResult" class="result" :class="{ error: updateError }">{{ updateResult }}</p>
 
         <h4 class="about-sec">开源许可</h4>
