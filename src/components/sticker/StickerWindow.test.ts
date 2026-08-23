@@ -107,7 +107,7 @@ describe("StickerWindow", () => {
     expect(wrapper.find('.ov-btn[title="收起回展示模式"]').exists()).toBe(false);
   });
 
-  it("自动滚动使用便签 effective speed 并在卸载时取消 RAF", async () => {
+  it("自动滚动使用便签 effective speed，按帧推进并在卸载时取消 RAF", async () => {
     const frames: FrameRequestCallback[] = [];
     const cancelFrame = vi.fn();
     vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
@@ -121,10 +121,15 @@ describe("StickerWindow", () => {
     Object.defineProperty(body, "scrollHeight", { configurable: true, value: 500 });
     Object.defineProperty(body, "clientHeight", { configurable: true, value: 100 });
 
+    // 首帧只登记时间基准；之后每 250ms × 60px/s = 15px
     frames.shift()?.(0);
-    frames.shift()?.(1000);
-    expect(body.scrollTop).toBeCloseTo(60, 8);
+    expect(body.scrollTop).toBe(0);
+    frames.shift()?.(250);
+    expect(body.scrollTop).toBe(15);
+    frames.shift()?.(500);
+    expect(body.scrollTop).toBe(30);
 
+    // 卸载取消 RAF
     wrapper.unmount();
     expect(cancelFrame).toHaveBeenCalled();
   });
