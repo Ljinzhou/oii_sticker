@@ -91,12 +91,16 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
 
-      - name: Generate and upload mirror manifests
+      - name: Cleanup · 删除废弃的镜像变体清单（latest-m*.json）
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release download "${GITHUB_REF_NAME}" -p latest.json -O latest.json --clobber
-          node scripts/gen-update-manifests.mjs latest.json
-          gh release upload "${GITHUB_REF_NAME}" latest-m1.json latest-m2.json latest-m3.json latest-m4.json latest-m5.json --clobber
+          release_url="repos/{owner}/{repo}/releases/tags/${GITHUB_REF_NAME}"
+          for name in $(gh api "$release_url" --jq '.assets[].name' | grep '^latest-m' || true); do
+            asset_id="$(gh api "$release_url" --jq --arg n "$name" '.assets[] | select(.name == $n) | .id')"
+            echo "删除废弃资产: ${name} (id=${asset_id})"
+            gh api -X DELETE "repos/{owner}/{repo}/releases/assets/${asset_id}"
+          done
+          echo "清理完成"
