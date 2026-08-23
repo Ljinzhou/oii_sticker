@@ -317,4 +317,102 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect(view.state.doc.toString()).toBe("- 项目\n- ");
     view.destroy();
   });
+  it("粘贴链接自动转为 [](url) 占位，并异步用网页标题填充", async () => {
+    const host = mountHost();
+    const fetched: string[] = [];
+    const view = createLiveView(host, {
+      doc: "",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+      fetchPageTitle: async (url) => {
+        fetched.push(url);
+        return "哔哩哔哩";
+      },
+    });
+    view.dispatch({
+      changes: { from: 0, insert: "https://www.bilibili.com/video/av1" },
+      userEvent: "input.paste",
+    });
+    // 第一步：立即转成空标题占位
+    expect(view.state.doc.toString()).toBe("[](https://www.bilibili.com/video/av1)");
+    expect(fetched).toEqual(["https://www.bilibili.com/video/av1"]);
+
+    // 第二步：标题返回后填入
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(view.state.doc.toString()).toBe("[哔哩哔哩](https://www.bilibili.com/video/av1)");
+    view.destroy();
+  });
+
+  it("粘贴含链接的文本只转换链接部分，保留前后文字", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "开头",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+      fetchPageTitle: async () => null,
+    });
+    view.dispatch({
+      changes: { from: 2, insert: " 看 https://example.com/a 详请 " },
+      userEvent: "input.paste",
+    });
+    expect(view.state.doc.toString()).toBe("开头 看 [](https://example.com/a) 详请 ");
+    view.destroy();
+  });
+
+  it("手动输入链接（非粘贴）不自动转换", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+      fetchPageTitle: async () => "不应被调用",
+    });
+    // 与粘贴相同的文档变化，但没有 input.paste 注解
+    view.dispatch({ changes: { from: 0, insert: "https://example.com" } });
+    expect(view.state.doc.toString()).toBe("https://example.com");
+    view.destroy();
+  });
+
+  it("粘贴已经是 [text](url) 的超链接不重复包裹", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+      fetchPageTitle: async () => "x",
+    });
+    view.dispatch({
+      changes: { from: 0, insert: "[bilibili](https://www.bilibili.com)" },
+      userEvent: "input.paste",
+    });
+    expect(view.state.doc.toString()).toBe("[bilibili](https://www.bilibili.com)");
+    view.destroy();
+  });
+
+  it("一次粘贴多个链接：逐个填充标题且位置互不干扰", async () => {
+    const host = mountHost();
+    const titles: Record<string, string> = {
+      "https://a.com": "A站",
+      "https://b.com": "B站",
+    };
+    const view = createLiveView(host, {
+      doc: "",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+      fetchPageTitle: async (url) => titles[url] ?? null,
+    });
+    view.dispatch({
+      changes: { from: 0, insert: "https://a.com 和 https://b.com" },
+      userEvent: "input.paste",
+    });
+    expect(view.state.doc.toString()).toBe("[](https://a.com) 和 [](https://b.com)");
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(view.state.doc.toString()).toBe("[A站](https://a.com) 和 [B站](https://b.com)");
+    view.destroy();
+  });
 });

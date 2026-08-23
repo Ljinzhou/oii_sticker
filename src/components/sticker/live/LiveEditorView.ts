@@ -11,6 +11,7 @@ import {
   highlightSpecialChars,
   keymap,
   rectangularSelection,
+  type ViewUpdate,
 } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
@@ -47,6 +48,7 @@ import {
   buildWrapTransaction,
 } from "./liveTransforms";
 import { mathInstancePromise } from "../../../utils/markdown";
+import { invoke } from "../../../composables/useTauri";
 import type { TodoBlock } from "../../../types";
 import type { SlashAnchor } from "../../slash/types";
 
@@ -65,6 +67,11 @@ export interface LiveViewOptions {
   onSlashClose?: () => void;
   onTodoOpen?: (id: string) => void;
   todoBlocks?: TodoBlock[];
+  /**
+   * 粘贴链接时获取网页标题（默认走 Tauri `fetch_page_title_cmd`）；
+   * 返回 null → 保持 `[](url)` 占位。测试可注入 mock。
+   */
+  fetchPageTitle?: (url: string) => Promise<string | null>;
   /** 斜杠菜单是否打开：打开时 ↑/↓/Enter/Esc 交给菜单处理，不再移动光标/换行。 */
   slashOpen?: () => boolean;
   onSlashNav?: (dir: 1 | -1) => void;
@@ -123,6 +130,99 @@ function runTableOrLiveTransform(view: EditorView, direction: -1 | 1): boolean {
 function runFormat(view: EditorView, prefix: string, suffix: string, userEvent: string): boolean {
   view.dispatch(buildWrapTransaction(view.state.doc.toString(), view.state.selection.main, prefix, suffix, userEvent));
   return true;
+}
+
+
+/** 粘贴进来的 http(s) 链接正则（复制而非手输；已在 [text](url) 内的链接跳过）。 */
+const PASTED_URL_RE = /https?:\/\/[^\s<>"'\u3002\uff0c\uff1b\uff1a\uff01\uff1f]+/gi;
+
+/** 去掉 URL 尾部常见的句子/标点。 */
+function trimUrlTrailing(raw: string): string {
+  let url = raw;
+  while (
+    url.length > 0 &&
+    /[.,;:!?'"\uff09\uff3d\uff1e\}]$/.test(url[url.length - 1])
+  ) {
+    url = url.slice(0, -1);
+  }
+  return url;
+}
+
+/** 默认标题获取：走 Tauri 后端命令（Rust 侧抓取，规避 WebView CORS）。 */
+async function fetchPageTitleDefault(url: string): Promise<string | null> {
+  try {
+    return await invoke<string | null>("fetch_page_title_cmd", { url });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 粘贴链接自动转 Markdown 链接：
+ * 1) 先把粘贴进来的 http(s) 链接替换为 `[](url)` 占位；
+ * 2) 异步请求网页标题后填充为 `[title](url)`（失败则保留占位）。
+ * 仅响应粘贴（userEvent "input.paste"），手动输入不触发。
+ */
+async function handlePastedLinks(update: ViewUpdate, opts: LiveViewOptions): Promise<void> {
+  const pasted = update.transactions.some((tr) => tr.isUserEvent("input.paste"));
+  if (!pasted || !update.docChanged) return;
+  const doc = update.state.doc;
+  const found: Array<{ from: number; to: number; url: string }> = [];
+  update.changes.iterChanges((_fromA, _toA, fromB, _toB, inserted) => {
+    const text = inserted.toString();
+    PASTED_URL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = PASTED_URL_RE.exec(text))) {
+      const url = trimUrlTrailing(m[0]);
+      if (!url) continue;
+      const start = fromB + m.index;
+      // 已是 [text](url) 的一部分（前面紧跟 "("）→ 不重复转换
+      if (start > 0 && doc.sliceString(start - 1, start) === "(") continue;
+      found.push({ from: start, to: start + url.length, url });
+    }
+  });
+  if (!found.length) return;
+  const view = update.view;
+  view.dispatch({
+    changes: found.map((p) => ({ from: p.from, to: p.to, insert: `[](${p.url})` })),
+  });
+  const fetchTitle = opts.fetchPageTitle ?? fetchPageTitleDefault;
+  // 占位替换会改变后续链接的偏移（每个占位比裸链接多 4 字符），
+  // 先累计偏移得到每个占位的真实位置，再从右往左逐个填充：
+  // 靠右插入标题不会改变左侧占位的位置。
+  let shift = 0;
+  const targets = found.map((p) => {
+    const placeholderFrom = p.from + shift;
+    shift += 4; // "[](" 与 ")" 合计比裸链接多出的字符数
+    return { from: placeholderFrom, url: p.url };
+  });
+  targets.sort((a, b) => b.from - a.from);
+  for (const p of targets) {
+    await fillLinkTitle(view, p.from, p.url, fetchTitle);
+  }
+}
+
+/** 标题就绪后填充 `[title](url)`；期间用户改动过该占位则放弃填充。 */
+async function fillLinkTitle(
+  view: EditorView,
+  from: number,
+  url: string,
+  fetchTitle: (url: string) => Promise<string | null>,
+): Promise<void> {
+  let title: string | null = null;
+  try {
+    title = await fetchTitle(url);
+  } catch {
+    title = null;
+  }
+  if (!title || !view.dom.isConnected) return;
+  const expect = `[](${url})`;
+  if (view.state.doc.sliceString(from, from + expect.length) !== expect) return;
+  try {
+    view.dispatch({ changes: { from, to: from + 2, insert: `[${title}]` } });
+  } catch {
+    // 编辑器已销毁等竞态：忽略
+  }
 }
 
 let fontSizeCompartment: Compartment | null = null;
@@ -198,6 +298,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
           opts.onDocChange(doc);
         }
         if (u.docChanged || u.selectionSet) reportSlash(u.view, (query, from, to, anchor) => opts.onSlash?.(query, from, to, anchor), () => opts.onSlashClose?.());
+        void handlePastedLinks(u, opts);
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
       fontFamilyCompartment.of(fontFamilyTheme(opts.fontFamily ?? "Microsoft YaHei")),

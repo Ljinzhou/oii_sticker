@@ -1,4 +1,4 @@
-//! `sticker_repo` 提供对 `stickers` 与 `sticker_attrs` 表的同步 CRUD。
+//! `sticker_repo` 提供对 `stickers` 表的同步 CRUD。
 //!
 //! 所有方法以 `&Connection` 为入参，由调用方（state.rs / commands.rs）
 //! 负责把 DB IO 派发到 `spawn_blocking` 上运行，避免阻塞 UI 线程。
@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::models::{Sticker, StickerAttrs};
+use crate::models::Sticker;
 
 /// 新建一条便签，返回自增 id。
 pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
@@ -43,8 +43,9 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Sticker>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, parent_id, title, content, heading_level,
                 pos_x, pos_y, width, height, opacity, bg_color,
-                always_on_top, auto_scroll, is_completed, alert_active,
-                group_id, display_mode, created_at, updated_at
+                always_on_top, auto_scroll, is_completed,
+                group_id, display_mode, created_at, updated_at,
+                window_hidden
            FROM stickers WHERE id = ?1",
     )?;
     let s = stmt.query_row(params![id], row_to_sticker).optional()?;
@@ -56,8 +57,9 @@ pub fn list_all(conn: &Connection) -> Result<Vec<Sticker>> {
     let mut stmt = conn.prepare_cached(
         "SELECT id, parent_id, title, content, heading_level,
                 pos_x, pos_y, width, height, opacity, bg_color,
-                always_on_top, auto_scroll, is_completed, alert_active,
-                group_id, display_mode, created_at, updated_at
+                always_on_top, auto_scroll, is_completed,
+                group_id, display_mode, created_at, updated_at,
+                window_hidden
            FROM stickers ORDER BY id",
     )?;
     let rows = stmt
@@ -81,8 +83,7 @@ pub fn update(conn: &Connection, id: i64, patch: &StickerPatch) -> Result<()> {
             always_on_top= COALESCE(?10, always_on_top),
             auto_scroll  = COALESCE(?11, auto_scroll),
             is_completed = COALESCE(?12, is_completed),
-            alert_active = COALESCE(?13, alert_active),
-            display_mode = COALESCE(?14, display_mode),
+            display_mode = COALESCE(?13, display_mode),
             updated_at   = datetime('now')
          WHERE id = ?1",
         params![
@@ -98,11 +99,36 @@ pub fn update(conn: &Connection, id: i64, patch: &StickerPatch) -> Result<()> {
             patch.always_on_top.map(|b| b as i32),
             patch.auto_scroll.map(|b| b as i32),
             patch.is_completed.map(|b| b as i32),
-            patch.alert_active.map(|b| b as i32),
             patch.display_mode,
         ],
     )
     .context("更新便签失败")?;
+    Ok(())
+}
+
+/// 记录窗口隐藏状态（程序退出对隐藏窗口、隐藏命令调用）。
+/// 只改 window_hidden，保留最近一次几何，便于重新显示时恢复位置。
+pub fn update_window_hidden(conn: &Connection, id: i64, hidden: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE stickers SET window_hidden = ?2, updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id, hidden as i32],
+    )
+    .context("更新窗口隐藏状态失败")?;
+    Ok(())
+}
+
+/// 记录窗口位置与尺寸（程序退出对显示窗口调用），并标记为显示态。
+pub fn update_window_bounds(conn: &Connection, id: i64, x: i32, y: i32, w: i32, h: i32) -> Result<()> {
+    conn.execute(
+        "UPDATE stickers SET
+            pos_x = ?2, pos_y = ?3, width = ?4, height = ?5,
+            window_hidden = 0,
+            updated_at = datetime('now')
+         WHERE id = ?1",
+        params![id, x, y, w, h],
+    )
+    .context("更新窗口几何失败")?;
     Ok(())
 }
 
@@ -111,55 +137,6 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM stickers WHERE id = ?1", params![id])
         .context("删除便签失败")?;
     Ok(())
-}
-
-/// 写入或覆盖 sticker_attrs（提醒规则）。
-pub fn upsert_attrs(conn: &Connection, a: &StickerAttrs) -> Result<()> {
-    conn.execute(
-        "INSERT INTO sticker_attrs
-            (sticker_id, due_date, remind_at, remind_rule, is_recurring)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(sticker_id) DO UPDATE SET
-            due_date     = excluded.due_date,
-            remind_at    = excluded.remind_at,
-            remind_rule  = excluded.remind_rule,
-            is_recurring = excluded.is_recurring",
-        params![
-            a.sticker_id,
-            a.due_date,
-            a.remind_at,
-            a.remind_rule,
-            a.is_recurring as i32,
-        ],
-    )
-    .context("写入 sticker_attrs 失败")?;
-    Ok(())
-}
-
-/// 读取 sticker_attrs，没有则返回 None。
-pub fn get_attrs(conn: &Connection, id: i64) -> Result<Option<StickerAttrs>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT sticker_id, due_date, remind_at, remind_rule, is_recurring
-           FROM sticker_attrs WHERE sticker_id = ?1",
-    )?;
-    let r = stmt
-        .query_row(params![id], row_to_attrs)
-        .optional()?;
-    Ok(r)
-}
-
-/// 列出所有提醒时间非空且未完成的 sticker_attrs（给 scheduler 用）。
-pub fn list_pending_reminders(conn: &Connection) -> Result<Vec<StickerAttrs>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT sticker_id, due_date, remind_at, remind_rule, is_recurring
-           FROM sticker_attrs
-          WHERE remind_at IS NOT NULL
-            AND (is_recurring = 1 OR remind_at > datetime('now'))",
-    )?;
-    let rows = stmt
-        .query_map([], row_to_attrs)?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
 }
 
 fn row_to_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
@@ -178,21 +155,11 @@ fn row_to_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
         always_on_top: row.get(11)?,
         auto_scroll: row.get(12)?,
         is_completed: row.get(13)?,
-        alert_active: row.get(14)?,
-        group_id: row.get(15)?,
-        display_mode: row.get(16)?,
-        created_at: row.get(17)?,
-        updated_at: row.get(18)?,
-    })
-}
-
-fn row_to_attrs(row: &rusqlite::Row<'_>) -> rusqlite::Result<StickerAttrs> {
-    Ok(StickerAttrs {
-        sticker_id: row.get(0)?,
-        due_date: row.get(1)?,
-        remind_at: row.get(2)?,
-        remind_rule: row.get(3)?,
-        is_recurring: row.get(4)?,
+        group_id: row.get(14)?,
+        display_mode: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
+        window_hidden: row.get(18)?,
     })
 }
 
@@ -230,7 +197,6 @@ pub struct StickerPatch {
     pub always_on_top: Option<bool>,
     pub auto_scroll: Option<bool>,
     pub is_completed: Option<bool>,
-    pub alert_active: Option<bool>,
     pub display_mode: Option<String>,
 }
 
@@ -275,7 +241,8 @@ mod tests {
         let conn = test_conn();
         let new = NewSticker {
             title: "测试便签".into(),
-            content: "# 标题\n正文".into(),
+            content: "# 标题
+正文".into(),
             pos_x: 10,
             pos_y: 20,
             width: 300,
@@ -293,6 +260,17 @@ mod tests {
         assert_eq!(s.display_mode, "display");
         assert!(s.always_on_top);
         assert_eq!(s.mode(), crate::models::StickerMode::Display);
+        assert!(!s.window_hidden, "新便签默认显示");
+
+        // 窗口状态：隐藏标记 + 几何记录
+        update_window_hidden(&conn, id, true).unwrap();
+        let s = get(&conn, id).unwrap().unwrap();
+        assert!(s.window_hidden);
+        assert_eq!((s.pos_x, s.pos_y, s.width, s.height), (10, 20, 300, 400));
+        update_window_bounds(&conn, id, 88, 66, 320, 240).unwrap();
+        let s = get(&conn, id).unwrap().unwrap();
+        assert!(!s.window_hidden, "记录几何时视为显示");
+        assert_eq!((s.pos_x, s.pos_y, s.width, s.height), (88, 66, 320, 240));
 
         // 部分更新
         update(
@@ -308,32 +286,15 @@ mod tests {
         let s = get(&conn, id).unwrap().unwrap();
         assert_eq!(s.title, "改名");
         assert_eq!(s.mode(), crate::models::StickerMode::Interact);
-        assert_eq!(s.content, "# 标题\n正文"); // 未更新的字段保留
+        assert_eq!(s.content, "# 标题
+正文"); // 未更新的字段保留
 
         // 列表
         let all = list_all(&conn).unwrap();
         assert_eq!(all.len(), 1);
 
-        // attrs 写入与读取
-        let attrs = StickerAttrs {
-            sticker_id: id,
-            due_date: None,
-            remind_at: Some("2026-12-31 10:00:00".into()),
-            remind_rule: Some("weekly".into()),
-            is_recurring: true,
-        };
-        upsert_attrs(&conn, &attrs).unwrap();
-        let a = get_attrs(&conn, id).unwrap().unwrap();
-        assert_eq!(a.remind_at.as_deref(), Some("2026-12-31 10:00:00"));
-        assert!(a.is_recurring);
-
-        // pending reminders 查询
-        let pending = list_pending_reminders(&conn).unwrap();
-        assert_eq!(pending.len(), 1);
-
-        // 删除后 attrs 级联清理
+        // 删除级联清理
         delete(&conn, id).unwrap();
         assert!(get(&conn, id).unwrap().is_none());
-        assert!(get_attrs(&conn, id).unwrap().is_none());
     }
 }

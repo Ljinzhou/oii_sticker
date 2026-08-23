@@ -52,6 +52,15 @@ async function toggleSticker(s: Sticker) {
   await refreshOpenIds();
 }
 
+/** 重置便签窗口大小与位置：恢复默认 400×500 并居中到当前显示器；展示模式保持尺寸锁定 */
+async function resetStickerWindow(s: Sticker) {
+  await invoke("reset_sticker_window_cmd", {
+    id: s.id,
+    isDisplay: s.display_mode === "display",
+  });
+  await refreshOpenIds();
+}
+
 function isOpen(id: number): boolean {
   return openIds.value.includes(id);
 }
@@ -290,6 +299,7 @@ onBeforeUnmount(() => {
               :is-open="isOpen(s.id)"
               @toggle="toggleSticker"
               @remove="confirming = $event"
+              @reset-window="resetStickerWindow"
             />
           </div>
         </div>
@@ -321,6 +331,7 @@ onBeforeUnmount(() => {
             :is-open="isOpen(s.id)"
             @toggle="toggleSticker"
             @remove="confirming = $event"
+            @reset-window="resetStickerWindow"
           />
         </div>
       </template>

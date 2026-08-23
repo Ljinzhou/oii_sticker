@@ -43,7 +43,6 @@ function mkSticker(id: number, group_id: number | null, title = `便签${id}`) {
     always_on_top: false,
     auto_scroll: false,
     is_completed: false,
-    alert_active: false,
     display_mode: "edit",
     created_at: "",
     updated_at: "",

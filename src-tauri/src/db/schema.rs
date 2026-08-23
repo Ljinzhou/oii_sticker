@@ -2,14 +2,14 @@
 //!
 //! 使用 SQLite 原生的 `PRAGMA user_version` 整数字段保存 schema 版本号：
 //! - 无需自建迁移表；
-//! - 首次启动版本为 0，调用 `init_schema` 后写入 5；
+//! - 首次启动版本为 0，调用 `init_schema` 后写入最新版本号；
 //! - 升级版本时按 `if current < N` 分支补充迁移脚本。
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -37,8 +37,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         // v4：窗口置顶默认参数。
         ("default_sticker_always_on_top", "1", "新便签默认是否置顶（0 否，1 是）"),
         ("default_todo_always_on_top", "1", "Todo 窗口默认是否置顶"),
-        // v6：调试模式（默认开启，输出详细日志）。
-        ("debug_mode", "1", "调试模式（0 关闭，1 开启详细操作/事件日志）"),
         ("recent_slash_commands", "[]", "最近使用的斜杠命令 JSON 数组"),
         ("todo_remind_tomorrow_hour", "9", "Todo 明天提醒的小时"),
         ("todo_remind_next_week_dow", "1", "Todo 下周提醒星期（0=周日）"),
@@ -156,20 +154,6 @@ fn migrate_v3_to_v4(conn: &Connection) -> Result<()> {
             ",
         )
         .context("迁移 v3→v4 失败")?;
-        Ok(())
-    })
-}
-
-/// v4 → v5 迁移：sticker_attrs.remind_at 加部分索引（提醒扫描加速）。
-fn migrate_v4_to_v5(conn: &Connection) -> Result<()> {
-    in_tx(conn, |c| {
-        c.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_attrs_remind
-                ON sticker_attrs(remind_at)
-             WHERE remind_at IS NOT NULL;
-            ",
-        )
-        .context("迁移 v4→v5 失败")?;
         Ok(())
     })
 }
@@ -331,6 +315,38 @@ fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v12 → v13 迁移：移除便签提醒功能（sticker_attrs 表 + stickers.alert_active 列）。
+fn migrate_v12_to_v13(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        c.execute_batch("DROP TABLE IF EXISTS sticker_attrs;")
+            .context("迁移 v12→v13 删除 sticker_attrs 失败")?;
+        if table_has_column(c, "stickers", "alert_active")? {
+            c.execute_batch("ALTER TABLE stickers DROP COLUMN alert_active;")
+                .context("迁移 v12→v13 删除 alert_active 列失败")?;
+        }
+        Ok(())
+    })
+}
+
+/// v13 → v14 迁移：新增 stickers.window_hidden 列（启动恢复显示/隐藏状态）。
+/// 兼容没有 stickers 表的合成库（部分迁移单测只建了零散表），有表才加列。
+fn migrate_v13_to_v14(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stickers')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table && !table_has_column(c, "stickers", "window_hidden")? {
+            c.execute_batch(
+                "ALTER TABLE stickers ADD COLUMN window_hidden INTEGER NOT NULL DEFAULT 0;",
+            )
+            .context("迁移 v13→v14 新增 window_hidden 列失败")?;
+        }
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -353,9 +369,6 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
     }
     if current < 4 {
         migrate_v3_to_v4(conn)?;
-    }
-    if current < 5 {
-        migrate_v4_to_v5(conn)?;
     }
     if current < 6 {
         migrate_v5_to_v6(conn)?;
@@ -384,12 +397,17 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
         migrate_v11_to_v12(conn)?;
     }
 
+    if current < 13 {
+        migrate_v12_to_v13(conn)?;
+    }
+
+    if current < 14 {
+        migrate_v13_to_v14(conn)?;
+    }
+
     // 升级完成后把 user_version 写到位。
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .context("更新 user_version 失败")?;
-
-    // 未来版本迁移：
-    // if current < 6 { migrate_v5_to_v6(conn)?; }
 
     Ok(SCHEMA_VERSION)
 }
@@ -401,29 +419,65 @@ const SCHEMA_SQL: &str = include_str!("schema.sql");
 mod tests {
     use super::*;
 
-    /// v4 库执行 run_migrations 后应补建 remind_at 部分索引。
+    /// v12 库执行迁移：sticker_attrs 表与 stickers.alert_active 列应被移除。
     #[test]
-    fn run_migrations_upgrades_v4_to_v5() {
+    fn migrate_v12_to_v13_drops_reminder_artifacts() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA_SQL).unwrap();
-        // 模拟 v4 状态：删掉 v5 新增的索引并把版本号调回 4。
+        // 模拟 v12 状态：重新补上被移除的提醒表/列，版本调回 12。
         conn.execute_batch(
-            "DROP INDEX IF EXISTS idx_attrs_remind;
-             PRAGMA user_version = 4;",
+            "CREATE TABLE sticker_attrs (
+                sticker_id INTEGER PRIMARY KEY REFERENCES stickers(id) ON DELETE CASCADE,
+                due_date TEXT,
+                remind_at TEXT,
+                remind_rule TEXT,
+                is_recurring INTEGER NOT NULL DEFAULT 0
+             );
+             ALTER TABLE stickers ADD COLUMN alert_active INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 12;",
         )
         .unwrap();
 
-        run_migrations(&conn).unwrap();
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
 
-        let cnt: i64 = conn
+        let attrs_cnt: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                  WHERE type = 'index' AND name = 'idx_attrs_remind'",
+                  WHERE type = 'table' AND name = 'sticker_attrs'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(cnt, 1);
+        assert_eq!(attrs_cnt, 0);
+        assert!(!table_has_column(&conn, "stickers", "alert_active").unwrap());
+
+        // 重跑幂等
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v13 库执行迁移：window_hidden 列应被补上且默认 0（显示）；重跑幂等。
+    #[test]
+    fn migrate_v13_to_v14_adds_window_hidden() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        // 模拟 v13 状态：去掉新列，版本调回 13。
+        conn.execute_batch(
+            "ALTER TABLE stickers DROP COLUMN window_hidden;
+             PRAGMA user_version = 13;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "stickers", "window_hidden").unwrap());
+
+        conn.execute_batch("INSERT INTO stickers (title) VALUES ('恢复用');")
+            .unwrap();
+        let hidden: i64 = conn
+            .query_row("SELECT window_hidden FROM stickers", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hidden, 0, "新列默认 0（显示）");
+
+        // 重跑幂等
         assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
     }
 
@@ -436,7 +490,6 @@ mod tests {
         // 模拟 v2 状态：删掉 v3 加的列，版本调回 2。
         conn.execute_batch(
             "ALTER TABLE sticker_prefs DROP COLUMN auto_scroll_speed;
-             DROP INDEX IF EXISTS idx_attrs_remind;
              PRAGMA user_version = 2;",
         )
         .unwrap();
@@ -497,7 +550,6 @@ mod tests {
                 "assets",
                 "completion_log",
                 "file_history",
-                "sticker_attrs",
                 "sticker_groups",
                 "sticker_prefs",
                 "stickers",

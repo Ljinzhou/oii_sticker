@@ -2,7 +2,6 @@
 import { ref, onMounted } from "vue";
 import { invoke } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
-import type { StickerAttrs } from "../../types";
 
 const props = defineProps<{ stickerId: number }>();
 const emit = defineEmits<{ close: [] }>();
@@ -16,11 +15,6 @@ const bodyFontSize = ref(13);
 const alwaysOnTop = ref(false);
 const autoScroll = ref(false);
 const autoScrollSpeed = ref(30);
-
-// 提醒（变更即写库）
-const remindAt = ref("");
-const remindRule = ref("");
-const isRecurring = ref(false);
 
 let debounceTimer: number | undefined;
 
@@ -39,16 +33,6 @@ async function load() {
     textColor.value = e.text_color;
     bodyFontSize.value = e.body_font_size;
     autoScrollSpeed.value = normalizeAutoScrollSpeed(e.auto_scroll_speed);
-  }
-  try {
-    const attrs = await invoke<StickerAttrs | null>("get_reminder_cmd", { id: props.stickerId });
-    if (attrs) {
-      remindAt.value = attrs.remind_at ?? "";
-      remindRule.value = attrs.remind_rule ?? "";
-      isRecurring.value = attrs.is_recurring;
-    }
-  } catch {
-    /* 忽略 */
   }
   alwaysOnTop.value = (await invoke<{ always_on_top: boolean; auto_scroll: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.always_on_top ?? false;
   autoScroll.value = (await invoke<{ always_on_top: boolean; auto_scroll: boolean }>("get_sticker_cmd", { id: props.stickerId }))?.auto_scroll ?? false;
@@ -87,22 +71,6 @@ function saveAlwaysOnTop(v: boolean) {
 
 function saveAutoScroll(v: boolean) {
   invoke("update_sticker_cmd", { id: props.stickerId, patch: { auto_scroll: v } });
-}
-
-function saveReminder() {
-  if (remindAt.value) {
-    invoke("set_reminder_cmd", {
-      attrs: {
-        sticker_id: props.stickerId,
-        due_date: null,
-        remind_at: remindAt.value,
-        remind_rule: remindRule.value || null,
-        is_recurring: isRecurring.value,
-      },
-    });
-  } else {
-    invoke("clear_reminder_cmd", { id: props.stickerId });
-  }
 }
 
 async function resetPrefs() {
@@ -164,29 +132,6 @@ onMounted(load);
           <span class="val">{{ autoScrollSpeed }} px/s</span>
         </label>
         <button class="link" @click="resetPrefs"><i class="ri-restart-line"></i> 恢复默认偏好</button>
-      </section>
-
-      <section class="group">
-        <h3>提醒（修改即保存）</h3>
-        <label class="row">
-          <span>提醒时间</span>
-          <input v-model="remindAt" type="datetime-local" step="60" @change="saveReminder" />
-        </label>
-        <label class="row">
-          <span>重复规则</span>
-          <select v-model="remindRule" @change="saveReminder">
-            <option value="">不重复</option>
-            <option value="daily">每天</option>
-            <option value="weekly">每周（周一）</option>
-            <option value="interval:2">每 2 天</option>
-            <option value="monthly:1">每月 1 号</option>
-            <option value="yearly:12-25">每年 12-25</option>
-          </select>
-        </label>
-        <label class="row">
-          <span>循环提醒</span>
-          <input v-model="isRecurring" type="checkbox" @change="saveReminder" />
-        </label>
       </section>
 
       <footer>
@@ -277,15 +222,6 @@ h3 {
   border: 1px solid rgba(0, 0, 0, 0.15);
   border-radius: 6px;
   padding: 3px 6px;
-}
-
-.row input[type="datetime-local"],
-.row select {
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-  width: 180px;
 }
 
 .val {
