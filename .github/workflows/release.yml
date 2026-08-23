@@ -1,0 +1,62 @@
+# 发版流水线：推 v* tag 即自动构建 + 签名 + 发布 + 生成更新清单（含镜像变体）。
+#
+# 前置一次性配置（GitHub 仓库 Settings → Secrets and variables → Actions）：
+#   TAURI_SIGNING_PRIVATE_KEY           私钥内容或路径（~/.tauri/oii_sticker.key）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  私钥密码（本项目为空，可留空字符串）
+#
+# 此后日常发版：改 src-tauri/Cargo.toml 与 src-tauri/tauri.conf.json 的 version
+#   → git tag vX.Y.Z && git push origin vX.Y.Z —— 其余全自动。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "oii_sticker v__VERSION__"
+          releaseBody: "在 Assets 中下载安装包。应用内「设置 → 关于 → 检查更新」可自动升级到本版本。"
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+
+      - name: Generate and upload mirror manifests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "${GITHUB_REF_NAME}" -p latest.json -O latest.json
+          node scripts/gen-update-manifests.mjs latest.json
+          gh release upload "${GITHUB_REF_NAME}" latest-m1.json latest-m2.json latest-m3.json latest-m4.json latest-m5.json --clobber
