@@ -5,7 +5,11 @@ import { invoke, listen } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
 import { useSettingsStore } from "../../stores/settings";
 import { hexToRgba } from "../../utils/markdown";
-import { advanceAutoScroll, type AutoScrollState } from "../../utils/auto-scroll";
+import {
+  createAutoScrollCursor,
+  stepAutoScroll,
+  type AutoScrollCursor,
+} from "../../utils/auto-scroll";
 import type { Sticker, StickerMode, TodoBlock } from "../../types";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import StickerViewer from "./StickerViewer.vue";
@@ -46,38 +50,56 @@ const cardStyle = computed(() => {
 const bodyFontSize = computed(() => prefs.effective?.body_font_size ?? 13);
 const editFontFamily = computed(() => settings.editFontFamily);
 
-// ── 自动滚动（便签设置 auto_scroll）：仅展示模式，先向下到底→再向上到顶→反复 ──
+// ── 自动滚动（便签设置 auto_scroll）：仅展示模式 ──
+// 行为：向下滚到底 → 自动折返向上 → 滚到顶 → 再折返向下，如此往复。
+// 实现要点（相对旧版的修复）：
+// 1) 每帧以 el.scrollTop 的【真实位置】计算下一步（而非内存里的浮点快照），
+//    布局/内容变化、外部滚动都会自动跟随，不存在“到顶后停住”的死区；
+// 2) 位移亚像素累积、写入整数 scrollTop，规避 WebView 对小数 scrollTop 的
+//    量化短路（低速时连写同一个小数会被当作无变化而停滞）；
+// 3) 窗口隐藏恢复后 rAF 首帧的巨长时间差被裁剪，不会瞬跳；
+// 4) 内容不足一屏或速度为 0 时原地待命，内容变长后自动恢复。
 const bodyRef = ref<HTMLElement | null>(null);
 const autoScroll = computed(() => sticker.value?.auto_scroll ?? false);
 const autoScrollSpeed = computed(
   () => prefs.effective?.auto_scroll_speed ?? settings.autoScrollSpeed,
 );
 let scrollRaf: number | undefined;
-let lastScrollTimestamp: number | undefined;
-let scrollState: AutoScrollState = { position: 0, direction: 1 };
+let lastScrollAt: number | undefined;
+let scrollCursor: AutoScrollCursor = createAutoScrollCursor(1);
 
 function tickScroll(timestamp: number) {
   const el = bodyRef.value;
   if (el) {
     const max = el.scrollHeight - el.clientHeight;
-    if (max > 0) {
-      if (lastScrollTimestamp === undefined) {
-        lastScrollTimestamp = timestamp;
+    if (max > 0 && autoScrollSpeed.value > 0) {
+      if (lastScrollAt === undefined) {
+        // 首帧只登记时间基准，不做位移（避免起步跳变）
+        lastScrollAt = timestamp;
       } else {
-        scrollState = advanceAutoScroll(
-          scrollState,
-          max,
-          autoScrollSpeed.value,
-          timestamp - lastScrollTimestamp,
-        );
-        lastScrollTimestamp = timestamp;
-        el.scrollTop = scrollState.position;
+        let dtMs = timestamp - lastScrollAt;
+        lastScrollAt = timestamp;
+        // rAF 在窗口隐藏/恢复时会挂起，恢复首帧 dt 可能高达数秒：
+        // 裁剪到 ≤250ms，恢复显示时继续平滑滚动而非瞬跳。
+        dtMs = Math.min(dtMs, 250);
+        if (dtMs > 0) {
+          const stepPx = (autoScrollSpeed.value * dtMs) / 1000;
+          const next = stepAutoScroll(scrollCursor, el.scrollTop, max, stepPx);
+          scrollCursor = next.cursor;
+          // 只写有意义的整数位移；getter 返回小数（个别 WebView）时
+          // 与目标差不足 1px 视为已到位，避免无意义重写。
+          if (Math.abs(el.scrollTop - next.scrollTop) >= 1) {
+            el.scrollTop = next.scrollTop;
+          }
+        }
       }
     } else {
-      scrollState = { position: 0, direction: 1 };
-      lastScrollTimestamp = timestamp;
-      el.scrollTop = 0;
+      // 内容不足一屏 / 速度为 0：原地待命（保持向下方向，内容变长后自动恢复）
+      scrollCursor = createAutoScrollCursor(1);
+      lastScrollAt = timestamp;
     }
+  } else {
+    lastScrollAt = undefined;
   }
   scrollRaf = requestAnimationFrame((nextTimestamp) => tickScroll(nextTimestamp));
 }
@@ -85,8 +107,8 @@ function tickScroll(timestamp: number) {
 function startAutoScroll() {
   stopAutoScroll();
   if (autoScroll.value && mode.value === "display") {
-    scrollState = { position: bodyRef.value?.scrollTop ?? 0, direction: 1 };
-    lastScrollTimestamp = undefined;
+    scrollCursor = createAutoScrollCursor(1);
+    lastScrollAt = undefined;
     scrollRaf = requestAnimationFrame((timestamp) => tickScroll(timestamp));
   }
 }
@@ -94,7 +116,7 @@ function startAutoScroll() {
 function stopAutoScroll() {
   if (scrollRaf !== undefined) cancelAnimationFrame(scrollRaf);
   scrollRaf = undefined;
-  lastScrollTimestamp = undefined;
+  lastScrollAt = undefined;
 }
 
 watch([autoScroll, autoScrollSpeed, mode], startAutoScroll);
