@@ -3,7 +3,7 @@
 //! 语义平移自旧项目 `tray.rs`：
 //! - 菜单事件 → 对应动作（新建便签 / 显示主控台 / 显示设置 / 退出）；
 //! - 左键单击/双击托盘图标 → 打开主控台；
-//! - 图标：运行时生成的 32x32 纯绿 RGBA（与旧项目一致）。
+//! - 图标：打包的应用图标（双层便签 A2），随 bundle.icon 嵌入运行时。
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
@@ -33,12 +33,21 @@ pub fn install(app: &AppHandle, on_action: impl Fn(&AppHandle, TrayAction) + Sen
     let quit = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&new_sticker, &open_main, &open_settings, &separator, &quit])?;
 
-    // 32x32 纯绿 RGBA（与便签默认色对应，旧项目同款）
-    let mut buf = Vec::with_capacity(32 * 32 * 4);
-    for _ in 0..(32 * 32) {
-        buf.extend_from_slice(&[0xCC, 0xFF, 0xCC, 0xFF]);
-    }
-    let icon = tauri::image::Image::new_owned(buf, 32, 32);
+    // 托盘图标：优先取随构建嵌入的应用图标（tauri.conf.json bundle.icon），
+    // 缺失时退回内嵌的 icons/32x32.png；纯绿 RGBA 仅为最后兜底（旧项目同款，理论不可达）。
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .or_else(|| {
+            tauri::image::Image::from_bytes(include_bytes!("../../icons/32x32.png")).ok()
+        })
+        .unwrap_or_else(|| {
+            let mut buf = Vec::with_capacity(32 * 32 * 4);
+            for _ in 0..(32 * 32) {
+                buf.extend_from_slice(&[0xCC, 0xFF, 0xCC, 0xFF]);
+            }
+            tauri::image::Image::new_owned(buf, 32, 32)
+        });
 
     TrayIconBuilder::with_id("main-tray")
         .tooltip("Oi Sticker")
