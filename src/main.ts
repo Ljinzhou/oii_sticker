@@ -2,6 +2,8 @@ import { createApp } from "vue";
 import { createPinia } from "pinia";
 import App from "./App.vue";
 import "./styles/global.css";
+// remixicon 矢量图标库（所有界面图标统一使用）
+import "remixicon/fonts/remixicon.css";
 import { showBootFailure } from "./utils/boot-failure";
 // highlight.js 浅色主题（便签背景为浅色系；代码块底色在 MarkdownView 中置透明）
 import "highlight.js/styles/github.css";

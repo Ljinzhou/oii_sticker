@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import type { Sticker } from "../../types";
 import { useNotesStore } from "../../stores/notes";
+import { setTitleInContent } from "../../utils/sticker-title";
 
 const props = defineProps<{ sticker: Sticker; isOpen: boolean }>();
 const emit = defineEmits<{
@@ -49,7 +50,13 @@ function startRename() {
 async function commitRename() {
   if (!renaming.value) return; // Esc 取消后 blur 触发的兜底守卫
   const t = titleDraft.value.trim();
-  if (t && t !== props.sticker.title) await notes.update(props.sticker.id, { title: t });
+  if (t && t !== props.sticker.title) {
+    // 标题 = 内容中第一个 # 一级标题 → 改名必须同步改写内容，否则下次保存会被内容覆盖
+    await notes.update(props.sticker.id, {
+      title: t,
+      content: setTitleInContent(props.sticker.content, t),
+    });
+  }
   renaming.value = false;
 }
 
@@ -117,7 +124,7 @@ onBeforeUnmount(() => {
       />
       <span v-else class="card-title">{{ props.sticker.title || "（无标题）" }}</span>
       <div class="card-btns">
-        <button class="btn small more" title="更多操作" @click.stop="toggleMenu">⋯</button>
+        <button class="btn small more" title="更多操作" @click.stop="toggleMenu"><i class="ri-more-2-fill"></i></button>
         <button
           class="btn small"
           :class="{ show: !props.isOpen }"
@@ -130,7 +137,7 @@ onBeforeUnmount(() => {
         <div v-if="menuOpen" class="dropdown card-dropdown" @click.stop>
           <button @click="startRename">重命名</button>
           <button class="has-sub" @click.stop="showMoveSub = !showMoveSub">
-            转移分组 <span class="sub-caret">▸</span>
+            转移分组 <span class="sub-caret"><i class="ri-arrow-right-s-line"></i></span>
           </button>
           <div v-if="showMoveSub" class="submenu">
             <button v-for="g in otherGroups" :key="g.id" @click="moveTo(g.id)">
@@ -237,7 +244,18 @@ onBeforeUnmount(() => {
 
 .btn.small.more {
   padding: 7px 10px;
-  letter-spacing: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn.small.more .ri {
+  font-size: 16px;
+  color: #666;
+}
+
+.btn.small.more:hover .ri {
+  color: #4f7cff;
 }
 
 /* 便签隐藏时：显示按钮蓝底（醒目提示可恢复） */
@@ -306,7 +324,10 @@ onBeforeUnmount(() => {
 }
 
 .sub-caret {
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  line-height: 1;
   color: #999;
 }
 

@@ -326,10 +326,10 @@ onBeforeUnmount(() => {
           :class="{ active: mode === 'edit' }"
           :title="mode === 'edit' ? '保存并退出编辑' : '编辑（E 或双击内容）'"
           @click.stop="onEditBtn"
-        >✎</button>
-        <button v-if="mode !== 'edit'" class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')">▽</button>
-        <button class="ov-btn" title="设置" @click.stop="showSettings = true">⚙</button>
-        <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed">✕</button>
+        ><i class="ri-edit-line"></i></button>
+        <button v-if="mode !== 'edit'" class="ov-btn" title="收起回展示模式" @click.stop="applyMode('display')"><i class="ri-arrow-down-s-line"></i></button>
+        <button class="ov-btn" title="设置" @click.stop="showSettings = true"><i class="ri-settings-3-line"></i></button>
+        <button class="ov-btn close" title="关闭窗口" @click.stop="onClosed"><i class="ri-close-line"></i></button>
       </div>
     </div>
 
@@ -445,7 +445,7 @@ onBeforeUnmount(() => {
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 15px;
   color: #555;
   cursor: pointer;
   display: flex;

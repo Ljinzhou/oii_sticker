@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize } from "./LiveEditorView";
+import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize, setLiveLineNumbers } from "./LiveEditorView";
 import { mathInstancePromise } from "../../../utils/markdown";
 import { MathBlockWidget } from "./liveWidgets";
 
@@ -244,6 +244,77 @@ describe("LiveEditorView（CM6 内核）", () => {
       onSave: () => {},
     });
     expect(() => setLiveFontFamily(view, "Segoe UI")).not.toThrow();
+    view.destroy();
+  });
+
+  it("showLineNumbers=false 隐藏行号，setLiveLineNumbers 热切换（与 Markdown 模式同一开关）", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "第一行\n第二行",
+      fontSize: 14,
+      showLineNumbers: false,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    expect(host.querySelector(".cm-gutters")).toBeNull();
+    setLiveLineNumbers(view, true);
+    expect(host.querySelector(".cm-gutters .cm-lineNumbers")).not.toBeNull();
+    setLiveLineNumbers(view, false);
+    expect(host.querySelector(".cm-gutters")).toBeNull();
+    view.destroy();
+  });
+
+  it("未传 showLineNumbers 时默认显示行号（与旧行为一致）", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "text",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    expect(host.querySelector(".cm-gutters .cm-lineNumbers")).not.toBeNull();
+    view.destroy();
+  });
+
+  it("斜杠菜单打开时 ↑/↓/Enter/Esc 交给菜单（列表行也不续行不移动光标）", () => {
+    const host = mountHost();
+    const onNav = vi.fn();
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    let open = true;
+    const view = createLiveView(host, {
+      doc: "- 项目",
+      fontSize: 14,
+      showLineNumbers: false,
+      onDocChange: () => {},
+      onSave: () => {},
+      slashOpen: () => open,
+      onSlashNav: onNav,
+      onSlashConfirm: onConfirm,
+      onSlashCancel: onCancel,
+    });
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    const head = view.state.selection.main.head;
+    const keydown = (key: string) =>
+      new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+
+    view.contentDOM.dispatchEvent(keydown("ArrowDown"));
+    expect(onNav).toHaveBeenCalledWith(1);
+    view.contentDOM.dispatchEvent(keydown("ArrowUp"));
+    expect(onNav).toHaveBeenCalledWith(-1);
+    view.contentDOM.dispatchEvent(keydown("Enter"));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    view.contentDOM.dispatchEvent(keydown("Escape"));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    // 光标不移动、列表行不续行
+    expect(view.state.selection.main.head).toBe(head);
+    expect(view.state.doc.toString()).toBe("- 项目");
+
+    // 菜单关闭后回车恢复列表续行（markdown 的 Enter 在高优先级键位放行后生效）
+    open = false;
+    onConfirm.mockClear();
+    view.contentDOM.dispatchEvent(keydown("Enter"));
+    expect(view.state.doc.toString()).toBe("- 项目\n- ");
     view.destroy();
   });
 });

@@ -4,7 +4,14 @@
 // 后续阶段（B-E）：行内渲染 decoration、光标穿越、块级交互、斜杠菜单、工具栏等。
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { EditorView } from "@codemirror/view";
-import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize, setLiveTodoBlocksInView } from "./live/LiveEditorView";
+import {
+  createLiveView,
+  setLiveDoc,
+  setLiveFontFamily,
+  setLiveFontSize,
+  setLiveLineNumbers,
+  setLiveTodoBlocksInView,
+} from "./live/LiveEditorView";
 import type { TodoBlock } from "../../types";
 import type { SlashAnchor } from "../slash/types";
 
@@ -12,7 +19,9 @@ const props = defineProps<{
   modelValue: string;
   fontSize: number;
   fontFamily: string;
+  showLineNumbers: boolean;
   todoBlocks: TodoBlock[];
+  slashOpen: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -21,6 +30,9 @@ const emit = defineEmits<{
   slash: [query: string, from: number, to: number, anchor: SlashAnchor];
   slashClose: [];
   openTodo: [id: string];
+  slashNav: [dir: 1 | -1];
+  slashConfirm: [];
+  slashCancel: [];
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -53,12 +65,17 @@ onMounted(() => {
     doc: props.modelValue,
     fontSize: props.fontSize,
     fontFamily: props.fontFamily,
+    showLineNumbers: props.showLineNumbers,
     onDocChange: scheduleEmit,
     onSave: () => emit("save"),
     onSlash: (query, from, to, anchor) => emit("slash", query, from, to, anchor),
     onSlashClose: () => emit("slashClose"),
     onTodoOpen: (id) => emit("openTodo", id),
     todoBlocks: props.todoBlocks,
+    slashOpen: () => props.slashOpen,
+    onSlashNav: (dir) => emit("slashNav", dir),
+    onSlashConfirm: () => emit("slashConfirm"),
+    onSlashCancel: () => emit("slashCancel"),
   });
   view.focus();
 });
@@ -83,6 +100,14 @@ watch(
   () => props.fontFamily,
   (v) => {
     if (view) setLiveFontFamily(view, v);
+  },
+);
+
+// 行号显示实时生效（与 Markdown 编辑模式共用系统设置 editor_line_numbers）
+watch(
+  () => props.showLineNumbers,
+  (v) => {
+    if (view) setLiveLineNumbers(view, v);
   },
 );
 
