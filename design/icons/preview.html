@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>oii_sticker 图标候选 · 2026-08-23</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#12151d; color:#e8ecf5; font-family:"Segoe UI","Microsoft YaHei",sans-serif; padding:40px; }
+  h1 { font-size:22px; margin-bottom:6px; }
+  .sub { color:#8b93a7; font-size:13px; margin-bottom:28px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:20px; }
+  .card { background:#1b2030; border:1px solid #2a3147; border-radius:16px; padding:18px; }
+  .row { display:flex; gap:14px; align-items:flex-end; }
+  .stage { width:160px; height:160px; border-radius:22px;
+    background:conic-gradient(#cfd4de 0 25%,#ffffff 0 50%,#cfd4de 0 75%,#ffffff 0) 0 0/24px 24px;
+    display:flex; align-items:center; justify-content:center; flex:none; }
+  .dark { width:76px; height:76px; border-radius:14px; background:#0a0c12;
+    display:flex; align-items:center; justify-content:center; flex:none; }
+  .sizes { display:flex; gap:10px; align-items:flex-end; height:64px; margin-left:auto; }
+  .sizes img { image-rendering:auto; }
+  h2 { font-size:15px; margin:14px 0 4px; }
+  p { color:#9aa3b8; font-size:12.5px; line-height:1.55; }
+</style>
+</head>
+<body>
+<h1>oii_sticker 应用图标 · 8 版候选</h1>
+<div class="sub">每张：浅格底（模拟桌面）· 深色底（模拟深色任务栏）· 128 / 48 / 32 px 缩小可读性 —— 选定后执行 pnpm tauri icon 一键产出全套 ico/icns/png</div>
+<div class="grid" id="g"></div>
+<script>
+const C = [
+ ["A1-sticky-classic","A1 · 经典便签","黄色便签纸 + 折角 + 已完成待办勾。直白、亲和，32px 下依然一眼认出是便签应用。"],
+ ["A2-sticky-stack","A2 · 双层便签","粉蓝堆叠暗示多便签/多工作控件；品牌蓝为主色，粉色注入活泼。"],
+ ["B1-brand-sticker","B1 · 品牌贴纸","代码同源品牌蓝 #4F7CFF 渐变 + 右上揭角（贴纸隐喻）+ 琥珀点 oii 字标，最像“产品图标”。"],
+ ["B2-brand-night","B2 · 午夜字标","深海军蓝 + 琥珀 oii + 星光点缀，深色任务栏上极醒目，气质偏工具感/专业感。"],
+ ["C1-pin-note","C1 · 图钉便签","无瓷砖剪影，奶油便签斜贴 + 红图钉，最“实体便签”的隐喻；透明背景风格独特。"],
+ ["C2-float-windows","C2 · 浮窗堆叠","双浮动窗口 + 鼠标光标，直接讲“桌面浮窗”的产品故事；信息量大，缩小后偏复杂。"],
+ ["D1-check-hero","D1 · 对勾英雄","绿色瓷砖 + 粗对勾，Todo 属性最强，缩到 16px 依然清晰；但弱化“便签”感。"],
+ ["E1-bubble-oii","E1 · 气泡 oii","对话气泡 + oii + 打字光标，编辑器/输入气质；紫蓝渐变与现有主题色有偏差。"],
+];
+document.getElementById("g").innerHTML = C.map(([f,t,d]) => `
+<div class="card">
+  <div class="row">
+    <div class="stage"><img src="svg/${f}.svg" width="128" height="128" alt="${t}"></div>
+    <div class="dark"><img src="svg/${f}.svg" width="56" height="56" alt=""></div>
+    <div class="sizes"><img src="svg/${f}.svg" width="48" height="48"><img src="svg/${f}.svg" width="32" height="32"></div>
+  </div>
+  <h2>${t}</h2><p>${d}</p>
+</div>`).join("");
+</script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs><linearGradient id="fb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5B87FF"/><stop offset="1" stop-color="#3D66EF"/></linearGradient></defs>
+  <rect x="116" y="112" width="300" height="270" rx="48" fill="#FF9EBB" transform="rotate(-9 266 247)"/>
+  <rect x="106" y="164" width="340" height="300" rx="56" fill="#1F2D5A" opacity=".16" transform="rotate(-2 276 314)"/>
+  <rect x="96" y="150" width="340" height="300" rx="56" fill="url(#fb)"/>
+  <rect x="140" y="216" width="200" height="32" rx="16" fill="#FFFFFF" opacity=".92"/>
+  <rect x="140" y="278" width="252" height="32" rx="16" fill="#FFFFFF" opacity=".92"/>
+  <circle cx="156" cy="366" r="20" fill="#34C77B"/>
+  <polyline points="147,367 154,374 167,356" fill="none" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="192" y="350" width="150" height="32" rx="16" fill="#FFFFFF" opacity=".92"/>
+</svg>
