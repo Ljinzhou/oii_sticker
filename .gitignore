@@ -36,3 +36,6 @@ docs/test.jpg
 
 .pnpm-store
 docs
+
+# 本地数据重置脚本（一键清空本地数据，不入库）
+reset-local-data.bat
