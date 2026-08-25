@@ -49,6 +49,33 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Diagnose · 校验更新签名 secret
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
+          PWD_VAL="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+          if [ -z "$KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY 为空！请在仓库 Settings → Secrets → Actions 创建该 secret 并填入私钥 base64 内容。"
+            exit 1
+          fi
+          echo "私钥 base64 长度: ${#KEY}"
+          echo "私钥 SHA-256: $(printf '%s' "$KEY" | sha256sum | cut -d' ' -f1)"
+          DECODED="$(printf '%s' "$KEY" | base64 --decode 2>/dev/null || true)"
+          if printf '%s' "$DECODED" | grep -q 'untrusted comment: rsign encrypted secret key'; then
+            echo "✅ 私钥 base64 解码正常，格式为 rsign encrypted secret key"
+          else
+            echo "::warning::私钥 base64 解码后格式异常，应为 rsign encrypted secret key"
+          fi
+          if [ -z "$PWD_VAL" ]; then
+            echo "::warning::TAURI_SIGNING_PRIVATE_KEY_PASSWORD 为空！"
+          else
+            echo "✅ TAURI_SIGNING_PRIVATE_KEY_PASSWORD 已设置（长度 ${#PWD_VAL}）"
+          fi
+
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -64,12 +91,16 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
 
-      - name: Generate and upload mirror manifests
+      - name: Cleanup · 删除废弃的镜像变体清单（latest-m*.json）
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release download "${GITHUB_REF_NAME}" -p latest.json -O latest.json
-          node scripts/gen-update-manifests.mjs latest.json
-          gh release upload "${GITHUB_REF_NAME}" latest-m1.json latest-m2.json latest-m3.json latest-m4.json latest-m5.json --clobber
+          release_url="repos/{owner}/{repo}/releases/tags/${GITHUB_REF_NAME}"
+          for name in $(gh api "$release_url" --jq '.assets[].name' | grep '^latest-m' || true); do
+            asset_id="$(gh api "$release_url" --jq --arg n "$name" '.assets[] | select(.name == $n) | .id')"
+            echo "删除废弃资产: ${name} (id=${asset_id})"
+            gh api -X DELETE "repos/{owner}/{repo}/releases/assets/${asset_id}"
+          done
+          echo "清理完成"
