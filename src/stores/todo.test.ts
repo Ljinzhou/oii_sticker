@@ -27,9 +27,25 @@ describe("todo store", () => {
     invokeMock.mockResolvedValueOnce(todo).mockResolvedValueOnce({ ...todo, title: "已改" });
     await store.create();
     await store.update("t-1", { title: "已改" });
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "create_todo_block_cmd", { stickerId: 7, parentId: undefined });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "create_todo_block_cmd", { stickerId: 7, parentId: null });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "update_todo_block_cmd", { id: "t-1", patch: { title: "已改" } });
     expect(store.selected?.title).toBe("已改");
+  });
+
+  // 验证：store.create() 在没传 parentId 时显式传 null（与 Rust Option<String> 对齐），
+  // 而 create(parentId) 则把字符串原样作为 parentId 传出。
+  it("create() 显式传 null 作为 parentId（无父任务语义对齐 Rust Option::None）", async () => {
+    const store = useTodoStore(); store.stickerId = 7;
+    invokeMock.mockResolvedValueOnce(todo);
+    await store.create();
+    expect(invokeMock).toHaveBeenCalledWith("create_todo_block_cmd", { stickerId: 7, parentId: null });
+  });
+
+  it("create(parentId) 把字符串作为 parentId 传出", async () => {
+    const store = useTodoStore(); store.stickerId = 7;
+    invokeMock.mockResolvedValueOnce(makeBlock("t-2", "t-1"));
+    await store.create("t-1");
+    expect(invokeMock).toHaveBeenCalledWith("create_todo_block_cmd", { stickerId: 7, parentId: "t-1" });
   });
 
   it("删除根任务时级联移除其所有直接子任务", async () => {

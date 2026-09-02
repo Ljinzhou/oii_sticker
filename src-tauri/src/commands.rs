@@ -112,12 +112,16 @@ pub fn list_stickers(conn: &Connection) -> Result<Vec<Sticker>> {
 }
 
 /// 部分更新便签；标题变化同步重命名 md，content 原子写 md（主存储）后双写 DB 列（回退）。
+///
+/// 返回值：因 content 变更而被清理的"无 `<todo-block>` 标签"根任务 id 列表。
+/// （用户在编辑器中显式删除某个标签并保存，对应根任务 + 子任务应一并清掉，
+/// 否则 Todo 窗口会继续显示这些"标签已无"的任务，造成"删除后复活"的错觉。）
 pub fn update_sticker(
     conn: &Connection,
     id: i64,
     patch: &sticker_repo::StickerPatch,
     db_path: &str,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let root = ws_root(db_path);
     if let Some(current) = sticker_repo::get(conn, id)? {
         // 标题变化：用旧标题推旧名，重命名 md → {id}-新标题.md
@@ -133,7 +137,22 @@ pub fn update_sticker(
             md_store::write(&root, &file_name, content)?;
         }
     }
-    sticker_repo::update(conn, id, patch)
+    sticker_repo::update(conn, id, patch)?;
+    // 内容变更 → 清理"标签缺失"的孤儿根任务（用户已显式删标签，DB 不应保留）
+    if let Some(content) = &patch.content {
+        let tag_ids = todo_block_repo::tagged_ids(content);
+        let deleted = todo_block_repo::delete_roots_not_in(conn, id, &tag_ids)?;
+        Ok(deleted)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// 单独暴露：扫描便签内容中无标签的根任务并删除（与 `update_sticker` 内部逻辑一致）。
+/// 给需要"重新走一次清理"的场景（如重置 / 手动修复）使用。
+pub fn collect_orphan_blocks(conn: &Connection, sticker_id: i64, content: &str) -> Result<Vec<String>> {
+    let tag_ids = todo_block_repo::tagged_ids(content);
+    todo_block_repo::delete_roots_not_in(conn, sticker_id, &tag_ids)
 }
 
 /// 删除便签（依赖外键级联清理），md 与资产目录一并移除。
@@ -294,6 +313,11 @@ pub fn update_todo_block(conn: &Connection, id: &str, patch: &TodoPatch) -> Resu
 
 pub fn delete_todo_block(conn: &Connection, id: &str) -> Result<Option<i64>> {
     todo_block_repo::delete(conn, id)
+}
+
+/// 确认收到提醒（红点点击）：清触发标记 + 记确认时刻，返回更新后的块。
+pub fn ack_todo_alerts(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
+    todo_block_repo::ack_alerts(conn, id)
 }
 
 /// 把 `<todo-block>` 标记追加到便签内容末尾（幂等；已含标记则跳过）。

@@ -1,4 +1,5 @@
 import dayjs from "dayjs";
+import type { TodoBlock } from "../types";
 
 export interface TodoPresetConfig {
   remindTomorrowHour: number;
@@ -32,6 +33,22 @@ export function duePreset(key: "today" | "tomorrow" | "next-week", config: TodoP
 export function formatTodoDate(value: string | null, withTime = true) {
   if (!value) return "未设置";
   return dayjs(value).format(withTime ? "YYYY年M月D日 HH:mm" : "YYYY年M月D日");
+}
+
+/** 提醒高亮状态（渲染层共用）：
+ *  - reminded：到点提醒已触发且任务未完成（后端 reminded_at 非空）；
+ *  - overdue：已过截止时间且任务未完成。 */
+export function todoHighlightState(
+  block: Pick<TodoBlock, "due_at" | "is_completed" | "reminded_at" | "due_ack_at">,
+): { reminded: boolean; overdue: boolean } {
+  if (block.is_completed) return { reminded: false, overdue: false };
+  const dueMs = block.due_at ? dayjs(block.due_at).valueOf() : NaN;
+  return {
+    // 提醒已触发（reminded_at 非空即高亮；确认时由 ack_todo_alert_cmd 清空该列）。
+    reminded: Boolean(block.reminded_at),
+    // 已过截止时间且用户未确认（due_ack_at 非空表示该时点已确认，不再高亮）。
+    overdue: Number.isFinite(dueMs) && dueMs <= Date.now() && !Boolean(block.due_ack_at),
+  };
 }
 
 export function formatTodoRepeat(value: string | null) {

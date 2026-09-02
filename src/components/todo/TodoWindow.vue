@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, invoke } from "../../composables/useTauri";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
+import { reminderToastText, watchTodoReminders } from "../../utils/todo-reminders";
 import type { TodoPatch } from "../../types";
 import TodoList from "./TodoList.vue";
 import TodoDetail from "./TodoDetail.vue";
@@ -12,6 +13,7 @@ const todo = useTodoStore(); const settings = useSettingsStore();
 const todoId = getCurrentWindow().label.replace(/^todo-/, "");
 const upperHeight = ref(220); let stop: (() => void) | undefined;
 let stopClose: (() => void) | undefined;
+let stopReminder: (() => void) | undefined;
 let patchTimer: number | undefined;
 let pendingPatch: TodoPatch = {};
 const isReady = ref(false);
@@ -77,31 +79,80 @@ async function handleReorder(ids: string[]) {
     showToast(messageOf(error));
   }
 }
-async function startDragging(event: MouseEvent) { if (event.button !== 0) return; event.preventDefault(); try { await getCurrentWindow().startDragging(); } catch (error) { console.error("[todo] 启动窗口拖动失败：", error); } }
-async function createRoot() {
-  const block = await todo.create();
-  if (block) {
-    try {
-      // 根任务在正文中补一个 <todo-block> 标记，避免块与文档脱节（孤儿）
-      await invoke("sync_todo_marker_cmd", { stickerId: block.sticker_id, id: block.id });
-    } catch (error) {
-      console.error("[todo] 同步 Todo 标记失败：", error);
-    }
+/** 点击高亮任务行 = 确认收到提醒：清除高亮并落库，下次启动不复弹。 */
+async function handleAck(id: string) {
+  try {
+    await invoke("ack_todo_alert_cmd", { id });
+    showToast("已确认提醒");
+  } catch (error) {
+    console.error("[todo] 确认提醒失败：", error);
+    showToast(messageOf(error));
   }
 }
+async function startDragging(event: MouseEvent) { if (event.button !== 0) return; event.preventDefault(); try { await getCurrentWindow().startDragging(); } catch (error) { console.error("[todo] 启动窗口拖动失败：", error); } }
+
+/**
+ * 当前块的子树：只保留「本块的父任务」+「这些父任务的子任务」。
+ *
+ * `todo.blocks` 是全便签的所有块与任务，直接渲染会把别的块也列进来；
+ * Todo 窗口是按块打开的（todoId = 块 id），所以这里只取本块的子树。
+ */
+const blockTasks = computed(() => {
+  const direct = todo.blocks.filter((b) => b.parent_id === todoId);
+  const parentIds = new Set(direct.map((b) => b.id));
+  const subs = todo.blocks.filter((b) => b.parent_id && parentIds.has(b.parent_id));
+  return [...direct, ...subs];
+});
+
+/**
+ * "+ 新建任务"：始终在**当前块**下新建一条**父任务**。
+ * 块本身由编辑器 `/` 菜单创建，这里绝不建块（因此不会多出卡片）。
+ * 子任务不需要 markdown 标签——块根上的标签已覆盖整棵子树。
+ */
+async function createRoot() {
+  if (!todo.stickerId && todo.blocks.length === 0) return;
+  const created = await todo.create(todoId);
+  if (created) todo.selectedId = created.id;
+}
+
+/**
+ * "添加子任务"：只能挂在**父任务**下。
+ * 子任务（第 2 层）下不允许再挂，后端也会拒绝。
+ */
 async function createChild(id?: string) {
-  // 显式 id（列表"添加子任务"行）不受选中项限制；无参调用（详情面板）时选中子任务不创建
   const parentId = id ?? selected.value?.id;
   if (!parentId) return;
-  if (!id && selected.value?.parent_id) return;
-  const block = await todo.create(parentId);
-  // 保持父根选中，便于连续添加子任务
-  if (block) todo.selectedId = parentId;
+  // 无参调用（详情面板）：只有选中「父任务」时才允许添加子任务
+  if (!id && selected.value?.parent_id !== todoId) return;
+  // 显式 id：只允许挂在父任务上（parent_id 必须等于当前块 id）
+  if (id) {
+    const target = todo.blocks.find((b) => b.id === id);
+    if (!target || target.parent_id !== todoId) return;
+  }
+  const created = await todo.create(parentId);
+  // 保持父任务选中，便于连续添加子任务
+  if (created) todo.selectedId = parentId;
 }
 function beginResize(event: MouseEvent) { const startY = event.clientY; const startHeight = upperHeight.value; const move = (e: MouseEvent) => { upperHeight.value = Math.max(120, Math.min(420, startHeight + e.clientY - startY)); }; const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); document.body.style.userSelect = ""; }; document.body.style.userSelect = "none"; document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); }
 async function flushSelected() { if (!selected.value || !Object.keys(pendingPatch).length) return; const patch = pendingPatch; pendingPatch = {}; if (patchTimer) { window.clearTimeout(patchTimer); patchTimer = undefined; } await todo.update(selected.value.id, patch); }
 function patchSelected(patch: TodoPatch) { if (!selected.value) return; pendingPatch = { ...pendingPatch, ...patch }; if (patchTimer) window.clearTimeout(patchTimer); patchTimer = window.setTimeout(() => { void flushSelected(); }, 250); }
-async function saveSelected() { await flushSelected(); if (selected.value) await todo.update(selected.value.id, {}); }
+async function saveSelected() {
+  await flushSelected();
+  if (selected.value) {
+    const target = selected.value;
+    await todo.update(target.id, {});
+    // 通知所属便签窗口展示「{标题} 保存成功」应用内提示，然后自动关闭本窗口。
+    try {
+      await invoke("notify_todo_saved_cmd", {
+        stickerId: windowBlock.value?.sticker_id ?? todo.stickerId,
+        title: blockTitle.value.trim() || target.title || "未命名任务",
+      });
+    } catch (error) {
+      console.error("[todo] 通知保存成功失败：", error);
+    }
+    await closeWindow();
+  }
+}
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -121,16 +172,24 @@ async function initialize() {
   try {
     stop = await listen<string>("todo://updated", () => { void todo.loadForTodo(todoId); });
     stopClose = await getCurrentWindow().onCloseRequested((event) => { event.preventDefault(); void closeWindow(); });
+    // 提醒触发：只响应本窗口所属便签的任务，刷新列表 + 弹提示
+    stopReminder = await watchTodoReminders({
+      onFire: (payload) => {
+        if (todo.stickerId !== null && payload.sticker_id !== todo.stickerId) return;
+        void todo.loadForTodo(todoId);
+        showToast(reminderToastText(payload));
+      },
+    });
   } catch (error) {
     console.error("[todo-window] Todo 窗口事件监听失败：", error);
   }
 }
 onMounted(() => { void initialize(); });
-onBeforeUnmount(() => { stop?.(); stopClose?.(); if (blockTitleTimer) window.clearTimeout(blockTitleTimer); void notifyTodoPresence(false); void flushSelected(); });
+onBeforeUnmount(() => { stop?.(); stopClose?.(); stopReminder?.(); if (blockTitleTimer) window.clearTimeout(blockTitleTimer); void notifyTodoPresence(false); void flushSelected(); });
 </script>
 
 <template>
-  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><input v-if="isReady && windowBlock" class="block-title" v-model="blockTitle" placeholder="输入块标题" @mousedown.stop @click.stop @input="inputBlockTitle" /><button title="关闭" @mousedown.stop @click.stop="closeWindow"><i class="ri-close-line"></i></button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="todo.blocks" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="handleRemove" @reorder="handleReorder" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer><transition name="toast"><p v-if="toastMessage" class="todo-toast" role="alert">{{ toastMessage }}</p></transition></template></main>
+  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><input v-if="isReady && windowBlock" class="block-title" v-model="blockTitle" placeholder="输入块标题" @mousedown.stop @click.stop @input="inputBlockTitle" /><button title="关闭" @mousedown.stop @click.stop="closeWindow"><i class="ri-close-line"></i></button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="blockTasks" :block-id="todoId" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @ack="handleAck" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="handleRemove" @reorder="handleReorder" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :presets="settings.todoPresetConfig" :block-id="todoId" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer><transition name="toast"><p v-if="toastMessage" class="todo-toast" role="alert">{{ toastMessage }}</p></transition></template></main>
 </template>
 
 <style scoped>

@@ -25,6 +25,7 @@ import {
   TodoBlockWidget,
 } from "./liveWidgets";
 import type { TodoBlock } from "../../../types";
+import { DEFAULT_BLOCK_UI, type BlockUiState } from "../../../utils/block-ui";
 
 interface InlineRange {
   from: number;
@@ -372,7 +373,12 @@ export function collectBlockRanges(view: EditorView): BlockRange[] {
 }
 
 /** 块级范围 → Decoration。 */
-function blockDecoration(r: BlockRange, todoBlocks: TodoBlock[] = []): Decoration {
+function blockDecoration(
+  r: BlockRange,
+  todoBlocks: TodoBlock[] = [],
+  ui: BlockUiState = DEFAULT_BLOCK_UI,
+  uiKey = "",
+): Decoration {
   switch (r.kind) {
     case "code-block": {
       const source = r.source ?? "";
@@ -386,9 +392,9 @@ function blockDecoration(r: BlockRange, todoBlocks: TodoBlock[] = []): Decoratio
     case "math-block":
       return Decoration.replace({ block: true, widget: new MathBlockWidget(r.source ?? "", mathVersion.value) });
     case "todo-block":
-      return Decoration.replace({ block: true, widget: new TodoBlockWidget(r.source ?? "", todoBlocks) });
+      return Decoration.replace({ block: true, widget: new TodoBlockWidget(r.source ?? "", todoBlocks, ui, uiKey) });
     case "done-block":
-      return Decoration.replace({ block: true, widget: new DoneBlockWidget(r.source ?? "", todoBlocks) });
+      return Decoration.replace({ block: true, widget: new DoneBlockWidget(r.source ?? "", todoBlocks, ui, uiKey) });
     case "heading-mark":
       return Decoration.replace({ widget: new HeadingMarkWidget() });
     case "heading-line":
@@ -450,26 +456,72 @@ export const liveTodoBlocksField = StateField.define<TodoBlock[]>({
   },
 });
 
-/** 需要占据独立行高的所有 Live Preview 块，由 StateField 提供 decoration。 */
+/** 用户界面状态（折叠/子任务显隐/已完成来源）+ 其便签键，经 effect 热替换。 */
+export interface LiveUiSnapshot {
+  ui: BlockUiState;
+  uiKey: string;
+}
+
+export const setLiveUiState = StateEffect.define<LiveUiSnapshot>();
+
+export const liveUiStateField = StateField.define<LiveUiSnapshot>({
+  create: () => ({ ui: DEFAULT_BLOCK_UI, uiKey: "" }),
+  update(snapshot, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setLiveUiState)) return effect.value;
+    }
+    return snapshot;
+  },
+});
+
+/** 需要占据独立行高的所有 Live Preview 块，由 StateField 提供 decoration。
+ *  Todo/已完成块【始终渲染卡片、永不显示原始标签】：
+ *  旧实现「光标触及该行就退回源码」，导致点击卡片时装饰消失、原始长文本
+ *  被选中（点不进编辑窗口），且原始文本换行后行号与光标视觉错位。
+ *  现在只有代码/公式块保留「光标所在行显示源码」的编辑行为。 */
 export function buildLiveBlockDecorations(state: EditorState): DecorationSet {
   const todoBlocks = state.field(liveTodoBlocksField, false) ?? [];
+  const { ui, uiKey } = state.field(liveUiStateField, false) ?? { ui: DEFAULT_BLOCK_UI, uiKey: "" };
   const decorations = collectBlockRangesFromState(state)
     .filter((range) => range.kind === "code-block" || range.kind === "math-block" || range.kind === "todo-block" || range.kind === "done-block")
-    .filter((range) => !selectionTouchesRange(state, range.from, range.to))
-    .map((range) => blockDecoration(range, todoBlocks).range(range.from, range.to));
+    // todo/done 块不受选区影响：永远显示卡片；代码/公式块保留「光标所在行显示源码」
+    .filter((range) => (range.kind === "todo-block" || range.kind === "done-block") || !selectionTouchesRange(state, range.from, range.to))
+    .map((range) => blockDecoration(range, todoBlocks, ui, uiKey).range(range.from, range.to));
   return Decoration.set(decorations, true);
 }
 
 export const liveBlockDecorationsField = StateField.define<DecorationSet>({
   create: buildLiveBlockDecorations,
   update(decorations, transaction) {
-    const refresh = transaction.effects.some((effect) => effect.is(refreshLivePreview) || effect.is(setLiveTodoBlocks));
+    const refresh = transaction.effects.some((effect) =>
+      effect.is(refreshLivePreview) || effect.is(setLiveTodoBlocks) || effect.is(setLiveUiState));
     if (transaction.docChanged || transaction.selection || refresh) {
       return buildLiveBlockDecorations(transaction.state);
     }
     return decorations;
   },
   provide: (field) => EditorView.decorations.from(field),
+});
+
+/**
+ * Todo/已完成块的原子区间：光标无法进入其内部，点击只会把光标推到
+ * 区间边缘——从根上杜绝「点击选中原始 <todo-block> 文本」的问题
+ * （配合 Backspace 整行删除，删除体验为：第一次删掉整行内容，第二次并掉空行）。
+ */
+export function buildLiveAtomicRanges(state: EditorState): DecorationSet {
+  const ranges = collectBlockRangesFromState(state)
+    .filter((range) => range.kind === "todo-block" || range.kind === "done-block")
+    .map((range) => Decoration.replace({ block: true }).range(range.from, range.to));
+  return Decoration.set(ranges, true);
+}
+
+export const liveAtomicRangesField = StateField.define<DecorationSet>({
+  create: buildLiveAtomicRanges,
+  update(set, transaction) {
+    if (transaction.docChanged) return buildLiveAtomicRanges(transaction.state);
+    return set;
+  },
+  provide: (field) => EditorView.atomicRanges.of((view) => view.state.field(field)),
 });
 
 /** 构建 decoration 集：光标所在行不渲染（显示源码）。

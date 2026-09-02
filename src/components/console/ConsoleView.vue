@@ -214,7 +214,6 @@ onBeforeUnmount(() => {
       <h1>oii_sticker 主控台</h1>
       <div class="actions">
         <button class="btn primary" @click="createSticker"><i class="ri-add-line"></i>新建便签</button>
-        <button class="btn" @click="notes.refresh()"><i class="ri-refresh-line"></i>刷新</button>
         <button class="btn" @click="showSettings = true"><i class="ri-settings-3-line"></i>系统设置</button>
         <span class="win-ctl">
           <button class="btn ctl" title="最小化" @click="minimizeWindow"><i class="ri-subtract-line"></i></button>

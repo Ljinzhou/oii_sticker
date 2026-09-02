@@ -52,9 +52,11 @@ export const useTodoStore = defineStore("todo", () => {
 
   async function create(parentId?: string) {
     if (stickerId.value === null) return null;
+    // 显式 null 而不是 undefined：与 Rust `Option<String>` 的"无父任务"语义一致，
+    // 避免 invoke JSON 序列化时把 undefined 字段直接丢掉（导致 mock 难以断言）。
     const block = await invoke<TodoBlock>("create_todo_block_cmd", {
       stickerId: stickerId.value,
-      parentId,
+      parentId: parentId ?? null,
     });
     replace(block);
     selectedId.value = block.id;

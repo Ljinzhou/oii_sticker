@@ -184,4 +184,45 @@ describe("Markdown 源码编辑器（sourceEditor）", () => {
     expect(view.state.doc.toString()).toBe("a\n  b\n  c");
     view.destroy();
   });
+
+  it("setMarkdownSourceDoc 外部同步保留光标：只有差异段被替换，光标不再瞬移到开头", () => {
+    const host = mountHost();
+    const onChange = vi.fn();
+    const view = createMarkdownSourceView(host, {
+      doc: "# 阶段一：这是阶段一",
+      fontSize: 14,
+      showLineNumbers: false,
+      onDocChange: onChange,
+    });
+    // 光标停在行中（退格编辑时的典型场景）
+    view.dispatch({ selection: { anchor: 10 } });
+    // 外部同步（如防抖回写的 echo）：内容仅在尾部有一个字符差异。
+    // 旧实现全量替换会把光标折叠到位置 0；最小差异替换应保持光标不动。
+    setMarkdownSourceDoc(view, "# 阶段一：这是阶段");
+    expect(view.state.doc.toString()).toBe("# 阶段一：这是阶段");
+    expect(view.state.selection.main.head).toBe(10);
+    view.destroy();
+  });
+
+  it("setMarkdownSourceDoc 在输入法组词期间跳过，组词结束后正常同步", () => {
+    const host = mountHost();
+    const view = createMarkdownSourceView(host, {
+      doc: "biao",
+      fontSize: 14,
+      showLineNumbers: false,
+      onDocChange: () => {},
+    });
+    const setComposing = (value: boolean) =>
+      Object.defineProperty(view, "composing", { value, writable: true, configurable: true });
+    // 模拟中文组词进行中（CM6 的 composing 是原型 getter，用自身属性覆盖）：
+    // 外部同步必须被跳过（打断组词会导致字符复活）
+    setComposing(true);
+    setMarkdownSourceDoc(view, "biao'ti");
+    expect(view.state.doc.toString()).toBe("biao");
+    // 组词结束：恢复同步能力
+    setComposing(false);
+    setMarkdownSourceDoc(view, "biao'ti");
+    expect(view.state.doc.toString()).toBe("biao'ti");
+    view.destroy();
+  });
 });

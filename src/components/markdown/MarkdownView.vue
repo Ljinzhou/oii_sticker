@@ -4,11 +4,16 @@ import hljs from "highlight.js";
 import { renderMarkdown, collectMathStyle, mathVersion } from "../../utils/markdown";
 import { invoke } from "../../composables/useTauri";
 import type { TodoBlock } from "../../types";
+import { applyBlockUiAction, type BlockUiState } from "../../utils/block-ui";
 
 const props = defineProps<{
   content: string;
   interactive: boolean;
   todoBlocks?: TodoBlock[];
+  /** 用户折叠状态快照（卡片折叠/子任务显隐/已完成来源与折叠）。 */
+  uiState?: BlockUiState;
+  /** UI 状态的便签键（stickerId 字符串）。 */
+  uiKey?: string;
 }>();
 
 const emit = defineEmits<{ toggle: [line: number]; openTodo: [id: string]; toggleTodo: [id: string, checked: boolean] }>();
@@ -17,7 +22,7 @@ const root = ref<HTMLDivElement | null>(null);
 
 const html = computed(() => {
   void mathVersion.value;
-  return renderMarkdown(props.content, props.todoBlocks ?? [], props.interactive);
+  return renderMarkdown(props.content, props.todoBlocks ?? [], props.interactive, props.uiState, props.uiKey);
 });
 
 /** 渲染后：注入 mathjax SVG CSS + 代码块语法高亮（仅带 language-* 标记的）。 */
@@ -51,6 +56,42 @@ watch(
   { immediate: true },
 );
 
+
+/**
+ * 任务卡内的折叠/子任务/已完成折叠箭头：只切换显隐并持久化，
+ * 绝不触发「点卡片开编辑窗」。处理到目标时阻止默认与冒泡。
+ */
+function handleBlockUiClick(target: HTMLElement, e: MouseEvent) {
+  const fold = target.closest("[data-fold]") as HTMLElement | null;
+  if (fold && fold.dataset.fold) {
+    e.preventDefault();
+    e.stopPropagation();
+    void applyBlockUiAction("foldCard", fold.dataset.fold);
+    return;
+  }
+  const caret = target.closest("[data-caret]") as HTMLElement | null;
+  if (caret && caret.dataset.caret) {
+    e.preventDefault();
+    e.stopPropagation();
+    void applyBlockUiAction("foldSub", caret.dataset.caret);
+    return;
+  }
+  const doneFold = target.closest("[data-donefold]") as HTMLElement | null;
+  if (doneFold && doneFold.dataset.donefold !== undefined) {
+    e.preventDefault();
+    e.stopPropagation();
+    void applyBlockUiAction("doneFold", doneFold.dataset.donefold || props.uiKey || "");
+    return;
+  }
+}
+
+/** 已完成任务卡：来源下拉切换（select.change），持久化到对应便签键。 */
+function onContainerChange(e: Event) {
+  const select = e.target as HTMLSelectElement | null;
+  if (!select || !select.classList.contains("sd-source")) return;
+  e.stopPropagation();
+  void applyBlockUiAction("doneSource", select.dataset.sdKey || props.uiKey || "", select.value);
+}
 function onContainerClick(e: MouseEvent) {
   const target = e.target as HTMLElement;
   // 外部链接一律交给系统默认浏览器打开（绝不在内嵌 WebView 中导航）
@@ -74,6 +115,8 @@ function onContainerClick(e: MouseEvent) {
     }
     return;
   }
+  handleBlockUiClick(target, e);
+  if (e.defaultPrevented) return;
   const card = target.closest(".todo-block-card") as HTMLElement | null;
   if (card?.dataset.todoId) {
     emit("openTodo", card.dataset.todoId);
@@ -90,7 +133,7 @@ function onContainerClick(e: MouseEvent) {
 </script>
 
 <template>
-  <div ref="root" class="markdown" :class="{ interactive }" v-html="html" @click="onContainerClick"></div>
+  <div ref="root" class="markdown" :class="{ interactive }" v-html="html" @click="onContainerClick" @change="onContainerChange"></div>
 </template>
 
 <style scoped>
@@ -255,6 +298,10 @@ function onContainerClick(e: MouseEvent) {
 
 .markdown :deep(.todo-block-card), .markdown :deep(.done-block-card) { margin:10px 0; border:1px solid rgba(0,0,0,.08); border-radius:8px; background:rgba(255,255,255,.42); overflow:hidden; cursor:pointer; }
 .markdown :deep(.tb-head) { display:flex; align-items:center; gap:7px; padding:8px 10px; border-bottom:1px solid rgba(0,0,0,.05); }
-.markdown :deep(.tb-title) { flex:1 1 0%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }.markdown :deep(.tb-count) { color:#888; font-size:12px; white-space:nowrap; }.markdown :deep(.tb-list), .markdown :deep(.db-list) { list-style:none; margin:0; padding:6px 10px; }.markdown :deep(.tb-list li), .markdown :deep(.db-list li) { display:flex; align-items:center; gap:8px; min-height:24px; }.markdown :deep(.tb-sub) { padding-left:22px; }.markdown :deep(.tb-name) { flex:1 1 0%; min-width:0; }.markdown :deep(.tb-done) { color:#999; text-decoration:line-through; }.markdown :deep(.done-block-card) { padding:7px 10px; cursor:pointer; }.markdown :deep(.done-block-card summary) { color:#777; font-size:12px; }
+.markdown :deep(.tb-title) { flex:1 1 0%; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }.markdown :deep(.tb-count) { color:#888; font-size:12px; white-space:nowrap; }.markdown :deep(.tb-list), .markdown :deep(.db-list) { list-style:none; margin:0; padding:6px 10px; }.markdown :deep(.tb-list li), .markdown :deep(.db-list li) { display:flex; align-items:center; gap:8px; min-height:24px; }.markdown :deep(.tb-sub) { padding-left:22px; }.markdown :deep(.tb-name) { flex:1 1 0%; min-width:0; }.markdown :deep(.tb-done) { color:#999; text-decoration:line-through; }.markdown :deep(.done-block-card) { cursor:pointer; }.markdown :deep(.db-head) { display:flex; align-items:center; gap:7px; padding:7px 10px; color:#777; font-size:12px; }.markdown :deep(.db-title) { font-weight:600; white-space:nowrap; }.markdown :deep(.db-time) { color:#aaa; font-size:11px; white-space:nowrap; margin-left:auto; }.markdown :deep(.sd-source) { margin-left:auto; max-width:45%; font-size:12px; color:#555; border:none; border-radius:6px; background:rgba(0,0,0,.05); padding:2px 6px; outline:none; }.markdown :deep(.db-head .sd-source) { margin-left:8px; }.markdown :deep(.tb-caret) { flex:none; width:18px; text-align:center; color:#999; font-size:11px; user-select:none; }
+/* 无子任务的行用同宽占位，保持与带折叠按钮的行缩进对齐 */
+.markdown :deep(.tb-caret-placeholder) { visibility:hidden; }
+/* 空块提示：块内一条任务都没有 */
+.markdown :deep(.tb-empty) { color:#a9a9a9; font-size:12px; min-height:22px; justify-content:center; padding:2px 0; }
 .markdown :deep(.todo-task-checkbox) { appearance:none; -webkit-appearance:none; width:14px; height:14px; flex:none; margin:0; border:1.2px solid rgba(0,0,0,.18); border-radius:3.5px; background:rgba(255,255,255,.75); position:relative; cursor:pointer; }.markdown :deep(.todo-task-checkbox:checked) { background:#4f7cff; border-color:#4f7cff; }.markdown :deep(.todo-task-checkbox:checked::after) { content:""; position:absolute; left:4px; top:1px; width:3.5px; height:7px; border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }.markdown :deep(.todo-task-checkbox:disabled) { cursor:default; opacity:.85; }.markdown :deep(.todo-task-checkbox:checked:disabled) { background:#a8bfff; border-color:#a8bfff; }
 </style>
