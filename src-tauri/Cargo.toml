@@ -31,9 +31,16 @@ tokio = { version = "1", features = ["time", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # 用户批准：display 全穿透 + 右键双击唤醒需要 WH_MOUSE_LL 低级鼠标钩子
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+# 关闭 WebView2 浏览器加速键（Ctrl+J 下载页等原生快捷键）需要直连 ICoreWebView2Controller
+webview2-com = "0.38"
+windows = "0.61"
 zip = "2"
 dirs = "5"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Todo 提醒系统通知（Windows Toast / macOS NSUserNotification / Linux libnotify）
+tauri-plugin-notification = "2"
+# 直接在系统 Toast 上挂点击回调（点击通知打开 Todo 窗口；插件桌面实现不暴露点击回调）
+notify-rust = "4"
 tauri-plugin-updater = "2"
 
