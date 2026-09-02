@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -347,6 +347,77 @@ fn migrate_v13_to_v14(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v14 → v15 迁移：Todo 提醒触发状态列。
+///
+/// `reminded_at` / `due_notified_at` 分别记录 reminder_at / due_at 最近一次
+/// 已触发提醒的时间；调度器据此避免同一时点重复触发。兼容没有 todo_blocks
+/// 表的合成库（部分迁移单测只建了零散表），有表才加列。
+fn migrate_v14_to_v15(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table {
+            if !table_has_column(c, "todo_blocks", "reminded_at")? {
+                c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN reminded_at TEXT;")
+                    .context("迁移 v14→v15 新增 reminded_at 列失败")?;
+            }
+            if !table_has_column(c, "todo_blocks", "due_notified_at")? {
+                c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN due_notified_at TEXT;")
+                    .context("迁移 v14→v15 新增 due_notified_at 列失败")?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// v15 → v16 迁移：Todo 提醒确认列。
+///
+/// 用户点击红点确认收到提醒后写入对应确认时刻：高亮立即消失，
+/// 且调度器不再为「不晚于确认时刻」的同字段提醒重复弹通知
+/// （重启后也不会再提示）；之后新设置的提醒/循环任务后续周期照常触发。
+fn migrate_v15_to_v16(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table {
+            if !table_has_column(c, "todo_blocks", "reminder_ack_at")? {
+                c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN reminder_ack_at TEXT;")
+                    .context("迁移 v15→v16 新增 reminder_ack_at 列失败")?;
+            }
+            if !table_has_column(c, "todo_blocks", "due_ack_at")? {
+                c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN due_ack_at TEXT;")
+                    .context("迁移 v15→v16 新增 due_ack_at 列失败")?;
+            }
+        }
+        Ok(())
+    })
+}
+
+/// v16 → v17 迁移：Todo 任务完成时刻列（completed_at）。
+///
+/// 「已完成任务块」在便签中展示每项任务的完成时间；
+/// 完成翻转由 update 写入本地时间，取消完成时清空。
+fn migrate_v16_to_v17(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table && !table_has_column(c, "todo_blocks", "completed_at")? {
+            c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN completed_at TEXT;")
+                .context("迁移 v16→v17 新增 completed_at 列失败")?;
+        }
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -403,6 +474,18 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
 
     if current < 14 {
         migrate_v13_to_v14(conn)?;
+    }
+
+    if current < 15 {
+        migrate_v14_to_v15(conn)?;
+    }
+
+    if current < 16 {
+        migrate_v15_to_v16(conn)?;
+    }
+
+    if current < 17 {
+        migrate_v16_to_v17(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。
@@ -476,6 +559,66 @@ mod tests {
             .query_row("SELECT window_hidden FROM stickers", [], |r| r.get(0))
             .unwrap();
         assert_eq!(hidden, 0, "新列默认 0（显示）");
+
+        // 重跑幂等
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v15 库执行迁移：todo_blocks 应补上提醒确认列；重跑幂等。
+    #[test]
+    fn migrate_v15_to_v16_adds_ack_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE todo_blocks DROP COLUMN reminder_ack_at;
+             ALTER TABLE todo_blocks DROP COLUMN due_ack_at;
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "todo_blocks", "reminder_ack_at").unwrap());
+        assert!(table_has_column(&conn, "todo_blocks", "due_ack_at").unwrap());
+
+        // 重跑幂等
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v16 库执行迁移：todo_blocks 应补上完成时刻列 completed_at；重跑幂等。
+    #[test]
+    fn migrate_v16_to_v17_adds_completed_at_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        // 模拟 v16 状态：去掉新列，版本调回 16。
+        conn.execute_batch(
+            "ALTER TABLE todo_blocks DROP COLUMN completed_at;
+             PRAGMA user_version = 16;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "todo_blocks", "completed_at").unwrap());
+
+        // 重跑幂等
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+    }
+
+    /// v14 库执行迁移：todo_blocks 应补上提醒触发状态列；重跑幂等。
+    #[test]
+    fn migrate_v14_to_v15_adds_reminder_flag_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_SQL).unwrap();
+        // 模拟 v14 状态：去掉新列，版本调回 14。
+        conn.execute_batch(
+            "ALTER TABLE todo_blocks DROP COLUMN reminded_at;
+             ALTER TABLE todo_blocks DROP COLUMN due_notified_at;
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "todo_blocks", "reminded_at").unwrap());
+        assert!(table_has_column(&conn, "todo_blocks", "due_notified_at").unwrap());
 
         // 重跑幂等
         assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
