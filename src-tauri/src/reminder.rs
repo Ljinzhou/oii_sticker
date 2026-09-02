@@ -168,7 +168,12 @@ fn eligibility(
     }
 }
 
-/// 扫描待触发的根任务（子任务的日期由父块统一承载，不单独设提醒）。
+/// 扫描待触发的任务（子任务的日期由父块统一承载，不单独设提醒）。
+///
+/// 三层结构（块 → 父任务 → 子任务）下，**提醒只挂在块本体(第 0 层)与其下的
+/// 父任务(第 1 层)**——详情面板允许父任务设提醒/截止/重复（子任务被前端禁止）。
+/// 因此不能只扫 `parent_id IS NULL`（那只会扫到块本体，父任务的提醒永不触发，
+/// 见回归测试 `parent_task_reminders_are_scanned`）。
 ///
 /// 返回到期列表与「下一个未来未触发时点」（供睡眠时长计算）。
 fn collect_pending(
@@ -178,9 +183,11 @@ fn collect_pending(
         "SELECT id, sticker_id, title, block_title, reminder_at, due_at, repeat_rule,
                 reminded_at, due_notified_at, reminder_ack_at, due_ack_at
          FROM todo_blocks
-        WHERE is_completed = 0 AND parent_id IS NULL
+        WHERE is_completed = 0
           AND (reminder_at IS NOT NULL OR due_at IS NOT NULL)
-          AND (reminded_at IS NULL OR due_notified_at IS NULL)",
+          AND (reminded_at IS NULL OR due_notified_at IS NULL)
+          AND (parent_id IS NULL
+               OR parent_id IN (SELECT id FROM todo_blocks WHERE parent_id IS NULL))",
     )?;
     let rows = stmt
         .query_map([], |row| {
@@ -809,6 +816,49 @@ mod tests {
         for _ in 0..3 {
             assert!(pending_ids(&conn).is_empty(), "确认后不得再触发");
         }
+    }
+
+    /// 回归（真实故障）：提醒设在「父任务」（第 1 层，挂在块下）必须能被扫描到。
+    /// 详情面板允许父任务设提醒，而调度器曾只扫 `parent_id IS NULL`（仅块本体），
+    /// 导致父任务的提醒永远不触发（用户设置 00:28 到点无任何反应）。
+    #[test]
+    fn parent_task_reminders_are_scanned() {
+        let conn = ack_test_conn();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM stickers LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let block = todo_block_repo::create(&conn, sid, None).unwrap();
+        // 父任务：挂在块下（第 1 层）——用户实际设置提醒的载体
+        let task = todo_block_repo::create(&conn, sid, Some(&block.id)).unwrap();
+        conn.execute(
+            "UPDATE todo_blocks SET reminder_at = ?2 WHERE id = ?1",
+            rusqlite::params![task.id, iso_from_now(-1)],
+        )
+        .unwrap();
+
+        assert_eq!(pending_ids(&conn), [task.id.clone()], "父任务的到期提醒应被扫描到");
+        // 到期即触发：不再有未来时点参与睡眠计算
+        assert_eq!(collect_pending(&conn).unwrap().1, None);
+    }
+
+    /// 防御：子任务（第 2 层）即使残留提醒时间也不参与调度
+    /// （前端禁止子任务设提醒，update 也会忽略写入，此处兜底脏数据）。
+    #[test]
+    fn subtask_reminders_are_not_scanned() {
+        let conn = ack_test_conn();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM stickers LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let block = todo_block_repo::create(&conn, sid, None).unwrap();
+        let task = todo_block_repo::create(&conn, sid, Some(&block.id)).unwrap();
+        let sub = todo_block_repo::create(&conn, sid, Some(&task.id)).unwrap();
+        conn.execute(
+            "UPDATE todo_blocks SET reminder_at = ?2 WHERE id = ?1",
+            rusqlite::params![sub.id, iso_from_now(-1)],
+        )
+        .unwrap();
+
+        assert!(pending_ids(&conn).is_empty(), "子任务提醒不参与调度扫描");
     }
 
     /// 确认只豁免「不晚于确认时刻」的提醒：循环任务推进出的后续周期照常触发。
