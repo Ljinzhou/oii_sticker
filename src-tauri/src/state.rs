@@ -8,11 +8,13 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
+use std::time::Duration;
 
 use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::models::SystemConfig;
+use crate::reminder::ReminderSignal;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,6 +25,8 @@ pub struct AppState {
     app_data_dir: Arc<String>,
     /// 当前处于 display（展示/穿透）模式的便签 id 集合（鼠标钩子唤醒用）。
     display_windows: Arc<Mutex<HashSet<i64>>>,
+    /// Todo 提醒调度线程的唤醒信号（命令层改动提醒数据后即时唤醒重扫）。
+    reminder_signal: Arc<ReminderSignal>,
 }
 
 impl AppState {
@@ -33,7 +37,18 @@ impl AppState {
             db_path: Arc::new(Mutex::new(db_path)),
             app_data_dir: Arc::new(app_data_dir),
             display_windows: Arc::new(Mutex::new(HashSet::new())),
+            reminder_signal: Arc::new(ReminderSignal::default()),
         }
+    }
+
+    /// 唤醒 Todo 提醒调度线程立即重扫（提醒/截止时间增删改后调用）。
+    pub fn wake_reminders(&self) {
+        self.reminder_signal.wake();
+    }
+
+    /// 调度线程睡眠等待：至多 `timeout`，期间被 `wake_reminders` 唤醒则提前返回。
+    pub fn reminder_wait(&self, timeout: Duration) {
+        self.reminder_signal.wait(timeout);
     }
 
     /// 程序级工作空间注册表路径：<app_data_dir>/workspaces.json。
