@@ -13,6 +13,7 @@ import { tags } from "@lezer/highlight";
 import { fontFamilyTheme, fontSizeTheme, lightTheme, makeShowLineNumbers } from "./editorTheme";
 import { buildEnterTransaction, buildShiftTabTransaction, buildTabTransaction } from "./liveTransforms";
 import { reportSlash } from "./editorSlash";
+import { applyExternalDoc } from "./externalDoc";
 import type { SlashAnchor } from "../../slash/types";
 
 export interface MarkdownSourceOptions {
@@ -185,10 +186,9 @@ export function createMarkdownSourceView(parent: HTMLElement, opts: MarkdownSour
   return view;
 }
 
-/** 外部内容更新 → 同步进编辑器（内容相同则跳过，避免自身回写触发循环）。 */
+/** 外部内容更新 → 同步进编辑器（最小差异替换，保留光标；组词期间跳过）。 */
 export function setMarkdownSourceDoc(view: EditorView, doc: string): void {
-  if (view.state.doc.toString() === doc) return;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: doc } });
+  applyExternalDoc(view, doc);
 }
 
 /** 更新编辑字号（theme compartment 热替换）。 */
