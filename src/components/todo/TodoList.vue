@@ -247,7 +247,7 @@ function onDrop(targetId: string) {
           @mousedown="onRowMouseDown(child.id, $event)"
           @click="onRowClick(child.id)"
         >
-          <span class="drag-handle" title="拖动排序"><i class="ri-draggable"></i></span><i class="ri-corner-right-down-line sub-corner"></i><input class="wb-checkbox" type="checkbox" :checked="child.is_completed" @click.stop @change="emit('toggle', child.id, ($event.target as HTMLInputElement).checked)" />
+          <span class="drag-handle" title="拖动排序"><i class="ri-draggable"></i></span><input class="wb-checkbox" type="checkbox" :checked="child.is_completed" @click.stop @change="emit('toggle', child.id, ($event.target as HTMLInputElement).checked)" />
           <span class="label">{{ child.title || '未命名子任务' }}</span>
           <button class="row-delete" title="删除" @click.stop="emit('remove', child.id)"><i class="ri-close-line"></i></button>
         </li>
@@ -296,6 +296,6 @@ header button .ri { vertical-align:-1px; margin-right:3px; }
 .row-delete { margin-left:auto; flex:none; width:20px; height:20px; border:0; border-radius:5px; background:transparent; color:#bbb; font-size:15px; line-height:1; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; visibility:hidden; }
 .todo-list li:hover .row-delete { visibility:visible; }
 .row-delete:hover { color:#d33; background:#ffe3e3; }
-.todo-list .sub-task { padding-left:26px; }.sub-corner { flex:none; color:#bbb; font-size:12px; line-height:1; }.todo-list .add-child { display:flex; align-items:center; gap:3px; color:#4f7cff; font-size:12px; padding-left:26px; }
+.todo-list .sub-task { padding-left:26px; }.todo-list .add-child { display:flex; align-items:center; gap:3px; color:#4f7cff; font-size:12px; padding-left:26px; }
 .wb-checkbox { appearance:none; -webkit-appearance:none; width:14px; height:14px; flex:none; margin:0; border:1.2px solid rgba(0,0,0,.18); border-radius:3.5px; background:rgba(255,255,255,.75); box-shadow:inset 0 1px 2px rgba(0,0,0,.04); cursor:pointer; position:relative; }.wb-checkbox:hover { border-color:#4f7cff; }.wb-checkbox:checked { background:#4f7cff; border-color:#4f7cff; }.wb-checkbox:checked::after { content:""; position:absolute; left:4px; top:1px; width:3.5px; height:7px; border:solid #fff; border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }.todo-list li.done .wb-checkbox:checked { background:#bfbfbf; border-color:#bfbfbf; }
 </style>
