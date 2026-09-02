@@ -62,7 +62,7 @@ pub fn create(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Re
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at
+        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at, repeat_anchor
          FROM todo_blocks WHERE id = ?1",
     )?;
     Ok(stmt.query_row(params![id], row_to_block).optional()?)
@@ -70,7 +70,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
 
 pub fn list_by_sticker(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlock>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at
+        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at, repeat_anchor
          FROM todo_blocks WHERE sticker_id = ?1
          ORDER BY parent_id IS NOT NULL, sort_order, created_at, id",
     )?;
@@ -81,11 +81,20 @@ pub fn list_by_sticker(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlo
 }
 
 pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBlock> {
-    let current = get(conn, id)?.context("Todo 块不存在")?;
+    let _current = get(conn, id)?.context("Todo 块不存在")?;
     // 只有第 2 层「子任务」受限（仅名称+备注）；
     // 第 1 层「父任务」与本块本身可正常写提醒/截止/重复。
     // 注意：不能用 parent_id.is_some() 判断——那会把父任务也误判成子任务。
     let child = depth_of(conn, id)? >= 2;
+    let is_repeat_cleared = matches!(patch.repeat_rule.as_deref(), Some(""));
+    // repeat_rule 变更时按规则计算下一个重建日（本地日期）；清空/未动则保持。
+    let next_anchor = patch.repeat_rule.as_deref().and_then(|rule| {
+        if rule.is_empty() {
+            None
+        } else {
+            compute_repeat_anchor(rule)
+        }
+    });
     conn.execute(
         "UPDATE todo_blocks SET
             title = COALESCE(?2, title), block_title = COALESCE(?3, block_title),
@@ -99,6 +108,11 @@ pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBloc
             reminder_at = CASE WHEN ?6 OR ?7 IS NULL THEN reminder_at ELSE NULLIF(?7, '') END,
             due_at = CASE WHEN ?8 OR ?9 IS NULL THEN due_at ELSE NULLIF(?9, '') END,
             repeat_rule = CASE WHEN ?10 OR ?11 IS NULL THEN repeat_rule ELSE NULLIF(?11, '') END,
+            -- 重复规则变更 → 按规则重置重建锚点（NULL=清空/退出重建队列）。
+            repeat_anchor = CASE
+                WHEN ?13 THEN NULL
+                WHEN ?10 OR ?11 IS NULL THEN repeat_anchor
+                ELSE ?12 END,
             -- 重新设置提醒/截止（或完成任务）时重置触发与确认标记，调度器重新武装：
             --   提醒时间变化 → 清 reminded_at + reminder_ack_at；
             --   截止变化 → 清 due_notified_at + due_ack_at；
@@ -123,6 +137,7 @@ pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBloc
         params![
             id, patch.title, patch.block_title, patch.description, patch.is_completed.map(|v| v as i32),
             child, patch.reminder_at, child, patch.due_at, child, patch.repeat_rule,
+            next_anchor, is_repeat_cleared,
         ],
     ).context("更新 Todo 块失败")?;
     get(conn, id)?.context("更新 Todo 块后读取失败")
@@ -342,8 +357,123 @@ fn row_to_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlock> {
         due_at: row.get(8)?, repeat_rule: row.get(9)?, reminded_at: row.get(10)?, due_notified_at: row.get(11)?,
         reminder_ack_at: row.get(12)?, due_ack_at: row.get(13)?,
         sort_order: row.get(14)?, created_at: row.get(15)?, updated_at: row.get(16)?,
-        completed_at: row.get(17)?,
+        completed_at: row.get(17)?, repeat_anchor: row.get(18)?,
     })
+}
+
+// ═══════════════════ 重复任务：重建锚点与逾期后缀 ═══════════════════
+
+/// 当前本地日期（"YYYY-MM-DD"）。
+pub fn local_date_str() -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    now.date().to_string()
+}
+
+/// Unix 毫秒 → 本地日期（"YYYY-MM-DD"）。
+pub fn local_date_of(ms: i64) -> Option<String> {
+    let dt = time::OffsetDateTime::from_unix_timestamp(ms.div_euclid(1000)).ok()?;
+    let local = dt.to_offset(time::UtcOffset::current_local_offset().ok()?);
+    Some(local.date().to_string())
+}
+
+/// "YYYY-MM-DD" → 前一天（跨月/跨年安全，纯字符串运算）。
+pub fn previous_day_str(date: &str) -> Option<String> {
+    let parts: Vec<i64> = date.split('-').filter_map(|p| p.parse().ok()).collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let (mut y, mut m, mut d) = (parts[0], parts[1], parts[2]);
+    if d <= 1 {
+        m -= 1;
+        if m == 0 {
+            y -= 1;
+            m = 12;
+        }
+        d = days_in_month(y, m);
+    } else {
+        d -= 1;
+    }
+    Some(format!("{y:04}-{m:02}-{d:02}"))
+}
+
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
+/// 重复任务下一个重建日（本地 "YYYY-MM-DD"）：按规则从当前时间推进。
+///
+/// 复用 `reminder::next_occurrence_ms` 的 day/week/month/year 推进语义：
+/// `next_occurrence_ms(rule, base_ms, base_ms)` 返回严格晚于 base 的下一次时点，
+/// 取其本地日期即锚点。
+pub fn compute_repeat_anchor(rule: &str) -> Option<String> {
+    let now_ms = {
+        let now = time::OffsetDateTime::now_local().ok()?;
+        now.unix_timestamp() * 1000
+    };
+    let next_ms = crate::reminder::next_occurrence_ms(rule, now_ms, now_ms)?;
+    local_date_of(next_ms)
+}
+
+/// 逾期改名的固定后缀（与前端 `presets.ts` 的 OVERDUE_SUFFIX_RE 对应）。
+pub const OVERDUE_SUFFIX: &str = "，任务逾期";
+
+/// 标题是否已带逾期后缀（幂等改名检查）。
+pub fn has_overdue_suffix(title: &str) -> bool {
+    strip_overdue_suffix(title) != title
+}
+
+/// 剥离标题末尾的「——YYYY年M月D日，任务逾期」后缀，返回原始标题。
+pub fn strip_overdue_suffix(title: &str) -> String {
+    if let Some(pos) = title.rfind("——") {
+        let tail = &title[pos + "——".len()..];
+        if let Some(rest) = tail.strip_suffix(OVERDUE_SUFFIX) {
+            if is_cn_date(rest) {
+                return title[..pos].trim_end().to_string();
+            }
+        }
+    }
+    title.to_string()
+}
+
+/// 校验 "YYYY年M月D日"。
+fn is_cn_date(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() < 9 {
+        return false;
+    }
+    if !chars[..4].iter().all(|c| c.is_ascii_digit()) || chars[4] != '年' {
+        return false;
+    }
+    let mut i = 5;
+    let mut month = String::new();
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        month.push(chars[i]);
+        i += 1;
+    }
+    if month.is_empty() || i >= chars.len() || chars[i] != '月' {
+        return false;
+    }
+    i += 1;
+    let mut day = String::new();
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        day.push(chars[i]);
+        i += 1;
+    }
+    if day.is_empty() || i + 1 != chars.len() || chars[i] != '日' {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -731,5 +861,52 @@ mod tests {
         assert_eq!(acked.due_notified_at, None);
         assert_eq!(acked.reminder_ack_at, None);
         assert_eq!(acked.due_ack_at, None);
+    }
+
+    /// repeat_anchor：按规则计算下一个重建日（day=明天；week 带星期=下个匹配；month=下月同日）。
+    #[test]
+    fn compute_repeat_anchor_advances_by_rule() {
+        use std::ops::Add;
+        use time::OffsetDateTime;
+        let today = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc()).date();
+        let tomorrow = today.next_day().unwrap().to_string();
+        assert_eq!(
+            compute_repeat_anchor(r#"{"unit":"day","interval":1}"#).as_deref(),
+            Some(tomorrow.as_str()),
+        );
+        assert_eq!(
+            compute_repeat_anchor(r#"{"unit":"day","interval":2}"#).as_deref(),
+            Some(today.next_day().unwrap().next_day().unwrap().to_string().as_str()),
+        );
+        // week（无 weekdays）= 7 天后
+        assert_eq!(
+            compute_repeat_anchor(r#"{"unit":"week","interval":1}"#).as_deref(),
+            Some(today.next_day().unwrap().add(time::Duration::days(6)).to_string().as_str()),
+        );
+        // month = 下一个月的同日（年/月推进；日由 next_occurrence_ms 钳制）
+        let next_month_first = today
+            .replace_day(1)
+            .unwrap()
+            .add(time::Duration::days(32))
+            .replace_day(1)
+            .unwrap();
+        let got_month = compute_repeat_anchor(r#"{"unit":"month","interval":1}"#).unwrap();
+        let gm: Vec<u32> = got_month.split('-').filter_map(|p| p.parse().ok()).collect();
+        assert_eq!(gm.len(), 3);
+        assert_eq!(gm[0], next_month_first.year() as u32);
+        assert_eq!(gm[1], u8::from(next_month_first.month()) as u32);
+    }
+
+    /// 逾期后缀：追加后可被剥离；已带后缀判定幂等。
+    #[test]
+    fn overdue_suffix_strip_and_has() {
+        let raw = "背单词";
+        assert!(!has_overdue_suffix(raw));
+        let suffixed = format!("{raw}——2026年9月3日，任务逾期");
+        assert!(has_overdue_suffix(&suffixed));
+        assert_eq!(strip_overdue_suffix(&suffixed), raw);
+        // 非逾期结尾不误伤
+        assert_eq!(strip_overdue_suffix("背单词——2026年9月3日"), "背单词——2026年9月3日");
+        assert_eq!(strip_overdue_suffix("——2026-09-03，任务逾期"), "——2026-09-03，任务逾期");
     }
 }
