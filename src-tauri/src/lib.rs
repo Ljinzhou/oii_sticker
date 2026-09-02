@@ -13,6 +13,7 @@ mod editing;
 mod events;
 mod models;
 mod platform;
+mod reminder;
 mod slash;
 mod state;
 mod updater;
@@ -22,6 +23,31 @@ use commands::create_sticker;
 use db::sticker_repo::NewSticker;
 use platform::tray::TrayAction;
 use state::AppState;
+
+/// 关闭 WebView2 的浏览器加速键（Ctrl+J 下载页、Ctrl+P 打印、F12 开发者工具等原生快捷键）。
+/// Tauri 2 的公开 `WebviewWindow::with_webview` 在 Windows 下拿到 `ICoreWebView2Controller`，
+/// 再经 `ICoreWebView2Settings3::SetAreBrowserAcceleratorKeysEnabled(false)` 彻底禁用；
+/// 其余平台为 no-op。失败（如 WebView2 Runtime 过旧无 Settings3）时静默降级。
+#[cfg(windows)]
+fn disable_browser_accelerator_keys(win: &WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+    let _ = win.with_webview(|webview| {
+        let controller = webview.controller();
+        if let Ok(core) = unsafe { controller.CoreWebView2() } {
+            if let Ok(settings) = unsafe { core.Settings() } {
+                if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+                    let _ = unsafe { settings3.SetAreBrowserAcceleratorKeysEnabled(false) };
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn disable_browser_accelerator_keys(_win: &WebviewWindow) {
+    // 非 Windows：无 WebView2 浏览器加速键概念，无需处理。
+}
 
 /// 便签窗口创建参数（避免 create_sticker_win 参数过多）。
 #[derive(Clone)]
@@ -90,6 +116,7 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
         .resizable(true)
         .build()?;
     let _ = win.set_always_on_top(args.always_on_top);
+    disable_browser_accelerator_keys(&win);
     Ok(win)
 }
 
@@ -112,6 +139,7 @@ fn create_todo_win(
     if let Err(e) = win.set_always_on_top(always_on_top) {
         tracing::warn!("设置 Todo 窗口置顶失败 label={label} always_on_top={always_on_top}: {e}");
     }
+    disable_browser_accelerator_keys(&win);
     Ok(win)
 }
 
@@ -228,7 +256,7 @@ fn update_sticker_cmd(
     id: i64,
     patch: db::sticker_repo::StickerPatch,
 ) -> Result<(), String> {
-    state
+    let deleted_orphans = state
         .with_conn_path(|c, db| commands::update_sticker(c, id, &patch, db))
         .map_err(|e| e.to_string())?;
     // 标题/置顶/尺寸变化同步到窗口
@@ -241,6 +269,16 @@ fn update_sticker_cmd(
         }
     }
     events::emit_push_update(&app, id);
+    // 内容变更可能已删掉若干孤儿根任务：
+    //   1) 广播 `todo://updated` 让所有 Todo 窗口同步刷掉已删任务；
+    //   2) 唤醒提醒调度线程，避免调度器继续为已删的提醒时间发火；
+    //   3) 删掉的若含可见子任务（在同一块内），对应 Todo 窗口也会一并刷新。
+    if !deleted_orphans.is_empty() {
+        for did in &deleted_orphans {
+            events::emit_to_label(&app, &format!("sticker-{id}"), events::TODO_UPDATED, did.clone());
+        }
+        state.wake_reminders();
+    }
     Ok(())
 }
 
@@ -559,6 +597,8 @@ fn update_todo_block_cmd(
     patch: models::TodoPatch,
 ) -> Result<models::TodoBlock, String> {
     let block = state.with_conn(|c| commands::update_todo_block(c, &id, &patch)).map_err(|e| e.to_string())?;
+    // 提醒/截止时间或完成状态可能变化：唤醒调度线程立即重扫
+    state.wake_reminders();
     events::emit_todo_updated(&app, block.sticker_id, &block.id);
     Ok(block)
 }
@@ -570,6 +610,7 @@ fn delete_todo_block_cmd(
     id: String,
 ) -> Result<(), String> {
     if let Some(sticker_id) = state.with_conn(|c| commands::delete_todo_block(c, &id)).map_err(|e| e.to_string())? {
+        state.wake_reminders();
         events::emit_todo_updated(&app, sticker_id, &id);
         // 删除根任务会同步移除便签正文中的标记行，需刷新便签窗口内容
         events::emit_push_update(&app, sticker_id);
@@ -591,6 +632,24 @@ fn sync_todo_marker_cmd(
         events::emit_push_update(&app, sticker_id);
     }
     Ok(())
+}
+
+/// 确认收到 Todo 提醒（红点点击）：清除高亮并记录确认时刻。
+/// 确认后调度器不再为该时点提醒（重启也不复弹）；后续新周期照常。
+#[tauri::command]
+fn ack_todo_alert_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<models::TodoBlock>, String> {
+    let block = state
+        .with_conn(|c| commands::ack_todo_alerts(c, &id))
+        .map_err(|e| e.to_string())?;
+    if let Some(block) = &block {
+        state.wake_reminders();
+        events::emit_todo_updated(&app, block.sticker_id, &block.id);
+    }
+    Ok(block)
 }
 
 /// Todo 窗口在场状态通报：编辑 Todo 期间所属便签不自动收起回展示模式。
@@ -657,6 +716,14 @@ fn close_todo_window_cmd(app: tauri::AppHandle, id: String) -> Result<(), String
     if let Some(win) = app.get_webview_window(&format!("todo-{id}")) {
         win.hide().map_err(|e| format!("隐藏 Todo 窗口失败: {e}"))?;
     }
+    Ok(())
+}
+
+/// Todo 块保存成功通知：向所属便签窗口定向发送 toast 标题，
+/// 前端展示「{title} 保存成功」应用内提示（不弹系统通知）。
+#[tauri::command]
+fn notify_todo_saved_cmd(app: tauri::AppHandle, sticker_id: i64, title: String) -> Result<(), String> {
+    events::emit_to_label(&app, &format!("sticker-{sticker_id}"), "sticky://todo-saved", title);
     Ok(())
 }
 
@@ -1240,6 +1307,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Todo 提醒系统通知（reminder.rs 调度线程触发时调用）
+        .plugin(tauri_plugin_notification::init())
         // 开机自启：三平台统一由官方插件管理（Windows 注册表 Run 键 /
         // macOS LaunchAgent / Linux XDG autostart）；携带 --autostart 参数，
         // 供程序识别"由登录自启拉起"，避免每次登录都弹出主控台窗口。
@@ -1303,6 +1372,15 @@ pub fn run() {
 
             let handle = app.handle().clone();
             let state = app.state::<AppState>().inner().clone();
+
+            // 禁用所有已创建窗口的 WebView2 浏览器加速键（Ctrl+J 下载页等原生快捷键）。
+            for (_, win) in app.webview_windows() {
+                disable_browser_accelerator_keys(&win);
+            }
+
+            // Todo 提醒调度：独立后台线程扫描 todo_blocks 的提醒/截止时间，
+            // 到点发系统通知 + 广播事件（窗口全关也能触发，主进程存活即可）。
+            reminder::spawn(handle.clone(), state.clone());
 
             // 启动一致性：为正文中缺少标记的孤儿 Todo 块补写标记（旧版本遗留），
             // 并通知所属便签窗口刷新正文。
@@ -1393,12 +1471,14 @@ pub fn run() {
             list_todo_for_sticker_cmd,
             create_todo_block_cmd,
             update_todo_block_cmd,
+            ack_todo_alert_cmd,
             delete_todo_block_cmd,
             sync_todo_marker_cmd,
             notify_todo_presence_cmd,
             reorder_todo_cmd,
             open_todo_window_cmd,
             close_todo_window_cmd,
+            notify_todo_saved_cmd,
             open_external_cmd,
             updater::update_check_cmd,
             updater::update_download_cmd,
