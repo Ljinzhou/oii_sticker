@@ -11,6 +11,8 @@ pub const PREFS_UPDATED: &str = "sticky://prefs-updated";
 pub const OPEN_SETTINGS: &str = "sticky://open-settings";
 /// Todo 块变更，定向发给所属便签和对应 Todo 窗口。
 pub const TODO_UPDATED: &str = "todo://updated";
+/// Todo 提醒触发（到点/截止），广播给所有窗口弹应用内提示。
+pub const TODO_REMINDER: &str = "todo://reminder-fired";
 
 /// 向指定窗口 label 发事件。
 pub fn emit_to_label(app: &AppHandle, label: &str, event: &str, payload: impl Serialize + Clone) {
@@ -28,4 +30,10 @@ pub fn emit_todo_updated(app: &AppHandle, sticker_id: i64, todo_id: &str) {
     emit_to_label(app, &format!("sticker-{sticker_id}"), TODO_UPDATED, todo_id);
     emit_to_label(app, &format!("todo-{todo_id}"), TODO_UPDATED, todo_id);
     let _ = app.emit(TODO_UPDATED, todo_id);
+}
+
+/// 广播提醒触发事件（所有窗口均可收到，自行按 sticker_id 过滤展示）。
+pub fn emit_todo_reminder(app: &AppHandle, ctx: &crate::reminder::FireContext) {
+    tracing::info!("[event] todo_reminder todo={} kind={:?}", ctx.id, ctx.kind);
+    let _ = app.emit(TODO_REMINDER, ctx);
 }
