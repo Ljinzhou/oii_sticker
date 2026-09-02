@@ -653,4 +653,83 @@ mod tests {
         let doomed = delete_roots_not_in(&conn, sticker_id, &[]).unwrap();
         assert!(doomed.is_empty());
     }
+
+    /// ack_alerts 端到端：调度线程标记触发（reminder + due 均已触发）后，
+    /// 用户确认 → 清除触发标记（前端高亮消失）并记录确认时刻；
+    /// 确认后再次 ack 幂等，不报错、不改状态。
+    #[test]
+    fn ack_alerts_clears_fired_flags_and_records_ack_timestamps() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        let task = create(&conn, sticker_id, Some(&block.id)).unwrap();
+
+        update(&conn, &task.id, &TodoPatch {
+            reminder_at: Some("2030-01-01T00:00:00Z".into()),
+            due_at: Some("2030-01-02T00:00:00Z".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        // 模拟调度线程 fire_one 写入触发标记（reminded_at / due_notified_at）
+        conn.execute(
+            "UPDATE todo_blocks SET reminded_at = ?2, due_notified_at = ?2 WHERE id = ?1",
+            params![task.id, "2030-01-01T00:00:00Z"],
+        )
+        .unwrap();
+
+        let acked = ack_alerts(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(acked.reminded_at, None, "确认后提醒触发标记应清除（高亮消失）");
+        assert_eq!(acked.due_notified_at, None, "确认后截止触发标记应清除");
+        assert!(acked.reminder_ack_at.is_some(), "已触发的提醒应记录确认时刻");
+        assert!(acked.due_ack_at.is_some(), "已触发的截止应记录确认时刻");
+
+        let again = ack_alerts(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(again.reminded_at, None);
+        assert_eq!(again.due_notified_at, None);
+        assert!(again.reminder_ack_at.is_some(), "重复确认不丢失已记确认时刻");
+    }
+
+    /// ack 只对「已触发」的字段写确认时刻：
+    /// 仅提醒触发、截止尚未到时 → 截止不得被误标为已读，未来 due 保留照常触发。
+    #[test]
+    fn ack_alerts_does_not_ack_unfired_future_fields() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        let task = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        update(&conn, &task.id, &TodoPatch {
+            reminder_at: Some("2030-01-01T00:00:00Z".into()),
+            due_at: Some("2030-01-02T00:00:00Z".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        // 只有提醒触发，截止尚未触发
+        conn.execute(
+            "UPDATE todo_blocks SET reminded_at = ?2 WHERE id = ?1",
+            params![task.id, "2030-01-01T00:00:00Z"],
+        )
+        .unwrap();
+
+        let acked = ack_alerts(&conn, &task.id).unwrap().unwrap();
+        assert!(acked.reminder_ack_at.is_some(), "已触发的提醒应记录确认时刻");
+        assert_eq!(acked.due_ack_at, None, "未触发的未来截止不得被误标为已确认");
+        assert!(acked.due_at.is_some(), "未来截止时间必须保留，后续照常触发");
+    }
+
+    /// ack 对未设置提醒的任务无副作用：直接返回原块。
+    #[test]
+    fn ack_alerts_is_noop_for_task_without_reminders() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        let task = create(&conn, sticker_id, Some(&block.id)).unwrap();
+
+        let acked = ack_alerts(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(acked.reminded_at, None);
+        assert_eq!(acked.due_notified_at, None);
+        assert_eq!(acked.reminder_ack_at, None);
+        assert_eq!(acked.due_ack_at, None);
+    }
 }
