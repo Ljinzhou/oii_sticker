@@ -3,6 +3,8 @@ import MarkdownIt from "markdown-it";
 import { ref } from "vue";
 import { createMathjaxInstance, mathjax } from "@mdit/plugin-mathjax";
 import type { TodoBlock } from "../types";
+import type { BlockUiState } from "./block-ui";
+import { todoHighlightState } from "./todo-dates";
 
 // ═══════════════ SVG 动态字体预加载 ═══════════════
 // mdit-mathjax 的 asyncLoad 用动态 import(e) 加载字体模块（如
@@ -134,39 +136,132 @@ md.block.ruler.before("paragraph", "show_done", showDoneRule, { alt: ["paragraph
 md.renderer.rules.todo_block = (tokens, idx, _options, env) => {
   const blocks = Array.isArray(env?.todoBlocks) ? env.todoBlocks as TodoBlock[] : [];
   const id = (tokens[idx].meta as { id?: string } | null)?.id ?? "";
-  // 同便签的多个 <todo-block> 标记合并为一张卡：仅首个有效标记渲染，
-  // 后续标记为空（避免任务重复渲染），任一任务都会出现在卡内。
-  if (tokens.slice(0, idx).some((t) => t.type === "todo_block" && blocks.some((b) => b.id === (t.meta as { id?: string })?.id))) {
-    return "";
-  }
-  return renderTodoCard(blocks, id, Boolean(env?.interactive));
+  // 每个 <todo-block> 标记渲染自己的独立卡片（根任务 + 其子任务）：
+  // 一个便签可挂任意多个块，互不合并。
+  return renderTodoCard(blocks, id, Boolean(env?.interactive), env?.ui as BlockUiState | undefined);
 };
 md.renderer.rules.show_done = (_tokens, _idx, _options, env) => {
   const blocks = Array.isArray(env?.todoBlocks) ? env.todoBlocks as TodoBlock[] : [];
-  return renderDoneCard(blocks);
+  const uiKey = typeof env?.uiKey === "string" ? env.uiKey : "";
+  return renderDoneCard(blocks, env?.ui as BlockUiState | undefined, uiKey);
 };
 
-function renderTodoCard(blocks: TodoBlock[], id: string, interactive: boolean): string {
+/**
+ * 渲染一个 <todo-block> 标记对应的任务卡片。
+ *
+ * 三层结构（块 → 父任务 → 子任务）：
+ *   - 标记对应的 root 行是**块**，只作为容器提供卡头标题，**不作为任务条目显示**；
+ *   - depth 0 = 父任务（parent_id = 块.id），depth 1 = 子任务（parent_id = 父任务.id）；
+ *   - 有子任务的父任务左侧出现折叠按钮，子任务可收起/展开；
+ *   - 块内没有任何任务时显示「暂无任务」；
+ *   - 计数只统计任务（父 + 子），不含块本身。
+ *
+ * 折叠/子任务显隐完全由 BlockUiState（用户操作持久化）驱动，程序不自动改变。
+ */
+function renderTodoCard(blocks: TodoBlock[], id: string, interactive: boolean, ui?: BlockUiState): string {
   const root = blocks.find((block) => block.id === id);
   if (!root) return `<div class="todo-block-card todo-block-missing" data-todo-id="${escapeText(id)}">未找到任务</div>`;
-  // 合并该便签的全部任务到一张卡：根任务在前、各自子任务排其后（保持列表顺序）。
-  const group = blocks.filter((block) => block.sticker_id === root.sticker_id);
-  const order: TodoBlock[] = [];
-  for (const block of group) {
-    if (block.parent_id) continue;
-    order.push(block, ...group.filter((child) => child.parent_id === block.id));
+
+  const childrenOf = new Map<string, TodoBlock[]>();
+  for (const block of blocks) {
+    if (block.sticker_id !== root.sticker_id || !block.parent_id) continue;
+    const list = childrenOf.get(block.parent_id) ?? [];
+    list.push(block);
+    childrenOf.set(block.parent_id, list);
   }
-  const done = order.filter((block) => block.is_completed).length;
-  const items = order.map((block) => `<li class="${block.is_completed ? "tb-done" : ""}${block.parent_id ? " tb-sub" : ""}"><input type="checkbox" class="todo-task-checkbox" data-todo-id="${escapeText(block.id)}"${block.is_completed ? " checked" : ""}${interactive ? "" : " disabled"}><span class="tb-name">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
-  // 卡头使用独立块标题（block_title），不再直接用第一个任务名作为标题
-  const head = order[0]?.block_title?.trim() || "未命名任务";
-  return `<div class="todo-block-card" data-todo-id="${escapeText(root.id)}"><div class="tb-head"><span class="tb-icon">☑</span><span class="tb-title">${escapeText(head)}</span><span class="tb-count">${done} / ${order.length}</span></div><ul class="tb-list">${items}</ul></div>`;
+
+  // 从「块」往下展开：depth 0 = 父任务，depth 1 = 子任务。块自身不入列。
+  type Entry = { block: TodoBlock; depth: number; ancestors: string[]; hasKids: boolean };
+  const entries: Entry[] = [];
+  const walk = (parentId: string, depth: number, ancestors: string[]) => {
+    for (const block of childrenOf.get(parentId) ?? []) {
+      const kids = childrenOf.get(block.id) ?? [];
+      entries.push({ block, depth, ancestors, hasKids: kids.length > 0 });
+      walk(block.id, depth + 1, [...ancestors, block.id]);
+    }
+  };
+  walk(root.id, 0, []);
+
+  const cardFolded = ui?.folds?.[root.id] === true;
+  const subHidden = (taskId: string) => ui?.subs?.[taskId] === true;
+  // 可见性：卡片整体折叠由 ul hidden 控制；条目自身再被任一祖先的「隐藏子任务」命中则不渲染。
+  const isVisible = (entry: Entry) => !entry.ancestors.some((pid) => subHidden(pid));
+
+  // 提醒高亮只看父任务（子任务不设提醒/截止）
+  const parentEntries = entries.filter((entry) => entry.depth === 0);
+  const anyReminded = parentEntries.some((entry) => todoHighlightState(entry.block).reminded && !entry.block.is_completed);
+  const anyOverdue = parentEntries.some((entry) => todoHighlightState(entry.block).overdue && !entry.block.is_completed);
+
+  const done = entries.filter((entry) => entry.block.is_completed).length;
+
+  // 空块：块内一条任务都没有
+  const items = entries.length === 0
+    ? '<li class="tb-empty">暂无任务</li>'
+    : entries.map((entry) => {
+        if (!isVisible(entry)) return "";
+        const hl = todoHighlightState(entry.block);
+        const cls = [
+          entry.block.is_completed ? "tb-done" : "",
+          entry.depth > 0 ? "tb-sub" : "",
+          hl.reminded ? "tb-reminded" : "",
+          hl.overdue ? "tb-overdue" : "",
+        ].filter(Boolean).join(" ");
+        // 折叠按钮：只有「有子任务的父任务」可点；
+        // 其余行用同宽占位保持缩进对齐（不显示箭头）。
+        const caret = entry.hasKids
+          ? `<span class="tb-caret" data-caret="${escapeText(entry.block.id)}" title="显示/隐藏子任务">${subHidden(entry.block.id) ? "▸" : "▾"}</span>`
+          : '<span class="tb-caret tb-caret-placeholder" aria-hidden="true"></span>';
+        return `<li class="${cls}">${caret}<input type="checkbox" class="todo-task-checkbox" data-todo-id="${escapeText(entry.block.id)}"${entry.block.is_completed ? " checked" : ""}${interactive ? "" : " disabled"}><span class="tb-name">${escapeText(entry.block.title || "未命名任务")}</span></li>`;
+      }).join("");
+
+  // 卡头使用独立块标题（block_title）；卡头下拉箭头折叠/展开整个列表。
+  // 注意：block_title 为空时应回退到"未命名任务"，而不是冒用块自身的 title。
+  const head = root.block_title?.trim() || "未命名任务";
+  const flags = `${anyReminded ? '<span class="tb-flag tb-flag-reminded"> 提醒中</span>' : ""}${anyOverdue ? '<span class="tb-flag tb-flag-overdue">已逾期</span>' : ""}`;
+  const cardCls = `todo-block-card${anyReminded ? " todo-block-reminded" : ""}${anyOverdue ? " todo-block-overdue" : ""}`;
+  const foldCaret = `<span class="tb-caret tb-fold-caret" data-fold="${escapeText(root.id)}" title="折叠/展开任务块">${cardFolded ? "▸" : "▾"}</span>`;
+  return `<div class="${cardCls}" data-todo-id="${escapeText(root.id)}"><div class="tb-head">${foldCaret}<span class="tb-title">${escapeText(head)}</span>${flags}<span class="tb-count">${done} / ${entries.length}</span></div><ul class="tb-list"${cardFolded ? " hidden" : ""}>${items}</ul></div>`;
 }
 
-function renderDoneCard(blocks: TodoBlock[]): string {
-  const done = blocks.filter((block) => block.is_completed);
-  const items = done.map((block) => `<li><input type="checkbox" class="todo-task-checkbox" checked disabled><span class="tb-name tb-done">${escapeText(block.title || "未命名任务")}</span></li>`).join("");
-  return `<details class="done-block-card"><summary>已完成 ${done.length}</summary><ul class="db-list">${items}</ul></details>`;
+/**
+ * 渲染 <show-done> 已完成任务卡：
+ *  - 下拉框选择数据来源（全部 / 某个任务块），选择持久化到 BlockUiState；
+ *  - 每项任务后显示完成时刻（completed_at，本地时间）；
+ *  - 卡头下拉箭头折叠/展开列表，状态同样持久化。
+ */
+function renderDoneCard(blocks: TodoBlock[], ui?: BlockUiState, uiKey = ""): string {
+  const srcId = uiKey ? (ui?.doneSrc?.[uiKey] ?? "") : (ui?.doneSrc?.[""] ?? "");
+  const roots = blocks.filter((block) => !block.parent_id);
+
+  // 来源范围：选中某根任务时 = 该根 + 其整棵子树；否则全部任务。
+  let scope: Set<string> | null = null;
+  if (srcId && roots.some((block) => block.id === srcId)) {
+    scope = new Set([srcId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const block of blocks) {
+        if (block.parent_id && scope.has(block.parent_id) && !scope.has(block.id)) {
+          scope.add(block.id);
+          grew = true;
+        }
+      }
+    }
+  }
+
+  const done = blocks.filter((block) => block.is_completed && (!scope || scope.has(block.id)));
+  const options = [
+    `<option value=""${srcId === "" ? " selected" : ""}>全部任务</option>`,
+    ...roots.map((block) =>
+      `<option value="${escapeText(block.id)}"${block.id === srcId ? " selected" : ""}>${escapeText(block.block_title?.trim() || block.title || "未命名任务")}</option>`),
+  ];
+  const folded = uiKey ? (ui?.doneFolds?.[uiKey] === true) : (ui?.doneFolds?.[""] === true);
+  const caret = `<span class="tb-caret" data-donefold="${escapeText(uiKey)}" title="折叠/展开已完成列表">${folded ? "▸" : "▾"}</span>`;
+  const select = `<select class="sd-source" data-sd-key="${escapeText(uiKey)}" title="选择要显示哪个任务块的已完成任务">${options.join("")}</select>`;
+  const items = done.map((block) =>
+    `<li><input type="checkbox" class="todo-task-checkbox" checked disabled><span class="tb-name tb-done">${escapeText(block.title || "未命名任务")}</span><span class="db-time">${escapeText(block.completed_at ?? "")}</span></li>`,
+  ).join("");
+  return `<div class="done-block-card"><div class="db-head">${caret}<span class="db-title">已完成 ${done.length}</span>${select}</div><ul class="db-list"${folded ? " hidden" : ""}>${items}</ul></div>`;
 }
 
 // 自写任务清单渲染：检测 `- [ ]` / `- [x]` / `- [X]` 标记，
@@ -233,8 +328,14 @@ export function normalizeCompoundLists(md: string): string {
 
 /** 渲染 markdown → HTML（含 todo checkbox 的 data-line 与 mathjax SVG；
  *  复合编号先归一化为嵌套列表语法）。 */
-export function renderMarkdown(content: string, todoBlocks: TodoBlock[] = [], interactive = false): string {
-  return md.render(normalizeCompoundLists(content), { todoBlocks, interactive });
+export function renderMarkdown(
+  content: string,
+  todoBlocks: TodoBlock[] = [],
+  interactive = false,
+  ui?: BlockUiState,
+  uiKey?: string,
+): string {
+  return md.render(normalizeCompoundLists(content), { todoBlocks, interactive, ui, uiKey });
 }
 
 /** 收集 mathjax 渲染产生的 SVG CSS 并清空缓存（渲染后调用，注入全局 style）。 */
