@@ -105,7 +105,17 @@ export interface TodoBlock {
   reminder_at: string | null;
   due_at: string | null;
   repeat_rule: string | null;
+  /** 提醒时间已触发（调度器写入；非空 = 高亮提示中）。 */
+  reminded_at?: string | null;
+  /** 截止提醒已触发（调度器写入）。 */
+  due_notified_at?: string | null;
+  /** 用户已确认提醒（非空 = 该时点不再高亮/复弹）。 */
+  reminder_ack_at?: string | null;
+  /** 用户已确认截止（非空 = 该时点不再高亮/复弹）。 */
+  due_ack_at?: string | null;
   sort_order?: number;
+  /** 完成时刻（本地时间 YYYY-MM-DD HH:MM:SS）；取消完成时清空。 */
+  completed_at?: string | null;
   created_at: string;
   updated_at: string;
 }
