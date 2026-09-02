@@ -11,9 +11,16 @@ import {
   setLiveFontSize,
   setLiveLineNumbers,
   setLiveTodoBlocksInView,
+  setLiveUiStateInView,
 } from "./live/LiveEditorView";
 import type { TodoBlock } from "../../types";
 import type { SlashAnchor } from "../slash/types";
+import { useSettingsStore } from "../../stores/settings";
+import {
+  BLOCK_UI_KEY,
+  applyBlockUiAction,
+  readBlockUi,
+} from "../../utils/block-ui";
 
 const props = defineProps<{
   modelValue: string;
@@ -22,7 +29,17 @@ const props = defineProps<{
   showLineNumbers: boolean;
   todoBlocks: TodoBlock[];
   slashOpen: boolean;
+  uiKey?: string;
 }>();
+
+// 单测等非 Pinia 上下文安全降级：拿不到 store 就不联动（渲染用默认展开态）。
+function settingsOrNull() {
+  try {
+    return useSettingsStore();
+  } catch {
+    return null;
+  }
+}
 
 const emit = defineEmits<{
   "update:modelValue": [value: string];
@@ -38,14 +55,22 @@ const emit = defineEmits<{
 const host = ref<HTMLDivElement | null>(null);
 let view: EditorView | null = null;
 let emitTimer: number | undefined;
+/** 最近一次本组件主动回写的内容：识别「自己回写被父级原样传回」的 echo。 */
+let lastEmitted: string | null = null;
 
 /** 用户编辑 → 防抖 400ms 回写（避免每次按键触发父级渲染链路）。
- *  内容与当前 props 相同（外部同步回显）时跳过，防止无意义回写。 */
+ *  关键：进入函数先【无条件】清掉未触发的旧定时器。旧实现先比较后清理，
+ *  当"输入又删回与 modelValue 相同的旧值"时会提前 return，留下一个带着
+ *  陈旧内容的定时器——它稍后触发就会把刚删掉的字符重新写回编辑器
+ *  （表现为退格删不干净、字符复活），并伴随光标被甩到文档开头。 */
 function scheduleEmit(doc: string) {
-  if (doc === props.modelValue) return;
   if (emitTimer) window.clearTimeout(emitTimer);
+  emitTimer = undefined;
+  // 内容与当前 props 相同（外部同步回显/删回原值）：无需回写
+  if (doc === props.modelValue) return;
   emitTimer = window.setTimeout(() => {
     emitTimer = undefined;
+    lastEmitted = doc;
     emit("update:modelValue", doc);
   }, 400);
 }
@@ -55,7 +80,9 @@ function flush() {
   if (emitTimer) window.clearTimeout(emitTimer);
   emitTimer = undefined;
   if (view) {
-    emit("update:modelValue", view.state.doc.toString());
+    const doc = view.state.doc.toString();
+    lastEmitted = doc;
+    emit("update:modelValue", doc);
   }
 }
 
@@ -72,6 +99,15 @@ onMounted(() => {
     onSlashClose: () => emit("slashClose"),
     onTodoOpen: (id) => emit("openTodo", id),
     todoBlocks: props.todoBlocks,
+    ui: readBlockUi(),
+    uiKey: props.uiKey || "",
+    onBlockUiAction: (action, id) => {
+      void applyBlockUiAction(action, id);
+      // 持久化写入 settings 后由下方 watcher 统一刷新视图（单一数据流）
+    },
+    onDoneSource: (sourceId, key) => {
+      void applyBlockUiAction("doneSource", key || props.uiKey || "", sourceId);
+    },
     slashOpen: () => props.slashOpen,
     onSlashNav: (dir) => emit("slashNav", dir),
     onSlashConfirm: () => emit("slashConfirm"),
@@ -80,11 +116,19 @@ onMounted(() => {
   view.focus();
 });
 
-// 外部内容更新（保存后 load / push-update）→ 同步进编辑器
+// 外部内容更新（保存后 load / push-update / 斜杠插入）→ 同步进编辑器。
+// 注意：本组件自己回写的内容被父级 v-model 原样传回来（echo）时必须跳过——
+// 防抖窗口内用户往往又输入了新内容，把 echo 反向同步会拿陈旧值覆盖新输入
+// （已删字符复活 / 光标瞬移）。真正的外部更新不受影响，照常同步。
 watch(
   () => props.modelValue,
   (v) => {
-    if (view) setLiveDoc(view, v);
+    if (!view) return;
+    if (lastEmitted !== null && v === lastEmitted) {
+      lastEmitted = null;
+      return;
+    }
+    setLiveDoc(view, v);
   },
 );
 
@@ -119,13 +163,32 @@ watch(
   { deep: true },
 );
 
+// 用户折叠状态（本窗口操作或其它窗口同步）→ 热刷新卡片渲染。
+// 只在状态真正变化时 dispatch；程序绝不主动改这份状态，只响应它。
+watch(
+  () => {
+    const s = settingsOrNull();
+    return s ? s.config.entries[BLOCK_UI_KEY] : undefined;
+  },
+  () => {
+    if (!view || props.uiKey === undefined) return;
+    setLiveUiStateInView(view, readBlockUi(), props.uiKey);
+  },
+);
+
 onBeforeUnmount(() => {
   if (emitTimer) window.clearTimeout(emitTimer);
   view?.destroy();
   view = null;
 });
 
-defineExpose({ flush });
+/** 是否有在途未回写的编辑（外部内容同步时据此避免覆盖用户的即时输入）。 */
+function isDirty() {
+  if (!view) return false;
+  return view.state.doc.toString() !== props.modelValue;
+}
+
+defineExpose({ flush, isDirty });
 </script>
 
 <template>
@@ -260,7 +323,11 @@ defineExpose({ flush });
 
 .live-host :deep(.live-todo-block),
 .live-host :deep(.live-done-block) {
-  margin: 8px 0;
+  /* 注意：CodeMirror 的 block widget 测量高度时不计外 margin，
+     在 widget 根元素上用 margin 会把块下方行号/光标顶位挤乱。
+     竖直留白改用 padding（随 widget 高度一起被测量），保证行号与正文对齐。 */
+  margin: 0;
+  padding: 8px 0;
 }
 .live-host :deep(.todo-block-card),
 .live-host :deep(.done-block-card) {
@@ -285,9 +352,59 @@ defineExpose({ flush });
   white-space: nowrap;
 }
 .live-host :deep(.tb-count),
-.live-host :deep(.done-block-card summary) {
+.live-host :deep(.db-head) {
   color: #777;
   font-size: 12px;
+}
+.live-host :deep(.db-head) {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+}
+.live-host :deep(.db-title) {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.live-host :deep(.db-time) {
+  color: #aaa;
+  font-size: 11px;
+  white-space: nowrap;
+  margin-left: auto;
+}
+.live-host :deep(.sd-source) {
+  margin-left: auto;
+  max-width: 45%;
+  font-size: 12px;
+  color: #555;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  outline: none;
+}
+.live-host :deep(.db-head .sd-source) {
+  margin-left: 8px;
+}
+.live-host :deep(.tb-caret) {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  color: #999;
+  font-size: 11px;
+  user-select: none;
+}
+/* 无子任务的行用同宽占位，保持与带折叠按钮的行缩进对齐 */
+.live-host :deep(.tb-caret-placeholder) {
+  visibility: hidden;
+}
+/* 空块提示：块内一条任务都没有 */
+.live-host :deep(.tb-empty) {
+  color: #a9a9a9;
+  font-size: 12px;
+  min-height: 22px;
+  justify-content: center;
+  padding: 2px 0;
 }
 .live-host :deep(.tb-list),
 .live-host :deep(.db-list) {
@@ -304,7 +421,7 @@ defineExpose({ flush });
 }
 .live-host :deep(.tb-sub) { padding-left: 22px; }
 .live-host :deep(.tb-done) { color: #999; text-decoration: line-through; }
-.live-host :deep(.done-block-card) { padding: 7px 10px; }
+.live-host :deep(.done-block-card) { cursor: pointer; }
 .live-host :deep(.todo-task-checkbox) { accent-color: #4f7cff; }
 
 /* 复合编号行缩进（按嵌套深度，模拟 Obsidian 层级） */

@@ -177,7 +177,17 @@ pub struct TodoBlock {
     pub reminder_at: Option<String>,
     pub due_at: Option<String>,
     pub repeat_rule: Option<String>,
+    /// reminder_at 最近一次已触发提醒的时间（调度器写入；前端据此高亮）。
+    pub reminded_at: Option<String>,
+    /// due_at 截止提醒最近一次已触发的时间（调度器写入）。
+    pub due_notified_at: Option<String>,
+    /// 用户已确认提醒（ack_todo_alert_cmd 写入；非空 = 该时点不再高亮/复弹）。
+    pub reminder_ack_at: Option<String>,
+    /// 用户已确认截止（ack_todo_alert_cmd 写入；非空 = 该时点不再高亮/复弹）。
+    pub due_ack_at: Option<String>,
     pub sort_order: i64,
+    /// 完成时刻（本地时间 "YYYY-MM-DD HH:MM:SS"）；取消完成时清空。
+    pub completed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

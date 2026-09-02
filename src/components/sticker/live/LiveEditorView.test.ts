@@ -124,10 +124,11 @@ describe("LiveEditorView（CM6 内核）", () => {
     const view = createLiveView(host, {
       doc: '<todo-block id="t-1"></todo-block>\n正文',
       fontSize: 14,
-      todoBlocks: [{
-        id: "t-1", sticker_id: 7, title: "购买牛奶", block_title: "", description: null, is_completed: false,
-        parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
-      }],
+      // 三层：块 t-1（自身不是任务）→ 父任务 t-2（显示任务名）
+      todoBlocks: [
+        { id: "t-1", sticker_id: 7, title: "", block_title: "购物块", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" },
+        { id: "t-2", sticker_id: 7, title: "购买牛奶", block_title: "", description: null, is_completed: false, parent_id: "t-1", reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" },
+      ],
       onDocChange: () => {},
       onSave: () => {},
     });
@@ -156,7 +157,72 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect(onTodoOpen).toHaveBeenCalledWith("t-1");
     view.destroy();
   });
+  it("点击卡片内的折叠箭头只切换显隐，不触发打开窗口", () => {
+    const host = mountHost();
+    const onTodoOpen = vi.fn();
+    const onBlockUiAction = vi.fn();
+    const view = createLiveView(host, {
+      doc: '<todo-block id="t-1"></todo-block>\n正文',
+      fontSize: 14,
+      todoBlocks: [{
+        id: "t-1", sticker_id: 7, title: "任务", block_title: "", description: null, is_completed: false,
+        parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
+      }],
+      onDocChange: () => {},
+      onSave: () => {},
+      onTodoOpen,
+      onBlockUiAction,
+    });
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    const caret = host.querySelector<HTMLElement>("[data-fold]");
+    expect(caret).not.toBeNull();
+    caret?.click();
+    expect(onBlockUiAction).toHaveBeenCalledWith("foldCard", "t-1");
+    expect(onTodoOpen).not.toHaveBeenCalled();
+    view.destroy();
+  });
 
+  it("Todo 标签行退格两次即可整块删除（先删行内容留空行，再并掉空行）", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: '<todo-block id="t-1"></todo-block>\n正文',
+      fontSize: 14,
+      todoBlocks: [{
+        id: "t-1", sticker_id: 7, title: "购买牛奶", block_title: "", description: null, is_completed: false,
+        parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "",
+      }],
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 光标放在标签行首（点击卡片后的自然落点：原子区间的边缘）
+    const tagEnd = '<todo-block id="t-1"></todo-block>'.length;
+    expect(tagEnd).toBeGreaterThan(0);
+    view.dispatch({ selection: { anchor: 0 } });
+    expect(view.state.selection.main.head).toBe(0);
+    const pressBackspace = () =>
+      view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+    pressBackspace();
+    expect(view.state.doc.toString()).toBe("\n正文");
+    // 光标在下一行（正文）行首：第二次退格并掉空行
+    expect(view.state.selection.main.head).toBe(1);
+    pressBackspace();
+    expect(view.state.doc.toString()).toBe("正文");
+    view.destroy();
+  });
+
+  it("普通文本行的退格不受整行删除逻辑影响", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "abc",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: 3 } });
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true }));
+    expect(view.state.doc.toString()).toBe("ab");
+    view.destroy();
+  });
 
   it("键盘回车走 Live Preview transaction 而不是插入裸换行", () => {
     const host = mountHost();
@@ -413,6 +479,41 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect(view.state.doc.toString()).toBe("[](https://a.com) 和 [](https://b.com)");
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(view.state.doc.toString()).toBe("[A站](https://a.com) 和 [B站](https://b.com)");
+    view.destroy();
+  });
+
+  it("setLiveDoc 外部同步保留光标：只有差异段被替换，光标不再瞬移到开头", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "# 阶段一：这是阶段一",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: 10 } });
+    // 模拟防抖回写 echo：尾部少一个字符。旧的全量替换会把光标折叠到 0。
+    setLiveDoc(view, "# 阶段一：这是阶段");
+    expect(view.state.doc.toString()).toBe("# 阶段一：这是阶段");
+    expect(view.state.selection.main.head).toBe(10);
+    view.destroy();
+  });
+
+  it("setLiveDoc 在输入法组词期间跳过，组词结束后正常同步", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "biao",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    const setComposing = (value: boolean) =>
+      Object.defineProperty(view, "composing", { value, writable: true, configurable: true });
+    setComposing(true);
+    setLiveDoc(view, "biao'ti");
+    expect(view.state.doc.toString()).toBe("biao");
+    setComposing(false);
+    setLiveDoc(view, "biao'ti");
+    expect(view.state.doc.toString()).toBe("biao'ti");
     view.destroy();
   });
 });

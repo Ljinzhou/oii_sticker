@@ -1,6 +1,7 @@
 import { EditorView, WidgetType } from "@codemirror/view";
 import { renderMarkdown } from "../../../utils/markdown";
 import { renderMarkdownEditable } from "../../../utils/markdown-editable";
+import { DEFAULT_BLOCK_UI, type BlockUiState } from "../../../utils/block-ui";
 import type { TodoBlock } from "../../../types";
 
 /** 渲染 markdown-it 片段并提取行内 HTML。 */
@@ -61,20 +62,28 @@ export class MathBlockWidget extends WidgetType {
   }
 }
 
-/** 将受控 Todo 标签替换为与展示模式一致的任务卡片。 */
+/** 将受控 Todo 标签替换为与展示模式一致的任务卡片（含用户折叠状态）。 */
 export class TodoBlockWidget extends WidgetType {
-  constructor(readonly source: string, readonly todoBlocks: TodoBlock[]) {
+  constructor(
+    readonly source: string,
+    readonly todoBlocks: TodoBlock[],
+    readonly ui: BlockUiState = DEFAULT_BLOCK_UI,
+    readonly uiKey = "",
+  ) {
     super();
   }
 
   eq(other: TodoBlockWidget) {
-    return other.source === this.source && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks);
+    return other.source === this.source
+      && other.uiKey === this.uiKey
+      && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks)
+      && JSON.stringify(other.ui) === JSON.stringify(this.ui);
   }
 
   toDOM() {
     const wrapper = document.createElement("div");
     wrapper.className = "live-todo-block";
-    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false);
+    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false, this.ui, this.uiKey);
     return wrapper;
   }
 
@@ -83,20 +92,28 @@ export class TodoBlockWidget extends WidgetType {
   }
 }
 
-/** 将“已完成”功能标签替换为已完成任务列表。 */
+/** 将“已完成”功能标签替换为已完成任务列表（含来源选择与完成时刻）。 */
 export class DoneBlockWidget extends WidgetType {
-  constructor(readonly source: string, readonly todoBlocks: TodoBlock[]) {
+  constructor(
+    readonly source: string,
+    readonly todoBlocks: TodoBlock[],
+    readonly ui: BlockUiState = DEFAULT_BLOCK_UI,
+    readonly uiKey = "",
+  ) {
     super();
   }
 
   eq(other: DoneBlockWidget) {
-    return other.source === this.source && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks);
+    return other.source === this.source
+      && other.uiKey === this.uiKey
+      && JSON.stringify(other.todoBlocks) === JSON.stringify(this.todoBlocks)
+      && JSON.stringify(other.ui) === JSON.stringify(this.ui);
   }
 
   toDOM() {
     const wrapper = document.createElement("div");
     wrapper.className = "live-done-block";
-    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false);
+    wrapper.innerHTML = renderMarkdown(this.source, this.todoBlocks, false, this.ui, this.uiKey);
     return wrapper;
   }
 

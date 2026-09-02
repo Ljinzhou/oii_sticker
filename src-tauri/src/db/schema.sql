@@ -108,9 +108,17 @@ CREATE TABLE todo_blocks (
     reminder_at   TEXT,
     due_at        TEXT,
     repeat_rule   TEXT,
+    -- v15 提醒触发状态：调度器已触发标记（避免同一时点重复提醒）
+    reminded_at   TEXT,
+    due_notified_at TEXT,
+    -- v16 用户确认收到提醒的时刻（红点点击；确认后同周期不再提示）
+    reminder_ack_at TEXT,
+    due_ack_at       TEXT,
     sort_order    INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    -- v17 完成时刻（本地时间）；取消完成时清空。已完成任务块展示用。
+    completed_at  TEXT
 );
 
 CREATE INDEX idx_todo_blocks_parent ON todo_blocks(parent_id);

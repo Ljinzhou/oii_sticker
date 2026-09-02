@@ -44,10 +44,14 @@ describe("MarkdownView", () => {
   });
 
   it("Todo 卡片在交互态可切换，卡片空白处打开窗口", async () => {
-    const todo = { id: "t-1", sticker_id: 1, title: "购物", block_title: "", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
-    const wrapper = mount(MarkdownView, { props: { content: '<todo-block id="t-1"></todo-block>', interactive: true, todoBlocks: [todo] } });
+    // 三层：块 t-1（自身不是任务）→ 父任务 t-2
+    const block = { id: "t-1", sticker_id: 1, title: "", block_title: "购物块", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const task = { ...block, id: "t-2", title: "购物", block_title: "", parent_id: "t-1" };
+    const wrapper = mount(MarkdownView, { props: { content: '<todo-block id="t-1"></todo-block>', interactive: true, todoBlocks: [block, task] } });
+    // 复选框渲染的是父任务
     await wrapper.find(".todo-task-checkbox").trigger("click");
-    expect(wrapper.emitted("toggleTodo")?.[0]).toEqual(["t-1", true]);
+    expect(wrapper.emitted("toggleTodo")?.[0]).toEqual(["t-2", true]);
+    // 点卡头空白处 → 打开该块的窗口（块 id）
     await wrapper.find(".tb-head").trigger("click");
     expect(wrapper.emitted("openTodo")?.[0]).toEqual(["t-1"]);
   });
