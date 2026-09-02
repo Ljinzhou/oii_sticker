@@ -32,9 +32,12 @@ function makeTodo(overrides: Partial<TodoBlock> = {}): TodoBlock {
   };
 }
 
+/** 当前块 id：parent_id 等于它就是「父任务」，等于别的父任务则是「子任务」。 */
+const BLOCK = "block-1";
+
 function mountDetail(item = makeTodo()) {
   return mount(TodoDetail, {
-    props: { item, presets },
+    props: { item, presets, blockId: BLOCK },
     global: {
       stubs: {
         TodoDatePicker: { name: "TodoDatePicker", template: "<div />" },
@@ -150,9 +153,34 @@ describe("TodoDetail preset selections", () => {
     expect(wrapper.text()).toContain("截至时间");
   });
 
+  // 三层结构的关键回归：旧逻辑用 Boolean(parent_id) 判断"子任务"，
+  // 会把父任务（parent_id = 块 id）误判成子任务而隐藏提醒设置。
+  it("父任务（挂在块下）显示提醒/截止/重复，且可添加子任务", () => {
+    const wrapper = mountDetail(makeTodo({ id: "p1", title: "父任务", parent_id: BLOCK }));
+    expect(wrapper.text()).toContain("任务详情");
+    expect(wrapper.text()).toContain("提醒时间");
+    expect(wrapper.text()).toContain("截至时间");
+    expect(wrapper.text()).toContain("设置任务重复");
+    expect(wrapper.find(".add-child-btn").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("子任务不继承高级设置");
+  });
+
+  it("子任务（挂在父任务下）隐藏提醒/截止/重复，只留名称与描述", () => {
+    const wrapper = mountDetail(makeTodo({ id: "s1", title: "子任务", parent_id: "p1" }));
+    expect(wrapper.text()).toContain("子任务详情");
+    expect(wrapper.text()).not.toContain("提醒时间");
+    expect(wrapper.text()).not.toContain("截至时间");
+    expect(wrapper.text()).not.toContain("设置任务重复");
+    expect(wrapper.find(".add-child-btn").exists()).toBe(false);
+    expect(wrapper.text()).toContain("子任务不继承高级设置");
+    // 名称与描述仍在
+    expect(wrapper.find('input[type="text"]').exists()).toBe(true);
+    expect(wrapper.find("textarea").exists()).toBe(true);
+  });
+
   it("自定义按钮打开 Teleport 浮窗，点击外部关闭", async () => {
     const wrapper = mount(TodoDetail, {
-      props: { item: makeTodo(), presets },
+      props: { item: makeTodo(), presets, blockId: BLOCK },
       attachTo: document.body,
       global: { stubs: { TodoDatePicker: true, RepeatPicker: true } },
     });
@@ -169,7 +197,7 @@ describe("TodoDetail preset selections", () => {
 
   it("同一自定义按钮再次点击后浮窗保持关闭", async () => {
     const wrapper = mount(TodoDetail, {
-      props: { item: makeTodo(), presets },
+      props: { item: makeTodo(), presets, blockId: BLOCK },
       attachTo: document.body,
       global: { stubs: { TodoDatePicker: true, RepeatPicker: true } },
     });
