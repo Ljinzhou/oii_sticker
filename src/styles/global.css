@@ -31,3 +31,34 @@ body,
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ── Todo 提醒高亮（reminder.rs 调度线程触发后 reminded_at/due_notified_at 驱动）──
+   生效范围：展示视图（MarkdownView）与编辑视图（StickerEditorLive）的任务卡、
+   以及独立 Todo 窗口的任务列表行。 */
+@keyframes todo-reminder-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 138, 20, 0.45); }
+  50% { box-shadow: 0 0 0 5px rgba(240, 138, 20, 0.08); }
+}
+
+.todo-block-card.todo-block-reminded,
+.todo-list li.reminded {
+  animation: todo-reminder-pulse 2s ease-in-out infinite;
+}
+
+/* 到点提醒：暖橙底 + 左侧标记条；已逾期：红色系。行/卡片同语义。 */
+.todo-block-card.todo-block-reminded { border-color: rgba(240, 138, 20, 0.55); background: rgba(255, 243, 224, 0.75); }
+.todo-block-card.todo-block-overdue { border-color: rgba(180, 35, 24, 0.55); background: rgba(255, 235, 232, 0.8); }
+.tb-reminded:not(.tb-done) { background: rgba(255, 213, 145, 0.35); border-radius: 5px; }
+.tb-overdue:not(.tb-done) { background: rgba(255, 205, 198, 0.5); border-radius: 5px; }
+
+/* 卡头状态徽标 */
+.tb-flag {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.tb-flag-reminded { color: #a15c00; background: rgba(255, 183, 77, 0.28); }
+.tb-flag-overdue { color: #b42318; background: rgba(255, 138, 128, 0.25); }
