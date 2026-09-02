@@ -16,11 +16,40 @@ fn next_id() -> String {
     format!("t-{millis:x}-{sequence:x}")
 }
 
+/// 节点层级：0 = 块（根），1 = 父任务，2 = 子任务。
+///
+/// 结构固定为三层：`块 → 父任务 → 子任务`。
+/// 块由编辑器 `/` 菜单创建（parent_id = NULL），自身不作为任务显示；
+/// 父任务由 Todo 窗口「新建任务」创建；子任务只能挂在父任务下。
+pub fn depth_of(conn: &Connection, id: &str) -> Result<usize> {
+    let mut depth = 0usize;
+    let mut cursor = get(conn, id)?;
+    while let Some(node) = cursor {
+        let Some(parent) = node.parent_id.clone() else { break };
+        depth += 1;
+        cursor = get(conn, &parent)?;
+        // 兜底：数据异常成环时停住，避免死循环
+        if depth > 16 { break; }
+    }
+    Ok(depth)
+}
+
+/// 创建新节点。
+///
+/// 层级约束（三层结构）：
+///   - `parent_id = None`        → 新建**块**（第 0 层）
+///   - parent 为块（第 0 层）     → 新建**父任务**（第 1 层）
+///   - parent 为父任务（第 1 层） → 新建**子任务**（第 2 层）
+///   - parent 为子任务（第 2 层） → 拒绝（子任务下不能再挂）
 pub fn create(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Result<TodoBlock> {
     if let Some(parent_id) = parent_id {
         let parent = get(conn, parent_id)?.context("父任务不存在")?;
-        if parent.sticker_id != sticker_id || parent.parent_id.is_some() {
-            bail!("子任务必须属于同一便签且只能嵌套一层");
+        if parent.sticker_id != sticker_id {
+            bail!("任务必须属于同一便签");
+        }
+        let parent_depth = depth_of(conn, parent_id)?;
+        if parent_depth >= 2 {
+            bail!("最多两层：子任务下不能再添加子任务");
         }
     }
     let id = next_id();
@@ -33,7 +62,7 @@ pub fn create(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Re
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, sort_order, created_at, updated_at
+        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at
          FROM todo_blocks WHERE id = ?1",
     )?;
     Ok(stmt.query_row(params![id], row_to_block).optional()?)
@@ -41,7 +70,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
 
 pub fn list_by_sticker(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlock>> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, sort_order, created_at, updated_at
+        "SELECT id, sticker_id, title, block_title, description, is_completed, parent_id, reminder_at, due_at, repeat_rule, reminded_at, due_notified_at, reminder_ack_at, due_ack_at, sort_order, created_at, updated_at, completed_at
          FROM todo_blocks WHERE sticker_id = ?1
          ORDER BY parent_id IS NOT NULL, sort_order, created_at, id",
     )?;
@@ -53,15 +82,43 @@ pub fn list_by_sticker(conn: &Connection, sticker_id: i64) -> Result<Vec<TodoBlo
 
 pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBlock> {
     let current = get(conn, id)?.context("Todo 块不存在")?;
-    let child = current.parent_id.is_some();
+    // 只有第 2 层「子任务」受限（仅名称+备注）；
+    // 第 1 层「父任务」与本块本身可正常写提醒/截止/重复。
+    // 注意：不能用 parent_id.is_some() 判断——那会把父任务也误判成子任务。
+    let child = depth_of(conn, id)? >= 2;
     conn.execute(
         "UPDATE todo_blocks SET
             title = COALESCE(?2, title), block_title = COALESCE(?3, block_title),
             description = COALESCE(?4, description),
             is_completed = COALESCE(?5, is_completed),
+            -- 完成时刻：翻转为完成时写入本地时间；取消完成时清空；未动时保持原值。
+            completed_at = CASE
+                WHEN ?5 = 1 THEN datetime('now', 'localtime')
+                WHEN ?5 = 0 THEN NULL
+                ELSE completed_at END,
             reminder_at = CASE WHEN ?6 OR ?7 IS NULL THEN reminder_at ELSE NULLIF(?7, '') END,
             due_at = CASE WHEN ?8 OR ?9 IS NULL THEN due_at ELSE NULLIF(?9, '') END,
             repeat_rule = CASE WHEN ?10 OR ?11 IS NULL THEN repeat_rule ELSE NULLIF(?11, '') END,
+            -- 重新设置提醒/截止（或完成任务）时重置触发与确认标记，调度器重新武装：
+            --   提醒时间变化 → 清 reminded_at + reminder_ack_at；
+            --   截止变化 → 清 due_notified_at + due_ack_at；
+            --   完成任务 → 全部清空（已完成任务不再提醒/高亮）。
+            reminded_at = CASE
+                WHEN ?5 = 1 THEN NULL
+                WHEN ?6 OR ?7 IS NULL THEN reminded_at
+                ELSE NULL END,
+            reminder_ack_at = CASE
+                WHEN ?5 = 1 THEN NULL
+                WHEN ?6 OR ?7 IS NULL THEN reminder_ack_at
+                ELSE NULL END,
+            due_notified_at = CASE
+                WHEN ?5 = 1 THEN NULL
+                WHEN ?8 OR ?9 IS NULL THEN due_notified_at
+                ELSE NULL END,
+            due_ack_at = CASE
+                WHEN ?5 = 1 THEN NULL
+                WHEN ?8 OR ?9 IS NULL THEN due_ack_at
+                ELSE NULL END,
             updated_at = datetime('now') WHERE id = ?1",
         params![
             id, patch.title, patch.block_title, patch.description, patch.is_completed.map(|v| v as i32),
@@ -69,6 +126,26 @@ pub fn update(conn: &Connection, id: &str, patch: &TodoPatch) -> Result<TodoBloc
         ],
     ).context("更新 Todo 块失败")?;
     get(conn, id)?.context("更新 Todo 块后读取失败")
+}
+
+/// 确认收到提醒（红点点击）：清除已触发标记（高亮消失）并记录确认时刻。
+///
+/// 只对「已触发」的字段写确认时刻，避免把未触发的未来提醒误标记为已读。
+/// 调度器据此保证：确认后同一提醒不再触发（重启也不会再提示），
+/// 而「晚于确认时刻」的新设置提醒 / 循环任务后续周期照常触发。
+pub fn ack_alerts(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
+    conn.execute(
+        "UPDATE todo_blocks SET
+            reminder_ack_at = CASE WHEN reminded_at IS NOT NULL THEN datetime('now') ELSE reminder_ack_at END,
+            due_ack_at      = CASE WHEN due_notified_at IS NOT NULL THEN datetime('now') ELSE due_ack_at END,
+            reminded_at     = NULL,
+            due_notified_at = NULL,
+            updated_at      = datetime('now')
+         WHERE id = ?1",
+        params![id],
+    )
+    .context("写入提醒确认失败")?;
+    get(conn, id)
 }
 
 /// 删除一个 Todo 任务（根任务即块本体，同时移除便签内容中的标记行）。
@@ -148,6 +225,36 @@ fn remove_block_tag(conn: &Connection, sticker_id: i64, id: &str) -> Result<()> 
         })?;
     }
     Ok(())
+}
+
+/// 删除一个便签中**无 `<todo-block>` 标签对应**的根任务（以及 CASCADE 子树）。
+///
+/// 应用场景：用户手动在 Markdown 源码中删除了若干 `<todo-block>` 标签并保存，
+/// 需要把 DB 里对应的根任务清理掉（连同子任务），防止"标签没了但任务仍在，
+/// Todo 窗口与便签渲染状态错位"（"删除标签后任务复活"的 bug 修复）。
+///
+/// 与 `delete` 的差异：
+///   - 不调 `remove_block_tag`（标签已无）；
+///   - 不校验"每个块至少保留一个任务"——用户删标签是显式意图，全删也允许；
+///   - 仅作用于指定 `sticker_id` 的根任务。
+///
+/// 返回被删除的根任务 id 列表（按 DB 顺序）。
+pub fn delete_roots_not_in(conn: &Connection, sticker_id: i64, tag_ids: &[String]) -> Result<Vec<String>> {
+    let blocks = list_by_sticker(conn, sticker_id)?;
+    let mut doomed: Vec<String> = Vec::new();
+    for b in &blocks {
+        if b.parent_id.is_some() { continue; } // 只处理根任务，子任务靠 CASCADE
+        if tag_ids.iter().any(|t| t == &b.id) { continue; }
+        doomed.push(b.id.clone());
+    }
+    if doomed.is_empty() { return Ok(doomed); }
+    let tx = conn.unchecked_transaction()?;
+    for id in &doomed {
+        tx.execute("DELETE FROM todo_blocks WHERE id = ?1", params![id])
+            .context("删除孤儿根任务失败")?;
+    }
+    tx.commit()?;
+    Ok(doomed)
 }
 
 /// 为「便签内容中无标记」的根任务补写 `<todo-block>` 标记（追加到内容末尾）。
@@ -232,7 +339,10 @@ fn row_to_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlock> {
     Ok(TodoBlock {
         id: row.get(0)?, sticker_id: row.get(1)?, title: row.get(2)?, block_title: row.get(3)?,
         description: row.get(4)?, is_completed: row.get(5)?, parent_id: row.get(6)?, reminder_at: row.get(7)?,
-        due_at: row.get(8)?, repeat_rule: row.get(9)?, sort_order: row.get(10)?, created_at: row.get(11)?, updated_at: row.get(12)?,
+        due_at: row.get(8)?, repeat_rule: row.get(9)?, reminded_at: row.get(10)?, due_notified_at: row.get(11)?,
+        reminder_ack_at: row.get(12)?, due_ack_at: row.get(13)?,
+        sort_order: row.get(14)?, created_at: row.get(15)?, updated_at: row.get(16)?,
+        completed_at: row.get(17)?,
     })
 }
 
@@ -261,20 +371,105 @@ mod tests {
         let child_two = create(&conn, sticker_id, Some(&parent.id)).unwrap();
         assert_eq!(child_one.parent_id.as_deref(), Some(parent.id.as_str()));
         assert_eq!(child_two.parent_id.as_deref(), Some(parent.id.as_str()));
-        assert!(create(&conn, sticker_id, Some(&child_one.id)).is_err());
+    }
+
+    /// 三层结构：块(0) → 父任务(1) → 子任务(2)，第四层被拒绝。
+    #[test]
+    fn three_level_nesting_allowed_but_fourth_rejected() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        assert_eq!(depth_of(&conn, &block.id).unwrap(), 0, "parent_id=NULL 的是块（第 0 层）");
+
+        // 第 1 层：父任务（挂在块下）
+        let task = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        assert_eq!(depth_of(&conn, &task.id).unwrap(), 1);
+
+        // 第 2 层：子任务（挂在父任务下）
+        let sub = create(&conn, sticker_id, Some(&task.id)).unwrap();
+        assert_eq!(depth_of(&conn, &sub.id).unwrap(), 2);
+
+        // 第 3 层：子任务下不能再挂 —— 拒绝
+        let err = create(&conn, sticker_id, Some(&sub.id)).unwrap_err().to_string();
+        assert!(err.contains("最多两层"), "应拒绝第四层，实际错误：{err}");
+
+        // 跨便签仍然拒绝
+        let other = sticker(&conn);
+        assert!(create(&conn, other, Some(&task.id)).is_err());
+    }
+
+    /// 三层下「谁能写提醒」：
+    ///   - 父任务（第 1 层）→ 可以写提醒/截止/重复
+    ///   - 子任务（第 2 层）→ 一律忽略，只能改名称与备注
+    #[test]
+    fn parent_task_can_set_reminder_but_subtask_cannot() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        let task = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        let sub = create(&conn, sticker_id, Some(&task.id)).unwrap();
+
+        // 父任务：提醒/截止可写
+        let t = update(&conn, &task.id, &TodoPatch {
+            reminder_at: Some("2030-01-01T00:00:00Z".into()),
+            due_at: Some("2030-01-02T00:00:00Z".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(t.reminder_at.as_deref(), Some("2030-01-01T00:00:00Z"));
+        assert_eq!(t.due_at.as_deref(), Some("2030-01-02T00:00:00Z"));
+
+        // 子任务：提醒/截止被忽略，但名称与备注可写
+        let s = update(&conn, &sub.id, &TodoPatch {
+            title: Some("子任务改名".into()),
+            description: Some("子任务备注".into()),
+            reminder_at: Some("2030-01-01T00:00:00Z".into()),
+            due_at: Some("2030-01-02T00:00:00Z".into()),
+            repeat_rule: Some("daily".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(s.title, "子任务改名", "子任务可改名称");
+        assert_eq!(s.description.as_deref(), Some("子任务备注"), "子任务可写备注");
+        assert!(s.reminder_at.is_none(), "子任务不能设提醒");
+        assert!(s.due_at.is_none(), "子任务不能设截止");
+        assert!(s.repeat_rule.is_none(), "子任务不能设重复");
     }
 
     #[test]
-    fn child_cannot_write_advanced_fields_and_delete_keeps_block_alive() {
+    fn delete_child_keeps_block_alive() {
         let conn = conn();
         let sticker_id = sticker(&conn);
         let parent = create(&conn, sticker_id, None).unwrap();
         let child = create(&conn, sticker_id, Some(&parent.id)).unwrap();
-        let updated = update(&conn, &child.id, &TodoPatch { reminder_at: Some("2030-01-01T00:00:00Z".into()), ..Default::default() }).unwrap();
-        assert!(updated.reminder_at.is_none());
         delete(&conn, &child.id).unwrap();
         assert!(get(&conn, &child.id).unwrap().is_none());
         assert!(get(&conn, &parent.id).unwrap().is_some());
+    }
+
+    /// 提醒触发标记的生命周期：改提醒时间/完成任务时重置，未涉及更新保持。
+    #[test]
+    fn update_resets_trigger_flags_on_rearm_and_complete() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        // 模拟调度器已触发：直接 SQL 写入触发标记
+        conn.execute(
+            "UPDATE todo_blocks SET reminded_at = '2026-08-25T08:00:00Z', due_notified_at = '2026-08-25T09:00:00Z' WHERE id = ?1",
+            params![block.id],
+        ).unwrap();
+
+        // 无关字段更新（改标题）：触发标记保持（高亮仍有效）
+        let keep = update(&conn, &block.id, &TodoPatch { title: Some("改名".into()), ..Default::default() }).unwrap();
+        assert_eq!(keep.reminded_at.as_deref(), Some("2026-08-25T08:00:00Z"));
+        assert_eq!(keep.due_notified_at.as_deref(), Some("2026-08-25T09:00:00Z"));
+
+        // 重新设置提醒时间：reminded_at 重置（重新武装），due 标记不受影响
+        let rearmed = update(&conn, &block.id, &TodoPatch { reminder_at: Some("2026-08-26T10:00:00Z".into()), ..Default::default() }).unwrap();
+        assert!(rearmed.reminded_at.is_none(), "重设提醒应清除已触发标记");
+        assert_eq!(rearmed.due_notified_at.as_deref(), Some("2026-08-25T09:00:00Z"));
+
+        // 完成任务：两个触发标记都清空
+        let done = update(&conn, &block.id, &TodoPatch { is_completed: Some(true), ..Default::default() }).unwrap();
+        assert!(done.reminded_at.is_none() && done.due_notified_at.is_none(), "完成任务应清除全部触发标记");
     }
 
     #[test]
@@ -346,6 +541,28 @@ mod tests {
         assert_eq!(updated.block_title, "我的块");
     }
 
+    /// 完成时刻（completed_at）生命周期：完成时写入本地时间、
+    /// 无关更新保持原值、取消完成时清空（供已完成任务块展示）。
+    #[test]
+    fn completed_at_roundtrip_on_complete_and_undo() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        assert!(block.completed_at.is_none(), "新任务无完成时刻");
+
+        let done = update(&conn, &block.id, &TodoPatch { is_completed: Some(true), ..Default::default() }).unwrap();
+        let stamp = done.completed_at.clone().expect("完成应写入 completed_at");
+        assert_eq!(stamp.len(), 19, "datetime('now','localtime') 形如 YYYY-MM-DD HH:MM:SS");
+
+        // 无关字段更新：完成时刻保持不变（程序不得擅改用户数据）
+        let keep = update(&conn, &block.id, &TodoPatch { title: Some("改名".into()), ..Default::default() }).unwrap();
+        assert_eq!(keep.completed_at.as_deref(), Some(stamp.as_str()));
+
+        // 取消完成：清空
+        let undone = update(&conn, &block.id, &TodoPatch { is_completed: Some(false), ..Default::default() }).unwrap();
+        assert!(undone.completed_at.is_none());
+    }
+
     #[test]
     fn retag_orphans_appends_tags_for_untagged_roots_only() {
         let conn = conn();
@@ -366,5 +583,74 @@ mod tests {
         let again = retag_orphans_for_sticker(&conn, sticker_id).unwrap();
         assert!(again.is_empty());
         assert_eq!(sticker_repo::get(&conn, sticker_id).unwrap().unwrap().content, after);
+    }
+
+    /// 核心 bug 修复：用户删除 markdown 中的 `<todo-block>` 标签并保存后，
+    /// `delete_roots_not_in` 必须把对应的根任务（连同子任务）从 DB 中清掉，
+    /// 防止"标签没了但任务仍在"导致 Todo 窗口与便签渲染错位。
+    #[test]
+    fn delete_roots_not_in_removes_tagged_missing_roots_and_cascades() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+
+        // 3 个根任务 + 各自的子任务
+        let a = create(&conn, sticker_id, None).unwrap();
+        let a_child = create(&conn, sticker_id, Some(&a.id)).unwrap();
+        let b = create(&conn, sticker_id, None).unwrap();
+        let b_child = create(&conn, sticker_id, Some(&b.id)).unwrap();
+        let c = create(&conn, sticker_id, None).unwrap();
+
+        // 当前 markdown 仅保留 a 的标签（b、c 的标签被用户手动删了）
+        let content = format!("<todo-block id=\"{}\"></todo-block>\n", a.id);
+        sticker_repo::update(&conn, sticker_id, &sticker_repo::StickerPatch {
+            content: Some(content),
+            ..Default::default()
+        }).unwrap();
+
+        // 收集"无标签"的根 → 应是 b、c
+        let doomed = delete_roots_not_in(&conn, sticker_id, &[a.id.clone()]).unwrap();
+        assert_eq!(doomed.len(), 2);
+        assert!(doomed.contains(&b.id));
+        assert!(doomed.contains(&c.id));
+        assert!(!doomed.contains(&a.id), "a 有标签，不应被删");
+
+        // b、c 行已被删，子任务靠 CASCADE 一并清掉
+        assert!(get(&conn, &a.id).unwrap().is_some(), "a 应保留");
+        assert!(get(&conn, &a_child.id).unwrap().is_some(), "a 的子任务应保留");
+        assert!(get(&conn, &b.id).unwrap().is_none(), "b 应被删");
+        assert!(get(&conn, &b_child.id).unwrap().is_none(), "b 的子任务应被级联删");
+        assert!(get(&conn, &c.id).unwrap().is_none(), "c 应被删");
+
+        // 幂等：再调一次无新对象被删
+        let again = delete_roots_not_in(&conn, sticker_id, &[a.id.clone()]).unwrap();
+        assert!(again.is_empty(), "无可删时返回空列表");
+    }
+
+    /// 用户清空 content（保存空便签）→ 所有根任务全部被清。
+    /// 这与"用户显式删除所有标签"的语义一致：标签都没了，块也没有存在的理由。
+    #[test]
+    fn delete_roots_not_in_with_empty_tag_list_clears_all_roots() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let a = create(&conn, sticker_id, None).unwrap();
+        let b = create(&conn, sticker_id, None).unwrap();
+        // 用户保存了空便签（清空 content）
+        sticker_repo::update(&conn, sticker_id, &sticker_repo::StickerPatch {
+            content: Some(String::new()),
+            ..Default::default()
+        }).unwrap();
+        let doomed = delete_roots_not_in(&conn, sticker_id, &[]).unwrap();
+        assert_eq!(doomed.len(), 2);
+        assert!(get(&conn, &a.id).unwrap().is_none());
+        assert!(get(&conn, &b.id).unwrap().is_none());
+    }
+
+    /// 没有任何根任务时调用不报错，返回空列表。
+    #[test]
+    fn delete_roots_not_in_is_noop_when_no_blocks() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let doomed = delete_roots_not_in(&conn, sticker_id, &[]).unwrap();
+        assert!(doomed.is_empty());
     }
 }
