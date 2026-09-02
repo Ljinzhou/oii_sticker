@@ -1,12 +1,18 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { DecorationSet, EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
   buildCodeBlockDecorations,
+  buildLiveBlockDecorations,
   buildLiveDecorations,
   collectBlockRanges,
   collectInlineRanges,
+  liveAtomicRangesField,
+  liveTodoBlocksField,
+  liveUiStateField,
+  setLiveTodoBlocks,
+  setLiveUiState,
 } from "./liveDecorations";
 import { CodeBlockWidget } from "./liveWidgets";
 
@@ -350,5 +356,67 @@ describe("buildLiveDecorations", () => {
     });
     expect(count).toBe(0);
     view.destroy();
+  });
+});
+
+describe("todo/done 块始终渲染（不因光标触及而退回源码）", () => {
+  const TAG = '<todo-block id="t-1"></todo-block>';
+  const doc = `${TAG}\n\ntext`;
+
+  function makeState(docText: string, cursor?: number) {
+    return EditorState.create({
+      doc: docText,
+      selection: cursor === undefined ? undefined : EditorSelection.single(cursor),
+      extensions: [markdown({ base: markdownLanguage }), liveTodoBlocksField.init(() => []), liveUiStateField],
+    });
+  }
+
+  interface Found { from: number; to: number; spec: { widget?: unknown } }
+  function collect(set: DecorationSet): Found[] {
+    const found: Found[] = [];
+    set.between(0, doc.length, (from: number, to: number, dec: unknown) => {
+      found.push({ from, to, spec: (dec as { spec: { widget?: unknown } }).spec });
+    });
+    return found;
+  }
+
+  it("光标在 todo 行内：卡片 decoration 仍然存在", () => {
+    const set = buildLiveBlockDecorations(makeState(doc, 5));
+    const spans = collect(set).filter((f) => f.from === 0 && f.to === TAG.length);
+    expect(spans.length).toBe(1);
+  });
+
+  it("代码块仍保留「光标所在行显示源码」行为", () => {
+    const codeDoc = "```js\nconst a = 1;\n```\nafter";
+    const set = buildLiveBlockDecorations(makeState(codeDoc, 10));
+    expect(collect(set).length).toBe(0);
+    const away = buildLiveBlockDecorations(makeState(codeDoc, codeDoc.length - 1));
+    expect(collect(away).length).toBe(1);
+  });
+
+  it("原子区间覆盖 todo/done 标签行：光标无法进入其内部", () => {
+    const state = EditorState.create({
+      doc,
+      extensions: [markdown({ base: markdownLanguage }), liveAtomicRangesField],
+    });
+    const set = state.field(liveAtomicRangesField);
+    const spans: Array<[number, number]> = [];
+    set.between(0, doc.length, (from: number, to: number) => {
+      spans.push([from, to]);
+    });
+    expect(spans).toEqual([[0, TAG.length]]);
+  });
+
+  it("setLiveUiState 生效：折叠状态进入 TodoBlockWidget，键随 uiKey", () => {
+    const TODO = { id: "t-1", sticker_id: 1, title: "任务", block_title: "", description: null, is_completed: false, parent_id: null, reminder_at: null, due_at: null, repeat_rule: null, created_at: "", updated_at: "" };
+    const folded = { folds: { "t-1": true }, subs: {}, doneFolds: {}, doneSrc: {} };
+    const state = makeState(doc, 0)
+      .update({ effects: [setLiveTodoBlocks.of([TODO]), setLiveUiState.of({ ui: folded, uiKey: "s1" })] })
+      .state;
+    const set = buildLiveBlockDecorations(state);
+    const span = collect(set)[0];
+    const widget = span.spec.widget as { eq?: unknown; ui: { folds: Record<string, boolean> }; uiKey: string };
+    expect(widget.ui.folds["t-1"]).toBe(true);
+    expect(widget.uiKey).toBe("s1");
   });
 });

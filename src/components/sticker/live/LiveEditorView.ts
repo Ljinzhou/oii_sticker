@@ -36,8 +36,15 @@ import {
 import { tags } from "@lezer/highlight";
 import { fontFamilyTheme, fontSizeTheme, lightTheme, makeShowLineNumbers } from "./editorTheme";
 import { reportSlash } from "./editorSlash";
+import { applyExternalDoc } from "./externalDoc";
 import { liveBlockDecorationsField, liveDecorationsPlugin, liveTodoBlocksField, setLiveTodoBlocks } from "./liveDecorations";
 import { refreshLivePreview } from "./liveEffects";
+import {
+  liveAtomicRangesField,
+  liveUiStateField,
+  setLiveUiState,
+} from "./liveDecorations";
+import { DEFAULT_BLOCK_UI, type BlockUiState } from "../../../utils/block-ui";
 import {
   buildBackspaceTransaction,
   buildEnterTransaction,
@@ -67,6 +74,18 @@ export interface LiveViewOptions {
   onSlashClose?: () => void;
   onTodoOpen?: (id: string) => void;
   todoBlocks?: TodoBlock[];
+  /** 用户折叠状态快照（卡片折叠/子任务显隐/已完成来源），经 effect 热替换。 */
+  ui?: BlockUiState;
+  /** UI 状态的便签键（stickerId 字符串）。 */
+  uiKey?: string;
+  /**
+   * 卡片内用户交互（点击下拉箭头等）：foldCard=任务块整体折叠、
+   * foldSub=某任务的子任务显隐、doneFold=已完成列表折叠。
+   * 持久化由调用方完成，编辑器只上报语义事件。
+   */
+  onBlockUiAction?: (action: "foldCard" | "foldSub" | "doneFold", id: string) => void;
+  /** 已完成任务卡来源切换（select.change；"" = 全部任务）。 */
+  onDoneSource?: (sourceId: string, uiKey: string) => void;
   /**
    * 粘贴链接时获取网页标题（默认走 Tauri `fetch_page_title_cmd`）；
    * 返回 null → 保持 `[](url)` 占位。测试可注入 mock。
@@ -281,7 +300,15 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         },
         { key: "Tab", run: (view) => runTableOrLiveTransform(view, 1) },
         { key: "Shift-Tab", run: (view) => runTableOrLiveTransform(view, -1) },
-        { key: "Backspace", run: (view) => runLiveTransform(view, buildBackspaceTransaction) },
+        {
+          key: "Backspace",
+          run: (view) => {
+            // 任务块/已完成块整行删除：第一次退格删掉整行标签内容（留空行），
+            // 第二次退格由默认行为并掉空行——两次即可删除整个块，不会逐字符撕。
+            if (deleteBlockLineBeforeCursor(view)) return true;
+            return runLiveTransform(view, buildBackspaceTransaction);
+          },
+        },
         { key: "Mod-b", run: (view) => runFormat(view, "**", "**", "input.format.bold") },
         { key: "Mod-i", run: (view) => runFormat(view, "*", "*", "input.format.italic") },
         { key: "Mod-Shift-x", run: (view) => runFormat(view, "~~", "~~", "input.format.strike") },
@@ -290,7 +317,10 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
       ])),
       EditorView.lineWrapping,
       liveTodoBlocksField.init(() => opts.todoBlocks ?? []),
+      liveUiStateField.init(() => ({ ui: opts.ui ?? DEFAULT_BLOCK_UI, uiKey: opts.uiKey ?? "" })),
       liveBlockDecorationsField,
+      // Todo/已完成块的原子区间：光标进不去 → 点击不再选中原始终端文本
+      liveAtomicRangesField,
       liveDecorationsPlugin,
       EditorView.updateListener.of((u) => {
         if (u.docChanged) {
@@ -308,9 +338,36 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   const view = new EditorView({ state, parent });
   view.dom.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
+    // 折叠/子任务/已完成折叠箭头优先于「点卡片开编辑窗」：
+    // 点箭头只切换显隐，不弹 Todo 窗口。
+    const fold = target?.closest<HTMLElement>("[data-fold]");
+    if (fold?.dataset.fold) {
+      event.stopPropagation();
+      opts.onBlockUiAction?.("foldCard", fold.dataset.fold);
+      return;
+    }
+    const caret = target?.closest<HTMLElement>("[data-caret]");
+    if (caret?.dataset.caret) {
+      event.stopPropagation();
+      opts.onBlockUiAction?.("foldSub", caret.dataset.caret);
+      return;
+    }
+    const doneFold = target?.closest<HTMLElement>("[data-donefold]");
+    if (doneFold && doneFold.dataset.donefold !== undefined) {
+      event.stopPropagation();
+      opts.onBlockUiAction?.("doneFold", doneFold.dataset.donefold ?? "");
+      return;
+    }
     const card = target?.closest<HTMLElement>(".todo-block-card");
     const id = card?.dataset.todoId;
     if (id) opts.onTodoOpen?.(id);
+  });
+  // 已完成任务卡：来源下拉切换
+  view.dom.addEventListener("change", (event) => {
+    const select = event.target as HTMLSelectElement | null;
+    if (!select || !select.classList.contains("sd-source")) return;
+    event.stopPropagation();
+    opts.onDoneSource?.(select.value, select.dataset.sdKey ?? "");
   });
   void mathInstancePromise.then(() => {
     if (view.dom.isConnected) {
@@ -324,10 +381,9 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   return view;
 }
 
-/** 外部内容更新 → 同步进编辑器（内容相同则跳过，避免自身回写触发循环）。 */
+/** 外部内容更新 → 同步进编辑器（最小差异替换，保留光标；组词期间跳过）。 */
 export function setLiveDoc(view: EditorView, doc: string): void {
-  if (view.state.doc.toString() === doc) return;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: doc } });
+  applyExternalDoc(view, doc);
 }
 
 /** 更新编辑字号（theme compartment 热替换）。 */
@@ -357,4 +413,45 @@ export function setLiveLineNumbers(view: EditorView, show: boolean): void {
 /** 外部 Todo 更新后刷新实时预览中的受控任务卡片。 */
 export function setLiveTodoBlocksInView(view: EditorView, todoBlocks: TodoBlock[]): void {
   view.dispatch({ effects: setLiveTodoBlocks.of(todoBlocks) });
+}
+
+/** 用户折叠状态变化后刷新卡片渲染（不触碰光标与文档）。 */
+export function setLiveUiStateInView(view: EditorView, ui: BlockUiState, uiKey: string): void {
+  view.dispatch({ effects: setLiveUiState.of({ ui, uiKey }) });
+}
+
+const BLOCK_LINE_RE = new RegExp("^<(todo-block|show-done)\\b");
+
+/**
+ * Backspace 整行删除任务块/已完成块标签：
+ *  - 光标在该块行的行尾，或位于其下一空行行首（原子区间把光标推到这里）→
+ *    一次退格删除整行内容，留下一个空行；
+ *  - 第二次退格由默认行为并掉该空行——两次即可完整删除一个块。
+ * 其余情况返回 false 交给后续键位处理。
+ */
+function deleteBlockLineBeforeCursor(view: EditorView): boolean {
+  const { state } = view;
+  const selection = state.selection.main;
+  if (!selection.empty) return false;
+  const pos = selection.head;
+  const line = state.doc.lineAt(pos);
+  let targetLine: import("@codemirror/state").Line | null = null;
+  if (BLOCK_LINE_RE.test(line.text.trim())) {
+    // 光标就在块行内（行尾）：删本行
+    targetLine = line;
+  } else if (pos === line.from && line.number > 1) {
+    // 光标在行首且上一行是块行：删上一行（等价于从下一行往上删）
+    const prev = state.doc.line(line.number - 1);
+    if (BLOCK_LINE_RE.test(prev.text.trim())) targetLine = prev;
+  }
+  if (!targetLine) return false;
+  // 删除整行内容后，光标放在「下一行行首」：这样第二次退格由默认行为
+  // 并掉残留空行（两次退格完整删除一个块）。块是最后一行时留在原地。
+  const hasNextLine = targetLine.to < state.doc.length;
+  view.dispatch({
+    changes: { from: targetLine.from, to: targetLine.to },
+    selection: { anchor: hasNextLine ? targetLine.from + 1 : targetLine.from },
+    userEvent: "delete.backward",
+  });
+  return true;
 }
