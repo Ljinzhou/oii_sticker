@@ -5,12 +5,14 @@ import { invoke, listen } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
 import { useSettingsStore } from "../../stores/settings";
 import { hexToRgba } from "../../utils/markdown";
+import { readBlockUi } from "../../utils/block-ui";
 import {
   createAutoScrollCursor,
   stepAutoScroll,
   type AutoScrollCursor,
 } from "../../utils/auto-scroll";
 import type { Sticker, StickerMode, TodoBlock } from "../../types";
+import { reminderToastText, watchTodoReminders, type TodoReminderPayload } from "../../utils/todo-reminders";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import StickerViewer from "./StickerViewer.vue";
 import StickerEditor from "./StickerEditor.vue";
@@ -35,6 +37,12 @@ let collapseTimer: number | undefined;
 /** 模式切换提示（应用内 toast，2 秒自动消失，替代系统通知）。 */
 const modeToast = ref("");
 let toastTimer: number | undefined;
+/** 最近一次提醒触发负载：点击应用内提示可打开该任务的 Todo 编辑窗口。 */
+const reminderPayload = ref<TodoReminderPayload | null>(null);
+
+// 用户折叠状态（卡片/子任务/已完成来源）响应式快照：settings 条目变化即重算，
+// 本窗口操作或其它窗口同步都会驱动卡片重渲染。程序只读不写。
+const blockUi = computed(() => readBlockUi());
 
 const cardStyle = computed(() => {
   const bg = prefs.effective?.bg_color ?? sticker.value?.bg_color ?? "#FFF4D6";
@@ -161,6 +169,7 @@ async function applyMode(next: StickerMode) {
   }
   // 3) 模式切换提示：应用内 toast（2 秒），不再弹系统通知
   if (prev !== next && sticker.value) {
+    reminderPayload.value = null;
     const title = sticker.value.title || `便签 #${stickerId}`;
     modeToast.value = next === "display"
       ? `${title} 进入展示模式`
@@ -248,6 +257,17 @@ function onKeydown(e: KeyboardEvent) {
   onInteract();
 }
 
+/** 点击应用内提醒提示：打开对应任务的 Todo 编辑窗口。 */
+async function onModeToastClick() {
+  const payload = reminderPayload.value;
+  if (!payload) return;
+  try {
+    await invoke("open_todo_window_cmd", { id: payload.id });
+  } catch (error) {
+    console.error("[sticker] 点击提醒打开 Todo 窗口失败：", error);
+  }
+}
+
 async function onSaved() {
   await load();
   applyMode("interact");
@@ -285,6 +305,35 @@ onMounted(async () => {
     await listen<boolean>("sticky://todo-presence", (present) => {
       todoPresent.value = present;
       resetCollapseTimer();
+    }),
+  );
+  // Todo 提醒触发（调度线程广播）：刷新任务数据驱动高亮 + 应用内提示。
+  unlisteners.push(
+    await watchTodoReminders({
+      stickerId,
+      onFire: (payload) => {
+        invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId }).then((items) => {
+          todoBlocks.value = items;
+        });
+        reminderPayload.value = payload;
+        modeToast.value = `${reminderToastText(payload)}（点击打开任务）`;
+        if (toastTimer) window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => {
+          modeToast.value = "";
+          reminderPayload.value = null;
+        }, 6000);
+      },
+    }),
+  );
+  // Todo 块保存成功（TodoWindow 保存后定向通知）：应用内 toast「{标题} 保存成功」。
+  unlisteners.push(
+    await listen<string>("sticky://todo-saved", (title) => {
+      reminderPayload.value = null;
+      modeToast.value = `${title} 保存成功`;
+      if (toastTimer) window.clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => {
+        modeToast.value = "";
+      }, 2500);
     }),
   );
   // 全局鼠标钩子中键+左键唤醒（display 穿透状态）→ 前端切换 interact。
@@ -360,6 +409,8 @@ onBeforeUnmount(() => {
         :content="sticker?.content ?? ''"
         :interactive="mode === 'interact'"
         :todo-blocks="todoBlocks"
+        :ui-state="blockUi"
+        :ui-key="String(stickerId)"
         @toggle="(line) => invoke('toggle_todo_cmd', { id: stickerId, line })"
         @open-todo="(id) => invoke('open_todo_window_cmd', { id })"
         @toggle-todo="(id, isCompleted) => invoke('update_todo_block_cmd', { id, patch: { is_completed: isCompleted } })"
@@ -380,7 +431,7 @@ onBeforeUnmount(() => {
 
     <!-- 模式切换提示（2 秒自动消失） -->
     <transition name="toast">
-      <div v-if="modeToast" class="mode-toast">{{ modeToast }}</div>
+      <div v-if="modeToast" :class="['mode-toast', { clickable: reminderPayload }]" @click.stop="onModeToastClick">{{ modeToast }}</div>
     </transition>
   </div>
 </template>
@@ -551,6 +602,8 @@ onBeforeUnmount(() => {
   pointer-events: none;
   z-index: 40;
 }
+.mode-toast.clickable { pointer-events: auto; cursor: pointer; }
+.mode-toast.clickable:hover { background: rgba(40, 40, 40, 0.95); }
 
 .toast-enter-active,
 .toast-leave-active {

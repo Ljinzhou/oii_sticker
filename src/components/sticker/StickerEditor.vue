@@ -2,7 +2,7 @@
 // 编辑容器：持有 draft，按全局配置 editor_mode 路由到
 // StickerEditorMarkdown（原生文本）或 StickerEditorLive（及时预览）。
 // 保存/退出编辑由 StickerWindow overlay 的按钮调用本组件 expose 的 save()。
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { invoke } from "../../composables/useTauri";
 import { useSettingsStore } from "../../stores/settings";
 import StickerEditorMarkdown from "./StickerEditorMarkdown.vue";
@@ -22,7 +22,26 @@ const emit = defineEmits<{ saved: [] }>();
 
 const settings = useSettingsStore();
 const draft = ref(props.content);
+// 用户是否有未保存的编辑（外部内容更新时若为 true 则不做回写，避免覆盖在途输入）
+const dirty = ref(false);
 const liveRef = ref<InstanceType<typeof StickerEditorLive> | null>(null);
+
+/** 子编辑器写回：记录用户编辑（dirty）并保留在途输入。 */
+function onDraftEdit(value: string) {
+  dirty.value = true;
+  draft.value = value;
+}
+
+// 外部内容更新（保存后 load / sticky://push-update / 斜杠插入）→ 同步进编辑器。
+// 仅在用户未编辑（未 dirty 且及时预览实例无在途输入）时回写，避免覆盖新输入。
+watch(
+  () => props.content,
+  (value) => {
+    if (dirty.value) return;
+    if (isLive.value && liveRef.value?.isDirty?.()) return;
+    draft.value = value;
+  },
+);
 const slashItems = ref<SlashItem[]>([]);
 const slashFrom = ref(0);
 const slashTo = ref(0);
@@ -77,12 +96,14 @@ async function save() {
     return;
   }
   createdTodoIds.clear();
+  dirty.value = false;
   emit("saved");
 }
 
 async function discard() {
   await Promise.all([...createdTodoIds].map((id) => invoke("delete_todo_block_cmd", { id })));
   createdTodoIds.clear();
+  dirty.value = false;
 }
 
 onMounted(() => {
@@ -125,7 +146,8 @@ defineExpose({ save, discard });
   <div class="editor-root" :style="{ fontFamily: editFontFamily }">
     <StickerEditorMarkdown
       v-if="!isLive"
-      v-model="draft"
+      :model-value="draft"
+      @update:model-value="onDraftEdit"
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
@@ -140,11 +162,13 @@ defineExpose({ save, discard });
     <StickerEditorLive
       v-else
       ref="liveRef"
-      v-model="draft"
+      :model-value="draft"
+      @update:model-value="onDraftEdit"
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
       :todo-blocks="props.todoBlocks ?? []"
+      :ui-key="String(props.stickerId)"
       :slash-open="slashOpen"
       @save="save"
       @slash="openSlash"
