@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
 import { invoke, listen } from "../../composables/useTauri";
 import WorkspaceManager from "./WorkspaceManager.vue";
+import TodoPresetsManager from "./TodoPresetsManager.vue";
 
 const emit = defineEmits<{ close: [] }>();
 const settings = useSettingsStore();
@@ -305,7 +306,7 @@ onMounted(async () => {
       </div>
 
       <div v-else-if="activeMenu === 'todo'">
-        <h3>Todo 时间预设</h3>
+        <h3>Todo 设置</h3>
         <label class="row">
           <span>Todo 窗口默认置顶</span>
           <input
@@ -314,13 +315,9 @@ onMounted(async () => {
             @change="(e) => settings.set('default_todo_always_on_top', (e.target as HTMLInputElement).checked ? '1' : '0')"
           />
         </label>
-        <label class="row"><span>明天提醒时间</span><input type="number" min="0" max="23" :value="settings.get('todo_remind_tomorrow_hour', '9')" @change="(e) => settings.set('todo_remind_tomorrow_hour', (e.target as HTMLInputElement).value)" /></label>
-        <label class="row"><span>下周提醒星期</span><select :value="settings.get('todo_remind_next_week_dow', '1')" @change="(e) => settings.set('todo_remind_next_week_dow', (e.target as HTMLSelectElement).value)"><option v-for="(name, value) in ['周日','周一','周二','周三','周四','周五','周六']" :key="value" :value="value">{{ name }}</option></select></label>
-        <label class="row"><span>下周提醒时间</span><input type="number" min="0" max="23" :value="settings.get('todo_remind_next_week_hour', '9')" @change="(e) => settings.set('todo_remind_next_week_hour', (e.target as HTMLInputElement).value)" /></label>
-        <label class="row"><span>今天截止时间</span><input type="number" min="0" max="23" :value="settings.get('todo_due_today_hour', '18')" @change="(e) => settings.set('todo_due_today_hour', (e.target as HTMLInputElement).value)" /></label>
-        <label class="row"><span>明天截止时间</span><input type="number" min="0" max="23" :value="settings.get('todo_due_tomorrow_hour', '9')" @change="(e) => settings.set('todo_due_tomorrow_hour', (e.target as HTMLInputElement).value)" /></label>
-        <label class="row"><span>下周截止星期</span><select :value="settings.get('todo_due_next_week_dow', '1')" @change="(e) => settings.set('todo_due_next_week_dow', (e.target as HTMLSelectElement).value)"><option v-for="(name, value) in ['周日','周一','周二','周三','周四','周五','周六']" :key="value" :value="value">{{ name }}</option></select></label>
-        <p class="hint">提醒和截止 chip 选择“明天”或“下周”时使用以上默认值。</p>
+        <TodoPresetsManager kind="reminders" title="提醒时间预设" hint="用于 Todo 详情「提醒时间」行" />
+        <TodoPresetsManager kind="due" title="截至时间预设" hint="用于 Todo 详情「截至时间」行" />
+        <TodoPresetsManager kind="repeats" title="重复预设" hint="驱动每日自动重建与逾期改名" />
       </div>
 
       <!-- 工作空间 -->
