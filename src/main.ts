@@ -60,8 +60,8 @@ function blockBrowserShortcut(e: KeyboardEvent) {
   if (e.shiftKey) {
     // 保留：Ctrl+Shift+X 删除线、Ctrl+Shift+Z 重做、Ctrl+Shift+V 粘贴纯文本
     if (["x", "z", "v"].includes(key)) return;
-    // 拦截：Ctrl+Shift+I/J/C 开发者工具/审查元素、T 重开标签、N 无痕、Delete 清除数据、R 强制刷新
-    if (["t", "n", "i", "j", "c", "delete", "r"].includes(key)) {
+    // 拦截：Ctrl+Shift+J/C 开发者工具/审查元素、T 重开标签、N 无痕、Delete 清除数据、R 强制刷新（I 已放行以支持调试）
+    if (["t", "n", "j", "c", "delete", "r"].includes(key)) {
       e.preventDefault();
       e.stopImmediatePropagation();
     }

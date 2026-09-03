@@ -118,7 +118,11 @@ CREATE TABLE todo_blocks (
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
     -- v17 完成时刻（本地时间）；取消完成时清空。已完成任务块展示用。
-    completed_at  TEXT
+    completed_at  TEXT,
+    -- v18 重复任务重建锚点（本地日期 YYYY-MM-DD）：每日零点重建扫描
+    --     据此判断周期是否结束（anchor <= 今天 即需重建）；
+    --     重建处理后置 NULL（该任务退出重建队列，由新建的任务继续接力）。
+    repeat_anchor TEXT
 );
 
 CREATE INDEX idx_todo_blocks_parent ON todo_blocks(parent_id);

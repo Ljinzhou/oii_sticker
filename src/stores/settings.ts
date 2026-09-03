@@ -1,7 +1,18 @@
 // 系统设置 store（system_config 快照）
 import { defineStore } from "pinia";
 import { invoke } from "../composables/useTauri";
+import { DEFAULT_PRESETS, type PresetItem, type PresetKind } from "../utils/presets";
 import type { SystemConfig } from "../types";
+
+/** 解析配置中的预设 JSON，非法/缺失回退出厂默认。 */
+function parsePresets(key: string, fallback: PresetItem[]): PresetItem[] {
+  try {
+    const value = JSON.parse(key);
+    return Array.isArray(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 export const useSettingsStore = defineStore("settings", {
   state: () => ({
@@ -29,13 +40,11 @@ export const useSettingsStore = defineStore("settings", {
         return [];
       }
     },
-    todoPresetConfig: (state) => ({
-      remindTomorrowHour: parseInt(state.config.entries.todo_remind_tomorrow_hour ?? "9", 10),
-      remindNextWeekDow: parseInt(state.config.entries.todo_remind_next_week_dow ?? "1", 10),
-      remindNextWeekHour: parseInt(state.config.entries.todo_remind_next_week_hour ?? "9", 10),
-      dueTodayHour: parseInt(state.config.entries.todo_due_today_hour ?? "18", 10),
-      dueTomorrowHour: parseInt(state.config.entries.todo_due_tomorrow_hour ?? "9", 10),
-      dueNextWeekDow: parseInt(state.config.entries.todo_due_next_week_dow ?? "1", 10),
+    // Todo 预设（提醒/截止/重复三组），缺省用出厂内置（未落库）
+    todoPresets: (state) => ({
+      reminders: parsePresets(state.config.entries.todo_preset_reminders ?? "null", DEFAULT_PRESETS.reminders),
+      due: parsePresets(state.config.entries.todo_preset_due ?? "null", DEFAULT_PRESETS.due),
+      repeats: parsePresets(state.config.entries.todo_preset_repeats ?? "null", DEFAULT_PRESETS.repeats),
     }),
   },
   actions: {
@@ -45,6 +54,11 @@ export const useSettingsStore = defineStore("settings", {
     async set(key: string, value: string) {
       await invoke("set_config_cmd", { key, value });
       this.config.entries[key] = value;
+    },
+    /** 保存一组 Todo 预设（设置页增删改后调用）。 */
+    async setTodoPresets(kind: PresetKind, items: PresetItem[]) {
+      const key = kind === "reminders" ? "todo_preset_reminders" : kind === "due" ? "todo_preset_due" : "todo_preset_repeats";
+      await this.set(key, JSON.stringify(items));
     },
   },
 });

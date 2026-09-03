@@ -188,6 +188,8 @@ pub struct TodoBlock {
     pub sort_order: i64,
     /// 完成时刻（本地时间 "YYYY-MM-DD HH:MM:SS"）；取消完成时清空。
     pub completed_at: Option<String>,
+    /// 重复任务重建锚点（本地日期 "YYYY-MM-DD"；NULL=不参与每日重建队列）。
+    pub repeat_anchor: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
