@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useSettingsStore } from "./settings";
-import { DEFAULT_PRESETS } from "../utils/presets";
+import { DEFAULT_PRESETS, type PresetItem } from "../utils/presets";
 
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock("../composables/useTauri", () => ({ invoke: invokeMock }));
@@ -48,7 +48,7 @@ describe("settings store todoPresets", () => {
   it("setTodoPresets 写入对应 key 并更新本地快照", async () => {
     const store = useSettingsStore();
     await store.refresh();
-    const items = [{ id: "p-9", name: "每天两次", rule: { kind: "cycle", interval: 1, unit: "day", weekdays: null } }];
+    const items: PresetItem[] = [{ id: "p-9", name: "每天两次", rule: { kind: "cycle", interval: 1, unit: "day", weekdays: null } }];
     await store.setTodoPresets("repeats", items);
     expect(invokeMock).toHaveBeenCalledWith("set_config_cmd", {
       key: "todo_preset_repeats",
