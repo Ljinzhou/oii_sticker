@@ -140,7 +140,7 @@ export function presetToRepeatRule(rule: PresetRule): string | null {
 }
 
 /** 由 name/rule 构造预设条目（id 唯一化）。 */
-export function makePresetItem(name: string, rule: PresetRule, kind: PresetKind, existing: PresetItem[]): PresetItem {
+export function makePresetItem(name: string, rule: PresetRule, kind: PresetKind): PresetItem {
   const prefix = { reminders: "r", due: "d", repeats: "p" }[kind];
   const id = `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   return { id, name: name.trim() || defaultName(rule), rule };

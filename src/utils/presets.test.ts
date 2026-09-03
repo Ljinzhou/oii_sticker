@@ -10,7 +10,6 @@ import {
   presetToRepeatRule,
   sanitizeRule,
   stripOverdueSuffix,
-  type PresetItem,
   type PresetRule,
 } from "./presets";
 
@@ -137,8 +136,8 @@ describe("presetToRepeatRule 与 defaultName/makePresetItem", () => {
 
   it("makePresetItem 生成唯一 id 与回退名", () => {
     const rule: PresetRule = { kind: "relative", n: 1, unit: "h", time: null };
-    const a = makePresetItem("", rule, "reminders", []);
-    const b = makePresetItem("", rule, "reminders", []);
+    const a = makePresetItem("", rule, "reminders");
+    const b = makePresetItem("", rule, "reminders");
     expect(a.name).toBe("当前时间 +1 小时");
     expect(a.id).not.toBe(b.id);
     expect(a.id.startsWith("r-")).toBe(true);
@@ -173,7 +172,6 @@ describe("sanitizeRule 与逾期后缀", () => {
   it("逾期后缀追加与剥离", () => {
     expect(stripOverdueSuffix("背单词——2026年9月3日，任务逾期")).toBe("背单词");
     expect(stripOverdueSuffix("背单词")).toBe("背单词");
-    const items: PresetItem[] = [];
-    expect(makePresetItem("", { kind: "cycle", interval: 1, unit: "day", weekdays: null }, "repeats", items).id.startsWith("p-")).toBe(true);
+    expect(makePresetItem("", { kind: "cycle", interval: 1, unit: "day", weekdays: null }, "repeats").id.startsWith("p-")).toBe(true);
   });
 });
