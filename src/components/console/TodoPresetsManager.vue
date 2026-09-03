@@ -157,7 +157,7 @@ async function save() {
   if (editingId.value) {
     list = list.map((item) => (item.id === editingId.value ? { ...item, name: form.name.trim() || describePresetRule(rule), rule } : item));
   } else {
-    list = [...list, makePresetItem(form.name, rule, props.kind, list)];
+    list = [...list, makePresetItem(form.name, rule, props.kind)];
   }
   await settings.setTodoPresets(props.kind, list);
   showModal.value = false;

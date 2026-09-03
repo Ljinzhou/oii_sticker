@@ -77,7 +77,7 @@ describe("TodoPresetsManager 添加/编辑", () => {
     await wrapper.find(".btn-save").trigger("click");
     await flushPromises();
 
-    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd");
+    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd")!;
     expect(saved).toBeTruthy();
     const items = JSON.parse(saved[1].value);
     expect(items).toHaveLength(DEFAULT_PRESETS.reminders.length + 1);
@@ -100,7 +100,7 @@ describe("TodoPresetsManager 添加/编辑", () => {
     await wrapper.find(".btn-save").trigger("click");
     await flushPromises();
 
-    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd");
+    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd")!;
     expect(saved[1].key).toBe("todo_preset_repeats");
     const items = JSON.parse(saved[1].value);
     expect(items[items.length - 1].rule).toEqual({ kind: "cycle", interval: 1, unit: "week", weekdays: [1, 2, 3, 4, 5] });
@@ -115,7 +115,7 @@ describe("TodoPresetsManager 添加/编辑", () => {
     await wrapper.find(".btn-save").trigger("click");
     await flushPromises();
 
-    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd");
+    const saved = mocks.invoke.mock.calls.find((c) => c[0] === "set_config_cmd")!;
     const items = JSON.parse(saved[1].value);
     expect(items[0].name).toBe("改后名称");
     expect(items[0].id).toBe(DEFAULT_PRESETS.reminders[0].id);
