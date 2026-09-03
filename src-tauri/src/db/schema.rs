@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -418,6 +418,26 @@ fn migrate_v16_to_v17(conn: &Connection) -> Result<()> {
     })
 }
 
+/// v17 → v18 迁移：Todo 重复任务重建锚点列（repeat_anchor）。
+///
+/// 「每天/每周…」重复任务由调度线程每日零点重建：周期结束未完成的任务
+/// 标题追加「——YYYY年M月D日，任务逾期」并自动新建同名任务。锚点列记录
+/// 下一次应重建的本地日期，NULL 表示不参与重建队列。
+fn migrate_v17_to_v18(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_table: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'todo_blocks')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_table && !table_has_column(c, "todo_blocks", "repeat_anchor")? {
+            c.execute_batch("ALTER TABLE todo_blocks ADD COLUMN repeat_anchor TEXT;")
+                .context("迁移 v17→v18 新增 repeat_anchor 列失败")?;
+        }
+        Ok(())
+    })
+}
+
 /// 把现有数据库迁移到最新 schema 版本。
 ///
 /// 幂等：对已是最新的 DB 是 no-op，仅在版本落后时执行迁移分支。
@@ -486,6 +506,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
 
     if current < 17 {
         migrate_v16_to_v17(conn)?;
+    }
+
+    if current < 18 {
+        migrate_v17_to_v18(conn)?;
     }
 
     // 升级完成后把 user_version 写到位。

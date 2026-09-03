@@ -494,6 +494,14 @@ pub fn spawn(app: AppHandle, state: AppState) -> JoinHandle<()> {
 
 fn run_loop(app: AppHandle, state: AppState) {
     loop {
+        // 重复任务每日重建（幂等：anchor 门槛 + 处理后退队），随后广播刷新窗口
+        if let Ok(created) = state.with_conn(rebuild_repeat_tasks) {
+            for (sticker_id, todo_id) in created {
+                debug!("[提醒] 重复任务重建 sticker={sticker_id} todo={todo_id}");
+                crate::events::emit_todo_updated(&app, sticker_id, &todo_id);
+            }
+        }
+
         let fired = match state.with_conn(|c| collect_pending(c)) {
             Ok((due, _)) => {
                 for (pending, kind) in &due {
@@ -600,6 +608,94 @@ fn fire_one(
         })?;
     }
     Ok(())
+}
+
+// ═══════════════════ 重复任务每日重建 ═══════════════════
+
+/// 每日重建扫描：今天已到重建日的重复任务 → 逾期改名 + 新建当日任务。
+///
+/// 语义（与用户约定一致）：
+/// - 任务创建/设置 repeat_rule 时写入 `repeat_anchor`（下一个周期日）；
+/// - 调度线程每轮调用本函数（幂等）：`repeat_anchor <= 今天` 即处理一次——
+///   上周期**未完成** → 标题追加「——YYYY年M月D日，任务逾期」并自动新建同名任务；
+///   上周期**已完成** → 直接自动新建当日任务；
+/// - 处理后旧任务 `repeat_anchor` 置 NULL 退出重建队列（防重复处理），
+///   新任务继承 repeat_rule 并写入下一个锚点继续接力；
+/// - 返回 (sticker_id, 新任务 id) 列表供调用方广播刷新窗口。
+pub fn rebuild_repeat_tasks(conn: &rusqlite::Connection) -> Result<Vec<(i64, String)>> {
+    let today = crate::db::todo_block_repo::local_date_str();
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, sticker_id, parent_id, title, repeat_rule, repeat_anchor, is_completed
+         FROM todo_blocks
+        WHERE parent_id IS NOT NULL
+          AND repeat_rule IS NOT NULL
+          AND repeat_anchor IS NOT NULL
+          AND repeat_anchor <= ?1",
+    )?;
+    let due_rows = stmt
+        .query_map(rusqlite::params![today], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, bool>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut created: Vec<(i64, String)> = Vec::new();
+    for (id, sticker_id, parent_id, title, repeat_rule, anchor, completed) in due_rows {
+        use crate::db::todo_block_repo::{has_overdue_suffix, OVERDUE_SUFFIX};
+
+        // 周期结束日 = 重建日前一天（用户例子：今天 9-3 未完成，9-4 凌晨改名逾期 9-3）
+        let period_end = crate::db::todo_block_repo::previous_day_str(&anchor);
+        let period_end_cn = |d: &str| -> Option<String> {
+            let parts: Vec<&str> = d.split('-').collect();
+            if parts.len() != 3 {
+                return None;
+            }
+            Some(format!("{}年{}月{}日", parts[0], parts[1].parse::<u32>().ok()?, parts[2].parse::<u32>().ok()?))
+        };
+        let end_label = period_end.as_deref().and_then(period_end_cn);
+
+        let raw_title = crate::db::todo_block_repo::strip_overdue_suffix(&title);
+
+        // 1) 上周期未完成 → 逾期改名（幂等：已带后缀则跳过；已完成永不改名）
+        if !completed && !has_overdue_suffix(&title) {
+            let suffix = end_label.map(|s| format!("——{s}{OVERDUE_SUFFIX}")).unwrap_or_default();
+            if !suffix.is_empty() {
+                conn.execute(
+                    "UPDATE todo_blocks SET title = ?2, updated_at = datetime('now') WHERE id = ?1",
+                    rusqlite::params![id, format!("{raw_title}{suffix}")],
+                )
+                .context("重复任务逾期改名失败")?;
+            }
+        }
+
+        // 2) 自动新建当日任务（原始标题，repeat 继承，下一锚点）
+        let new_id = crate::db::todo_block_repo::create(conn, sticker_id, parent_id.as_deref())
+            .context("重复任务重建失败")?
+            .id;
+        let next_anchor = crate::db::todo_block_repo::compute_repeat_anchor(&repeat_rule);
+        conn.execute(
+            "UPDATE todo_blocks SET title = ?2, repeat_rule = ?3, repeat_anchor = ?4 WHERE id = ?1",
+            rusqlite::params![new_id, raw_title, repeat_rule, next_anchor],
+        )
+        .context("重复任务新任务初始化失败")?;
+
+        // 3) 旧任务退出重建队列（防止后续轮次重复改名/新建）
+        conn.execute(
+            "UPDATE todo_blocks SET repeat_anchor = NULL, updated_at = datetime('now') WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .context("退出重复重建队列失败")?;
+
+        created.push((sticker_id, new_id));
+    }
+    Ok(created)
 }
 
 // ═══════════════════ 测试 ═══════════════════
@@ -906,5 +1002,154 @@ mod tests {
         assert_eq!(due_list.len(), 1, "仅截止到期触发，未来提醒不触发");
         assert_eq!(due_list[0].1, ReminderKind::Due);
         assert_eq!(due_list[0].0.id, id);
+    }
+
+    // ═══════════ 重复任务每日重建 ═══════════
+
+    use crate::db::todo_block_repo::get;
+
+    /// 辅助：今天 ±n 天的本地日期串（"YYYY-MM-DD"）。
+    fn date_offset(days: i64) -> String {
+        use std::ops::Add;
+        use time::OffsetDateTime;
+        let today = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc()).date();
+        today.add(time::Duration::days(days)).to_string()
+    }
+
+    /// 造一个挂了重复规则、anchor=昨天的父任务。
+    fn make_repeat_task(conn: &rusqlite::Connection, completed: bool) -> (String, i64) {
+        let sid: i64 = conn
+            .query_row("SELECT id FROM stickers LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let block = todo_block_repo::create(conn, sid, None).unwrap();
+        let task = todo_block_repo::create(conn, sid, Some(&block.id)).unwrap();
+        conn.execute(
+            "UPDATE todo_blocks SET title = '背单词', repeat_rule = ?2, repeat_anchor = ?3, is_completed = ?4 WHERE id = ?1",
+            rusqlite::params![task.id, r#"{"unit":"day","interval":1}"#, date_offset(-1), completed as i32],
+        )
+        .unwrap();
+        (task.id, sid)
+    }
+
+    /// 昨天周期未完成 → 标题追加「——YYYY年M月D日，任务逾期」并新建当日同名任务；
+    /// 旧任务退出重建队列，新任务接力（repeat 继承、anchor=明天）。
+    #[test]
+    fn rebuild_renames_overdue_and_creates_next() {
+        let conn = ack_test_conn();
+        let (task_id, sid) = make_repeat_task(&conn, false);
+
+        let created = rebuild_repeat_tasks(&conn).unwrap();
+        assert_eq!(created.len(), 1, "应重建一个新任务");
+        assert_eq!(created[0].0, sid);
+
+        let old = get(&conn, &task_id).unwrap().unwrap();
+        assert!(
+            old.title.contains("——") && old.title.ends_with("，任务逾期"),
+            "未完成应追加逾期后缀，实际：{}",
+            old.title
+        );
+        assert!(old.repeat_anchor.is_none(), "处理后旧任务退出重建队列");
+
+        let new = get(&conn, &created[0].1).unwrap().unwrap();
+        assert_eq!(new.title, "背单词", "新任务使用原始标题");
+        assert_eq!(new.repeat_rule.as_deref(), Some(r#"{"unit":"day","interval":1}"#));
+        assert_eq!(new.parent_id.as_deref(), Some(old.parent_id.as_deref().unwrap()));
+        assert_eq!(new.repeat_anchor.as_deref(), Some(date_offset(1).as_str()), "新任务锚点=明天");
+
+        // 幂等：第二天（锚点已推进）不再重复改名/新建
+        assert!(rebuild_repeat_tasks(&conn).unwrap().is_empty(), "同一周期不得重复重建");
+    }
+
+    /// 昨天已完成 → 仅新建当日任务，旧任务不改名。
+    #[test]
+    fn rebuild_completed_creates_next_without_rename() {
+        let conn = ack_test_conn();
+        let (task_id, _) = make_repeat_task(&conn, true);
+
+        let created = rebuild_repeat_tasks(&conn).unwrap();
+        assert_eq!(created.len(), 1);
+
+        let old = get(&conn, &task_id).unwrap().unwrap();
+        assert_eq!(old.title, "背单词", "已完成任务不追加逾期后缀");
+        assert!(old.repeat_anchor.is_none());
+
+        let new = get(&conn, &created[0].1).unwrap().unwrap();
+        assert_eq!(new.title, "背单词");
+        assert_eq!(new.is_completed, false);
+    }
+
+    /// 标题已带逾期后缀：幂等，不重复追加；且新任务标题始终为原始名。
+    #[test]
+    fn rebuild_does_not_double_append_overdue_suffix() {
+        let conn = ack_test_conn();
+        let (task_id, _) = make_repeat_task(&conn, false);
+        // 模拟任务标题已被（前一轮或手工）追加过逾期后缀
+        conn.execute(
+            "UPDATE todo_blocks SET title = '背单词——2026年9月2日，任务逾期' WHERE id = ?1",
+            rusqlite::params![task_id],
+        )
+        .unwrap();
+
+        let created = rebuild_repeat_tasks(&conn).unwrap();
+        assert_eq!(created.len(), 1);
+
+        let old = get(&conn, &task_id).unwrap().unwrap();
+        assert_eq!(old.title, "背单词——2026年9月2日，任务逾期", "已带后缀不重复追加");
+        let new = get(&conn, &created[0].1).unwrap().unwrap();
+        assert_eq!(new.title, "背单词", "新任务剥离历史逾期后缀");
+    }
+
+    /// update 写入重复规则时初始化锚点（day=明天）；清空则锚点清空。
+    #[test]
+    fn update_initializes_and_clears_repeat_anchor() {
+        let conn = ack_test_conn();
+        let sid: i64 = conn
+            .query_row("SELECT id FROM stickers LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let block = todo_block_repo::create(&conn, sid, None).unwrap();
+        let task = todo_block_repo::create(&conn, sid, Some(&block.id)).unwrap();
+
+        todo_block_repo::update(&conn, &task.id, &crate::models::TodoPatch {
+            repeat_rule: Some(r#"{"unit":"day","interval":1}"#.into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = get(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(t.repeat_anchor.as_deref(), Some(date_offset(1).as_str()));
+
+        todo_block_repo::update(&conn, &task.id, &crate::models::TodoPatch {
+            repeat_rule: Some(String::new()),
+            ..Default::default()
+        })
+        .unwrap();
+        let t = get(&conn, &task.id).unwrap().unwrap();
+        assert_eq!(t.repeat_rule.as_deref(), None);
+        assert_eq!(t.repeat_anchor, None, "清空重复规则同时清空锚点");
+    }
+
+    /// 逾期日期文案 = 重建日前一天（用户：今天任务未完成，次日凌晨改名逾期今天）。
+    #[test]
+    fn overdue_date_uses_period_end_before_anchor() {
+        let conn = ack_test_conn();
+        let (task_id, _) = make_repeat_task(&conn, false);
+        // anchor=昨天 → 周期结束日 = 前天
+        conn.execute(
+            "UPDATE todo_blocks SET repeat_anchor = ?2 WHERE id = ?1",
+            rusqlite::params![task_id, date_offset(-2)],
+        )
+        .unwrap();
+        let _ = rebuild_repeat_tasks(&conn).unwrap();
+        let old = get(&conn, &task_id).unwrap().unwrap();
+        assert!(old.title.contains("——"), "逾期后缀应存在");
+        // 逾期日期 = 锚点前一天（本地日期转中文）
+        let period = date_offset(-3);
+        let mut parts = period.split('-');
+        let (y, m, d) = (parts.next().unwrap(), parts.next().unwrap().parse::<u32>().unwrap(), parts.next().unwrap().parse::<u32>().unwrap());
+        assert!(
+            old.title.ends_with(&format!("——{y}年{m}月{d}日，任务逾期")),
+            "逾期日期应为锚点前一天：{}",
+            old.title
+        );
+        assert!(old.title.contains("年") && old.title.contains("月") && old.title.contains("日"));
     }
 }
