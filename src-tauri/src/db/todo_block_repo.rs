@@ -165,38 +165,17 @@ pub fn ack_alerts(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
 
 /// 删除一个 Todo 任务（根任务即块本体，同时移除便签内容中的标记行）。
 ///
-/// 约束：删除后该便签必须至少保留一个任务，否则拒绝（最后一个任务不可删）。
+/// 允许删除到便签**没有任何 todo 块**（空块/空任务状态合法——编辑器初始化
+/// 同步正文标签时会删除已无标签的块，若此处拒绝会导致窗口初始化失败）。
 /// 删除根任务会连带 CASCADE 删除其子树。
 pub fn delete(conn: &Connection, id: &str) -> Result<Option<i64>> {
     let block = get(conn, id)?.context("Todo 块不存在")?;
-    let total: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM todo_blocks WHERE sticker_id = ?1",
-        params![block.sticker_id],
-        |row| row.get(0),
-    )?;
-    let doom_count = subtree_count(conn, id)?;
-    if total <= doom_count {
-        bail!("每个 Todo 块至少保留一个任务，无法删除最后一项");
-    }
     if block.parent_id.is_none() {
         remove_block_tag(conn, block.sticker_id, id)?;
     }
     conn.execute("DELETE FROM todo_blocks WHERE id = ?1", params![id])
         .context("删除 Todo 块失败")?;
     Ok(Some(block.sticker_id))
-}
-
-/// 计算以 `id` 为根的子树任务数（含自身，递归任意深度，兼容远期嵌套）。
-fn subtree_count(conn: &Connection, id: &str) -> Result<i64> {
-    Ok(conn.query_row(
-        "WITH RECURSIVE sub(id) AS (
-            SELECT id FROM todo_blocks WHERE id = ?1
-            UNION ALL
-            SELECT c.id FROM todo_blocks c JOIN sub s ON c.parent_id = s.id
-        ) SELECT COUNT(*) FROM sub",
-        params![id],
-        |row| row.get(0),
-    )?)
 }
 
 /// 收集便签内容中出现的 `<todo-block id="...">` 标记 id 集合。
@@ -603,22 +582,28 @@ mod tests {
     }
 
     #[test]
-    fn deleting_last_task_is_rejected_but_dropping_tree_leaves_others() {
+    fn deleting_last_task_leaves_empty_sticker_allowed() {
         let conn = conn();
         let sticker_id = sticker(&conn);
-        // 便签仅一个块：删除（最后一项）被拒绝
+        // 便签仅一个块：删除最后一项允许（便签可无 todo 块/空块合法）
         let parent = create(&conn, sticker_id, None).unwrap();
         let child = create(&conn, sticker_id, Some(&parent.id)).unwrap();
         assert!(delete(&conn, &child.id).is_ok(), "子任务删除后便签仍有任务，应成功");
-        // 便签仅一个块（含子任务）：删除根即清空整块 → 拒绝
-        assert!(delete(&conn, &parent.id).is_err(), "删除便签最后一个任务被拒绝");
-        assert!(get(&conn, &parent.id).unwrap().is_some());
+        // 便签仅一个块（含子任务）：删除根允许 → 便签无 todo 块
+        assert!(delete(&conn, &parent.id).is_ok(), "允许删除便签最后一个 todo 块");
+        assert!(get(&conn, &parent.id).unwrap().is_none());
+        // 空便签也无块可删：直接报不存在
+        assert!(delete(&conn, &parent.id).is_err(), "不存在的块删除应报错");
+
         // 第二个块存在时，删除第一个块（整棵树）允许，便签仍有任务
         let second = create(&conn, sticker_id, None).unwrap();
         let first = create(&conn, sticker_id, None).unwrap();
         delete(&conn, &first.id).unwrap();
         assert!(get(&conn, &first.id).unwrap().is_none());
         assert!(get(&conn, &second.id).unwrap().is_some());
+        // 删到最后一个块同样允许 → 完全清空
+        delete(&conn, &second.id).unwrap();
+        assert!(get(&conn, &second.id).unwrap().is_none());
     }
 
     #[test]
