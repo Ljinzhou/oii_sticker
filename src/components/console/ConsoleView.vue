@@ -23,7 +23,7 @@ const openIds = ref<number[]>([]);
 const confirming = ref<Sticker | null>(null);
 const unlisteners: UnlistenFn[] = [];
 
-const newSticker = (): NewSticker => ({
+const newSticker = (groupId: number | null = null): NewSticker => ({
   title: "新建便签",
   content: "# 标题\n\n在这里写内容...",
   pos_x: 200,
@@ -34,11 +34,17 @@ const newSticker = (): NewSticker => ({
   bg_color: settings.bgColor,
   always_on_top: settings.get("default_sticker_always_on_top", "1") === "1",
   auto_scroll: false,
+  group_id: groupId,
 });
 
 async function createSticker() {
+  await createStickerInGroup(null);
+}
+
+/** 为指定分组（null = 默认分组）创建新便签。 */
+async function createStickerInGroup(groupId: number | null) {
   try {
-    await notes.create(newSticker());
+    await notes.create(newSticker(groupId));
   } catch (e) {
     console.error("[ui] 新建便签失败：", e);
   }
@@ -278,6 +284,9 @@ onBeforeUnmount(() => {
               <i class="ri-more-2-fill"></i>
             </button>
             <div v-if="!sec.isDefault && groupMenuFor === sec.key" class="dropdown" @click.stop>
+              <button @click="createStickerInGroup(sec.groupId); groupMenuFor = null">
+                <i class="ri-add-line"></i>新建便签
+              </button>
               <button @click="startRenameGroup({ id: sec.groupId!, name: sec.name }); groupMenuFor = null">
                 重命名
               </button>
