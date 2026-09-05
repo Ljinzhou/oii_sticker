@@ -30,6 +30,12 @@ export const useSettingsStore = defineStore("settings", {
     // 交互模式无操作后自动收起回展示模式的秒数（系统设置可改，默认 5）
     autoCollapseSecs: (state) =>
       parseInt(state.config.entries["auto_collapse_secs"] ?? "5", 10),
+    // 便签窗口默认是否隐藏任务栏（系统设置可改，默认隐藏）
+    hideStickerFromTaskbar: (state) =>
+      (state.config.entries["default_sticker_skip_taskbar"] ?? "1") === "1",
+    // 便签编辑模式下是否隐藏任务栏（系统设置可改，默认不隐藏=显示在任务栏）
+    editModeHideTaskbar: (state) =>
+      (state.config.entries["edit_mode_skip_taskbar"] ?? "0") === "1",
     autoScrollSpeed: (state) =>
       parseInt(state.config.entries["default_sticker_auto_scroll_speed"] ?? "30", 10),
     recentSlashCommands: (state): string[] => {

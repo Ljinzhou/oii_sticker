@@ -292,6 +292,24 @@ onMounted(async () => {
           />
         </label>
         <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
+        <label class="row">
+          <span>便签隐藏任务栏窗口</span>
+          <input
+            type="checkbox"
+            :checked="settings.hideStickerFromTaskbar"
+            @change="(e) => settings.set('default_sticker_skip_taskbar', (e.target as HTMLInputElement).checked ? '1' : '0')"
+          />
+        </label>
+        <p class="hint">关闭后便签窗口会出现在任务栏（默认开启）。</p>
+        <label class="row">
+          <span>编辑模式隐藏任务栏窗口</span>
+          <input
+            type="checkbox"
+            :checked="settings.editModeHideTaskbar"
+            @change="(e) => settings.set('edit_mode_skip_taskbar', (e.target as HTMLInputElement).checked ? '1' : '0')"
+          />
+        </label>
+        <p class="hint">默认关闭：进入编辑模式时便签临时显示在任务栏并取消置顶，恢复展示模式后还原。</p>
         <p class="hint">点击主控台右上角「关闭」按钮时的行为（隐藏后可从托盘图标恢复）。</p>
       </div>
 

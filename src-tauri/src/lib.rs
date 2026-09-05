@@ -104,6 +104,13 @@ pub const AUTOSTART_ARG: &str = "--autostart";
 /// 创建后立即应用置顶（Builder 不提供置顶选项，须显式 set_always_on_top）。
 fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Result<WebviewWindow> {
     let label = format!("sticker-{}", args.id);
+    // 是否隐藏任务栏由系统设置「默认隐藏（default_sticker_skip_taskbar）」决定，
+    // 编辑模式的隐藏/置顶切换由 apply_window_state_cmd 运行时处理。
+    let default_hide = app
+        .state::<AppState>()
+        .with_conn(commands::get_config)
+        .map(|cfg| cfg.get_or("default_sticker_skip_taskbar", "1") == "1")
+        .unwrap_or(true);
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(&args.title)
         .inner_size(args.w as f64, args.h as f64)
@@ -111,7 +118,7 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
         .position(args.x as f64, args.y as f64)
         .transparent(true)
         .decorations(false)
-        .skip_taskbar(true)
+        .skip_taskbar(default_hide)
         .maximizable(false) // 禁用最大化（双击标题栏不触发）
         .resizable(true)
         .build()?;
@@ -852,6 +859,7 @@ fn apply_window_state_cmd(
     app: tauri::AppHandle,
     id: i64,
     is_display: bool,
+    is_edit: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     state.set_display_window(id, is_display);
@@ -881,7 +889,30 @@ fn apply_window_state_cmd(
             win.set_ignore_cursor_events(false)
                 .map_err(|e| format!("取消穿透失败: {e}"))?;
         }
-        tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display}");
+        // 任务栏隐藏 × 置顶策略：编辑模式（is_edit）按「编辑隐藏」开关决定隐藏、
+        // 且恒取消置顶；非编辑模式恢复「默认隐藏」开关与便签自身的置顶值。
+        let default_hide = state
+            .with_conn(commands::get_config)
+            .map(|cfg| cfg.get_or("default_sticker_skip_taskbar", "1") == "1")
+            .unwrap_or(true);
+        let edit_hide = state
+            .with_conn(commands::get_config)
+            .map(|cfg| cfg.get_or("edit_mode_skip_taskbar", "0") == "1")
+            .unwrap_or(false);
+        let restore_top = state
+            .with_conn_path(|c, db| commands::get_sticker(c, id, db))
+            .ok()
+            .flatten()
+            .map(|s| s.always_on_top)
+            .unwrap_or(false);
+        let policy = platform::window_style::sticker_window_policy(
+            default_hide,
+            edit_hide,
+            is_edit,
+            restore_top,
+        );
+        platform::window_style::apply_sticker_style(&win, policy.skip_taskbar, policy.always_on_top);
+        tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display} is_edit={is_edit} policy={policy:?}");
     }
     Ok(())
 }
