@@ -84,6 +84,19 @@ const upRetrying = ref(false);
 const upDownloaded = ref<number | null>(null);
 const upTotal = ref<number | null>(null);
 // 滚动日志框（方向 A：贴合现状的更新日志 + 整体进度条）
+// 编辑模式字体下拉候选（Windows 常用中英文字体 + 通用族）
+const FONT_OPTIONS: { value: string; label: string }[] = [
+  { value: "Microsoft YaHei", label: "微软雅黑（默认）" },
+  { value: "SimSun", label: "宋体" },
+  { value: "SimHei", label: "黑体" },
+  { value: "KaiTi", label: "楷体" },
+  { value: "FangSong", label: "仿宋" },
+  { value: "Consolas", label: "Consolas（等宽）" },
+  { value: "Courier New", label: "Courier New" },
+  { value: "system-ui", label: "系统默认（system-ui）" },
+  { value: "monospace", label: "通用等宽（monospace）" },
+];
+
 const upLogs = ref<{ level: string; text: string }[]>([]);
 const upLogEl = ref<HTMLElement | null>(null);
 const upBarWidth = computed(() => updateBarWidth(upPhase.value, upDownloaded.value, upTotal.value));
@@ -258,6 +271,17 @@ onMounted(async () => {
           </select>
         </label>
         <label class="row">
+          <span>主控台背景透明度</span>
+          <input
+            type="range"
+            min="30"
+            max="100"
+            :value="Number(settings.get('console_bg_opacity', '94'))"
+            @change="(e) => settings.set('console_bg_opacity', (e.target as HTMLInputElement).value)"
+          />
+          <span class="console-opacity-val">{{ Math.round(Number(settings.get('console_bg_opacity', '94'))) }}%</span>
+        </label>
+        <label class="row">
           <span>交互模式自动收起（秒）</span>
           <input
             type="number"
@@ -310,11 +334,16 @@ onMounted(async () => {
         </label>
         <label class="row">
           <span>编辑模式字体</span>
-          <input
-            type="text"
+          <select
             :value="settings.get('edit_font_family', 'Microsoft YaHei')"
-            @change="(e) => settings.set('edit_font_family', (e.target as HTMLInputElement).value.trim() || 'Microsoft YaHei')"
-          />
+            @change="(e) => settings.set('edit_font_family', (e.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-if="!FONT_OPTIONS.some((f) => f.value === settings.get('edit_font_family', 'Microsoft YaHei'))"
+              :value="settings.get('edit_font_family', 'Microsoft YaHei')"
+            >当前：{{ settings.get('edit_font_family', 'Microsoft YaHei') }}</option>
+            <option v-for="f in FONT_OPTIONS" :key="f.value" :value="f.value">{{ f.label }}</option>
+          </select>
         </label>
         <label class="row">
           <span>编辑模式显示行号（及时预览 / Markdown）</span>
@@ -665,6 +694,14 @@ h3 {
 
 .result.error {
   color: #c0392b;
+}
+
+.console-opacity-val {
+  flex: none;
+  min-width: 44px;
+  text-align: right;
+  font-size: 12px;
+  color: #666;
 }
 
 /* 更新日志 + 进度条（方向 A：贴合现状） */

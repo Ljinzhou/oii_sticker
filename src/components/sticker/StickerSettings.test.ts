@@ -12,6 +12,9 @@ vi.mock("../../composables/useTauri", () => ({
 
 beforeEach(() => {
   invokeMock.mockImplementation((command: string) => {
+    if (command === "get_config_cmd") {
+      return Promise.resolve({ entries: {} });
+    }
     if (command === "effective_prefs_cmd") {
       return Promise.resolve({
         opacity: 0.9,
@@ -79,5 +82,22 @@ describe("StickerSettings 自动滚动速度", () => {
     await flushPromises();
 
     expect(wrapper.get<HTMLInputElement>('[data-testid="auto-scroll-speed"]').element.value).toBe("30");
+  });
+
+  it("提供编辑模式字号设置并写回全局配置", async () => {
+    const wrapper = mount(StickerSettings, {
+      props: { stickerId: 7 },
+      global: { plugins: [createPinia()] },
+    });
+    await flushPromises();
+
+    // 默认值 14
+    const sizeInput = wrapper.findAll("input[type=number]").find((el) => (el.element as HTMLInputElement).value === "14" || el.attributes("min") === "10");
+    expect(sizeInput?.exists()).toBe(true);
+    // 修改字号 → set_config_cmd 写回 edit_font_size
+    const editInput = wrapper.findAll("input[type=number]").find((el) => el.attributes("min") === "10")!;
+    await editInput.setValue("18");
+    await editInput.trigger("change");
+    expect(invokeMock).toHaveBeenCalledWith("set_config_cmd", { key: "edit_font_size", value: "18" });
   });
 });
