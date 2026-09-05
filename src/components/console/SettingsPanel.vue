@@ -10,6 +10,9 @@ const settings = useSettingsStore();
 
 type MenuKey = "general" | "defaults" | "todo" | "workspace" | "about";
 const activeMenu = ref<MenuKey>("general");
+
+// 版本号：由 vite define 注入（单一来源 package.json，构建期替换为实际版本）
+const appVersion = __APP_VERSION__;
 const autoStart = ref(false);
 const autostartBusy = ref(false);
 const autostartError = ref("");
@@ -330,14 +333,7 @@ onMounted(async () => {
         <h3>关于</h3>
 
         <h4 class="about-sec">基本信息</h4>
-        <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v0.1.0</span></p>
-
-        <h4 class="about-sec">程序介绍</h4>
-        <p class="about-line">oii_sticker 是一款跨平台桌面便签应用，旨在提供轻量、高效的信息记录体验。聚焦以下能力：</p>
-        <p class="about-line">• 便签：支持窗口拖拽 / 缩放 / 透明度与背景色调整，贴边收纳、托盘中隐藏与恢复。</p>
-        <p class="about-line">• 富文本编辑：Markdown 源码模式与即时预览模式可自由切换，支持代码高亮与数学公式渲染。</p>
-        <p class="about-line">• Todo 任务清单：独立窗口管理待办事项，配合日期预设（今天 / 明天 / 下周）与系统通知提醒。</p>
-        <p class="about-line">• 分组工作空间：将便签按主题分组管理，便于整理与归档。</p>
+        <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v{{ appVersion }}</span></p>
 
         <h4 class="about-sec">更新检查</h4>
         <div class="about-actions">
