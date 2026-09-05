@@ -41,7 +41,7 @@ async function createSticker() {
   await createStickerInGroup(null);
 }
 
-/** 为指定分组（null = 默认分组）创建新便签。 */
+/** 为指定分组（null = 未分组）创建新便签。 */
 async function createStickerInGroup(groupId: number | null) {
   try {
     await notes.create(newSticker(groupId));
@@ -107,13 +107,18 @@ type Section = {
 };
 const groupSections = computed<Section[]>(() => {
   const byId = new Map<number, Sticker[]>(notes.groups.map((g) => [g.id, []]));
-  const def: Sticker[] = [];
+  const ungrouped: Sticker[] = [];
   for (const s of notes.stickers) {
     if (s.group_id != null && byId.has(s.group_id)) byId.get(s.group_id)!.push(s);
-    else def.push(s);
+    else ungrouped.push(s);
   }
-  return [
-    { key: "default", name: "默认分组", isDefault: true, groupId: null, stickers: def },
+  // 无内置默认分组：所有分组均为用户建的真实分组（可重命名/删除/新建便签）。
+  // 「未分组」仅为未归属分组的便签提供展示位，仅在存在未分组便签时渲染。
+  const sections: Section[] = [];
+  if (ungrouped.length > 0) {
+    sections.push({ key: "default", name: "未分组", isDefault: true, groupId: null, stickers: ungrouped });
+  }
+  sections.push(
     ...notes.groups.map((g) => ({
       key: String(g.id),
       name: g.name,
@@ -121,7 +126,8 @@ const groupSections = computed<Section[]>(() => {
       groupId: g.id,
       stickers: byId.get(g.id) ?? [],
     })),
-  ];
+  );
+  return sections;
 });
 
 // 折叠状态（会话级，不持久化）
@@ -180,7 +186,7 @@ async function onDeleteGroupConfirmed() {
   }
   const removed = await notes.deleteGroup(id, choice);
   if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
-  else showGroupToast("分组已删除，便签已移回默认分组");
+  else showGroupToast("分组已删除，便签已移到未分组");
   deletingGroup.value = null;
   confirmingWithStickers.value = false;
 }
@@ -305,7 +311,7 @@ onBeforeUnmount(() => {
           </header>
           <div v-show="!collapsed[sec.key]" class="cards">
             <p v-if="sec.stickers.length === 0" class="group-empty">
-              {{ sec.isDefault ? "暂无便签" : "此分组暂无便签" }}
+              {{ sec.isDefault ? "未分组暂无便签" : "此分组暂无便签" }}
             </p>
             <StickerCard
               v-for="s in sec.stickers"
@@ -373,7 +379,7 @@ onBeforeUnmount(() => {
         <p>该分组内有 {{ deletingGroup.count }} 张便签。</p>
         <label class="choice">
           <input v-model="deleteChoice" type="radio" value="to-default" />
-          <span>移回默认分组（便签保留）</span>
+          <span>移到未分组（便签保留）</span>
         </label>
         <label class="choice">
           <input v-model="deleteChoice" type="radio" value="with-stickers" />
