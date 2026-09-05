@@ -11,12 +11,19 @@ import StickerCard from "./StickerCard.vue";
 
 const notes = useNotesStore();
 const settings = useSettingsStore();
+
+/** 主控台背景透明度（系统设置 → 通用 → 主控台背景透明度；默认 0.94） */
+const consoleBgAlpha = computed(() => {
+  const v = Number(settings.get("console_bg_opacity", "94"));
+  if (!Number.isFinite(v)) return 0.94;
+  return Math.min(1, Math.max(0.3, v / 100));
+});
 const showSettings = ref(false);
 const openIds = ref<number[]>([]);
 const confirming = ref<Sticker | null>(null);
 const unlisteners: UnlistenFn[] = [];
 
-const newSticker = (): NewSticker => ({
+const newSticker = (groupId: number | null = null): NewSticker => ({
   title: "新建便签",
   content: "# 标题\n\n在这里写内容...",
   pos_x: 200,
@@ -27,11 +34,17 @@ const newSticker = (): NewSticker => ({
   bg_color: settings.bgColor,
   always_on_top: settings.get("default_sticker_always_on_top", "1") === "1",
   auto_scroll: false,
+  group_id: groupId,
 });
 
 async function createSticker() {
+  await createStickerInGroup(null);
+}
+
+/** 为指定分组（null = 未分组）创建新便签。 */
+async function createStickerInGroup(groupId: number | null) {
   try {
-    await notes.create(newSticker());
+    await notes.create(newSticker(groupId));
   } catch (e) {
     console.error("[ui] 新建便签失败：", e);
   }
@@ -94,13 +107,18 @@ type Section = {
 };
 const groupSections = computed<Section[]>(() => {
   const byId = new Map<number, Sticker[]>(notes.groups.map((g) => [g.id, []]));
-  const def: Sticker[] = [];
+  const ungrouped: Sticker[] = [];
   for (const s of notes.stickers) {
     if (s.group_id != null && byId.has(s.group_id)) byId.get(s.group_id)!.push(s);
-    else def.push(s);
+    else ungrouped.push(s);
   }
-  return [
-    { key: "default", name: "默认分组", isDefault: true, groupId: null, stickers: def },
+  // 无内置默认分组：所有分组均为用户建的真实分组（可重命名/删除/新建便签）。
+  // 「未分组」仅为未归属分组的便签提供展示位，仅在存在未分组便签时渲染。
+  const sections: Section[] = [];
+  if (ungrouped.length > 0) {
+    sections.push({ key: "default", name: "未分组", isDefault: true, groupId: null, stickers: ungrouped });
+  }
+  sections.push(
     ...notes.groups.map((g) => ({
       key: String(g.id),
       name: g.name,
@@ -108,7 +126,8 @@ const groupSections = computed<Section[]>(() => {
       groupId: g.id,
       stickers: byId.get(g.id) ?? [],
     })),
-  ];
+  );
+  return sections;
 });
 
 // 折叠状态（会话级，不持久化）
@@ -167,7 +186,7 @@ async function onDeleteGroupConfirmed() {
   }
   const removed = await notes.deleteGroup(id, choice);
   if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
-  else showGroupToast("分组已删除，便签已移回默认分组");
+  else showGroupToast("分组已删除，便签已移到未分组");
   deletingGroup.value = null;
   confirmingWithStickers.value = false;
 }
@@ -209,7 +228,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="console">
+  <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
       <div class="actions">
@@ -271,6 +290,9 @@ onBeforeUnmount(() => {
               <i class="ri-more-2-fill"></i>
             </button>
             <div v-if="!sec.isDefault && groupMenuFor === sec.key" class="dropdown" @click.stop>
+              <button @click="createStickerInGroup(sec.groupId); groupMenuFor = null">
+                <i class="ri-add-line"></i>新建便签
+              </button>
               <button @click="startRenameGroup({ id: sec.groupId!, name: sec.name }); groupMenuFor = null">
                 重命名
               </button>
@@ -289,7 +311,7 @@ onBeforeUnmount(() => {
           </header>
           <div v-show="!collapsed[sec.key]" class="cards">
             <p v-if="sec.stickers.length === 0" class="group-empty">
-              {{ sec.isDefault ? "暂无便签" : "此分组暂无便签" }}
+              {{ sec.isDefault ? "未分组暂无便签" : "此分组暂无便签" }}
             </p>
             <StickerCard
               v-for="s in sec.stickers"
@@ -357,7 +379,7 @@ onBeforeUnmount(() => {
         <p>该分组内有 {{ deletingGroup.count }} 张便签。</p>
         <label class="choice">
           <input v-model="deleteChoice" type="radio" value="to-default" />
-          <span>移回默认分组（便签保留）</span>
+          <span>移到未分组（便签保留）</span>
         </label>
         <label class="choice">
           <input v-model="deleteChoice" type="radio" value="with-stickers" />

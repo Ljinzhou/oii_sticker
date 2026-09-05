@@ -27,7 +27,7 @@ pub struct Sticker {
     pub always_on_top: bool,
     pub auto_scroll: bool,
     pub is_completed: bool,
-    /// 所属分组 id；NULL 表示默认分组（v12）。
+    /// 所属分组 id；NULL 表示未分组（v12；无内置默认分组）。
     pub group_id: Option<i64>,
     /// 窗口模式字符串（"display"/"interact"/"edit"），落库持久化；
     /// 类型安全访问用 [`Sticker::mode`]。

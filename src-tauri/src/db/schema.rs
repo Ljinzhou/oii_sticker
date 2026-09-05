@@ -288,7 +288,7 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
     })
 }
 
-/// v11 → v12：便签分组表 + stickers.group_id（NULL = 默认分组）。
+/// v11 → v12：便签分组表 + stickers.group_id（NULL = 未分组，无内置默认分组）。
 fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
     in_tx(conn, |c| {
         c.execute_batch(

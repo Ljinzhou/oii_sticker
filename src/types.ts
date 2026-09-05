@@ -27,6 +27,7 @@ export interface Sticker {
 
 export interface NewSticker {
   parent_id?: number | null;
+  group_id?: number | null;
   title: string;
   content: string;
   heading_level?: number;
