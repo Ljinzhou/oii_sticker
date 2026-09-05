@@ -170,7 +170,8 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 10px;
   padding: 10px 14px;
-  background: #fff;
+  /* 与主控台背景透明度联动（同便签模式：背景透、文字不透明）；主控台外使用时不透明 */
+  background: rgba(255, 255, 255, var(--console-alpha, 1));
   overflow: visible; /* 不裁剪下拉菜单 */
 }
 
