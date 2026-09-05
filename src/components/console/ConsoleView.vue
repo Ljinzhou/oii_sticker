@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="console" :style="{ background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
+  <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
       <div class="actions">

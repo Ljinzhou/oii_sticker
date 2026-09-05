@@ -277,7 +277,7 @@ onMounted(async () => {
             min="30"
             max="100"
             :value="Number(settings.get('console_bg_opacity', '94'))"
-            @change="(e) => settings.set('console_bg_opacity', (e.target as HTMLInputElement).value)"
+            @input="(e) => settings.set('console_bg_opacity', (e.target as HTMLInputElement).value)"
           />
           <span class="console-opacity-val">{{ Math.round(Number(settings.get('console_bg_opacity', '94'))) }}%</span>
         </label>
