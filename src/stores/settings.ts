@@ -49,7 +49,9 @@ export const useSettingsStore = defineStore("settings", {
   },
   actions: {
     async refresh() {
-      this.config = await invoke<SystemConfig>("get_config_cmd");
+      const cfg = await invoke<SystemConfig>("get_config_cmd");
+      // 防御：后端异常/非法返回时不破坏 store 快照
+      this.config = cfg && typeof cfg === "object" && cfg.entries ? cfg : { entries: {} } as SystemConfig;
     },
     async set(key: string, value: string) {
       await invoke("set_config_cmd", { key, value });

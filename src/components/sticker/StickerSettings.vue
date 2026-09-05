@@ -2,10 +2,12 @@
 import { ref, onMounted } from "vue";
 import { invoke } from "../../composables/useTauri";
 import { usePrefsStore } from "../../stores/prefs";
+import { useSettingsStore } from "../../stores/settings";
 
 const props = defineProps<{ stickerId: number }>();
 const emit = defineEmits<{ close: [] }>();
 const prefs = usePrefsStore();
+const settings = useSettingsStore();
 
 // 偏好（及时生效，无保存按钮）
 const opacity = ref(85);
@@ -26,6 +28,7 @@ function normalizeAutoScrollSpeed(value: number): number {
 
 async function load() {
   await prefs.load(props.stickerId);
+  await settings.refresh(); // 编辑模式字号为全局配置，需回读
   const e = prefs.effective;
   if (e) {
     opacity.value = Math.round(e.opacity * 100);
@@ -107,6 +110,16 @@ onMounted(load);
         <label class="row">
           <span>正文字号</span>
           <input v-model.number="bodyFontSize" type="number" min="9" max="28" @change="commitPrefs" />
+        </label>
+        <label class="row">
+          <span>编辑模式字号</span>
+          <input
+            type="number"
+            min="10"
+            max="36"
+            :value="settings.get('edit_font_size', '14')"
+            @change="(e) => settings.set('edit_font_size', (e.target as HTMLInputElement).value)"
+          />
         </label>
         <label class="row">
           <span>窗口置顶</span>

@@ -138,14 +138,14 @@ describe("ConsoleView", () => {
     expect(cmds).toContain("list_open_sticker_ids_cmd");
   });
 
-  it("分区视图：默认分组在最前，其后按创建顺序排列分组", async () => {
+  it("分区视图：未分组（如有便签）在最前，其后按创建顺序排列分组", async () => {
     const wrapper = await mountConsole();
     const heads = wrapper.findAll(".group-head .group-name");
-    expect(heads.map((h) => h.text())).toEqual(["默认分组", "工作", "生活"]);
+    expect(heads.map((h) => h.text())).toEqual(["未分组", "工作", "生活"]);
     // 各分区计数徽标
     const counts = wrapper.findAll(".group-head .group-count");
     expect(counts.map((c) => c.text())).toEqual(["1", "1", "1"]);
-    // 默认分组无 ⋯ 菜单按钮，非默认有
+    // 未分组块无 ⋯ 菜单按钮（非真实分组），真实分组各有
     expect(wrapper.findAll(".group-menu-btn")).toHaveLength(2);
   });
 
@@ -182,14 +182,14 @@ describe("ConsoleView", () => {
     cards = wrapper.findAll(".cards .card");
     expect(cards).toHaveLength(1);
     expect(wrapper.text()).toContain("工作便签");
-    // 「默认分组」chip → 未分组便签
-    const defChip = wrapper.findAll(".filter-chips button").find((b) => b.text().startsWith("默认分组"))!;
+    // 「未分组」chip → 未分组便签
+    const defChip = wrapper.findAll(".filter-chips button").find((b) => b.text().startsWith("未分组"))!;
     await defChip.trigger("click");
     expect(wrapper.findAll(".cards .card")).toHaveLength(1);
     expect(wrapper.text()).toContain("欢迎使用 oii_sticker");
   });
 
-  it("三选删除确认框：默认选中移回默认分组；连带删除需二次确认后调用 group_delete_cmd", async () => {
+  it("三选删除确认框：默认选中移到未分组；连带删除需二次确认后调用 group_delete_cmd", async () => {
     const wrapper = await mountConsole();
     // 打开「工作」分组的 ⋯ 菜单 → 删除分组
     const menuBtn = wrapper.findAll(".group-menu-btn")[0]!;
@@ -220,7 +220,7 @@ describe("ConsoleView", () => {
     expect(wrapper.text()).toContain("已删除分组及其内 1 张便签");
   });
 
-  it("三选删除确认框：移回默认分组模式调用 group_delete_cmd(to-default)", async () => {
+  it("三选删除确认框：移到未分组模式调用 group_delete_cmd(to-default)", async () => {
     const wrapper = await mountConsole();
     await wrapper.findAll(".group-menu-btn")[0]!.trigger("click");
     await wrapper.find(".dropdown .danger-item").trigger("click");
@@ -229,7 +229,7 @@ describe("ConsoleView", () => {
     await flushPromises();
     const delCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_delete_cmd");
     expect(delCall![1]).toEqual({ id: 10, mode: "to-default" });
-    expect(wrapper.text()).toContain("分组已删除，便签已移回默认分组");
+    expect(wrapper.text()).toContain("分组已删除，便签已移到未分组");
   });
 
   it("新建分组调用 group_create_cmd", async () => {
@@ -246,5 +246,33 @@ describe("ConsoleView", () => {
     // 新分组出现在分区列表
     const names = wrapper.findAll(".group-head .group-name").map((h) => h.text());
     expect(names).toContain("学习");
+  });
+
+  it("分组 ⋯ 菜单「新建便签」为当前分组创建新便签", async () => {
+    const wrapper = await mountConsole();
+    // 打开「工作」分组（id=10）的菜单
+    await wrapper.findAll(".group-menu-btn")[0]!.trigger("click");
+    const createBtn = wrapper.findAll(".dropdown button").find((b) => b.text().includes("新建便签"))!;
+    await createBtn.trigger("click");
+    await flushPromises();
+
+    const calls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "create_sticker_cmd");
+    expect(calls).toHaveLength(1);
+    // 新便签归属当前分组（group_id=10），而非未分组
+    expect(calls[0][1].new.group_id).toBe(10);
+    // 分组卡片出现新便签（总数 +1）
+    const workCount = wrapper.findAll(".group-head .group-name").map((h) => h.text());
+    expect(workCount).toContain("工作");
+    expect(wrapper.text()).toContain("新建便签");
+  });
+
+  it("分组允许为空：无分组且无未分组便签时，不渲染任何分组块且可新建分组", async () => {
+    db.stickers = [];
+    db.groups = [];
+    const wrapper = await mountConsole();
+    expect(wrapper.findAll(".group-block")).toHaveLength(0);
+    // 分区视图下的「新建分组」入口仍在
+    expect(wrapper.find(".group-create").exists()).toBe(true);
+    expect(wrapper.find(".group-create button").text()).toContain("新建分组");
   });
 });
