@@ -141,7 +141,7 @@ CREATE TABLE IF NOT EXISTS file_history (
 
 CREATE INDEX IF NOT EXISTS idx_file_history_path ON file_history(path);
 
--- 便签分组（v12）：类文件夹管理；stickers.group_id 为 NULL 表示默认分组。
+-- 便签分组（v12）：类文件夹管理；stickers.group_id 为 NULL 表示未分组（无内置默认分组）。
 CREATE TABLE sticker_groups (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
