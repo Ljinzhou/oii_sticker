@@ -25,6 +25,8 @@ const RELEASE_BASE: &str = "https://github.com/Ljinzhou/oii_sticker/releases/lat
 pub const MANUAL_RELEASES_URL: &str = "https://github.com/Ljinzhou/oii_sticker/releases";
 
 /// 加速镜像前缀（"" = 直连 GitHub）。顺序仅是探测前的初始偏好，实际以延迟排序为准。
+/// 默认公网代理命中失败/需内网镜像时，可用环境变量 `OII_STICKER_UPDATE_MIRRORS`
+/// 追加（逗号分隔的 URL 前缀，追加在直连之后、内置代理之前）。
 pub const MIRROR_PREFIXES: &[&str] = &[
     "",
     "https://gh-proxy.org/",
@@ -34,10 +36,30 @@ pub const MIRROR_PREFIXES: &[&str] = &[
     "https://axisnow.gh-proxy.org/",
 ];
 
+/// 完整镜像前缀表（内置 + 环境变量追加），探测/构造 URL 统一走这里。
+fn mirror_prefixes() -> Vec<String> {
+    let extra = std::env::var("OII_STICKER_UPDATE_MIRRORS").unwrap_or_default();
+    extend_prefixes(MIRROR_PREFIXES, &extra)
+}
+
+/// 内置前缀 + 环境变量前缀合并（纯函数，便于单测）：
+/// 直连永远第一 → 环境变量前缀 → 内置代理。
+fn extend_prefixes(base: &[&str], extra: &str) -> Vec<String> {
+    let extras: Vec<String> = extra
+        .split(',')
+        .map(|s| s.trim().trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("{s}/"))
+        .collect();
+    base.iter().map(|s| s.to_string()).chain(extras).collect()
+}
+
 /// 单次探测超时。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
-/// 插件请求超时（插件把它同时设为下载请求的总时长上限；超时后按传输类失败轮换镜像重试）。
-const UPDATE_TIMEOUT: Duration = Duration::from_secs(600);
+/// 检查阶段（拉取元数据清单）请求超时：应短，坏镜像尽快失效落选。
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 下载阶段请求超时：大安装包 + 慢网需要宽松，作为请求总时长上限。
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(900);
 /// 探测结果缓存时长。
 const PROBE_CACHE: Duration = Duration::from_secs(600);
 /// 传输类失败的自动重试次数（不含首次；每次轮换到次优镜像）。
@@ -100,10 +122,20 @@ pub fn classify_error(raw: &str) -> UpdateError {
             format!("安装更新失败（可能需要管理员权限）：{raw}"),
         );
     }
+    // 磁盘空间不足：写临时安装包失败属「无法继续」，重试无意义，按安装失败呈现。
+    if lower.contains("no space") || lower.contains("insufficient") || lower.contains("disk full")
+        || lower.contains("not enough space")
+    {
+        return UpdateError::new(
+            UpdateErrKind::Install,
+            format!("磁盘空间不足，无法下载/安装更新，请清理后重试：{raw}"),
+        );
+    }
     if lower.contains("timeout") || lower.contains("timed out")
         || lower.contains("connection") || lower.contains("reset") || lower.contains("refused")
         || lower.contains("dns") || lower.contains("network") || lower.contains("proxy")
         || lower.contains("channel closed")
+        || lower.contains("certificate") || lower.contains("ssl") || lower.contains("tls")
     {
         return UpdateError::new(UpdateErrKind::Network, format!("网络异常：{raw}"));
     }
@@ -129,7 +161,8 @@ struct ProbeHit {
 
 /// 构造某镜像下的清单变体 URL。纯函数，单测覆盖。
 fn manifest_url(mirror_index: usize) -> Option<Url> {
-    let prefix = MIRROR_PREFIXES.get(mirror_index)?;
+    let prefixes = mirror_prefixes();
+    let prefix = prefixes.get(mirror_index)?;
     Url::parse(&format!("{prefix}{RELEASE_BASE}/latest.json")).ok()
 }
 
@@ -158,7 +191,7 @@ async fn probe_mirrors() -> Vec<ProbeHit> {
         .build()
         .expect("probe http client 构建失败（静态配置）");
     let mut jobs = tokio::task::JoinSet::new();
-    for i in 0..MIRROR_PREFIXES.len() {
+    for i in 0..mirror_prefixes().len() {
         let client = client.clone();
         jobs.spawn(async move {
             let url = manifest_url(i)?;
@@ -235,29 +268,29 @@ impl UpdateState {
         self.inner.lock().ok().and_then(|g| g.phase.clone())
     }
 
-    fn invalidate_probe(&self) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.probe_cache = None;
-        }
-    }
-
     fn shared(&self) -> Arc<Mutex<StateInner>> {
         self.inner.clone()
     }
 
-    fn take_pending_endpoints(&self) -> Option<Vec<Url>> {
-        self.inner.lock().ok().and_then(|g| g.pending_endpoints.clone())
+    /// 原子地「检查并占用」busy 标志（锁内 check-and-set，防并发双下载）。
+    fn try_begin_busy(&self) -> bool {
+        self.inner
+            .lock()
+            .map(|mut g| {
+                if g.busy {
+                    false
+                } else {
+                    g.busy = true;
+                    true
+                }
+            })
+            .unwrap_or(false)
     }
+}
 
-    fn set_busy(&self, v: bool) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.busy = v;
-        }
-    }
-
-    fn is_busy(&self) -> bool {
-        self.inner.lock().map(|g| g.busy).unwrap_or(false)
-    }
+/// shared 形态的当前阶段读取（供异步流程与 on_before_exit 回调使用）。
+fn current_phase_shared(state: &Arc<Mutex<StateInner>>) -> Option<UpdatePhase> {
+    state.lock().ok().and_then(|g| g.phase.clone())
 }
 
 // ───────────────────────── 命令 ─────────────────────────
@@ -276,16 +309,29 @@ pub async fn update_check_cmd(
     app: AppHandle,
     state: tauri::State<'_, UpdateState>,
 ) -> Result<CheckOutcome, UpdateError> {
-    check_flow(&app, &state).await.map(|phase| CheckOutcome { phase })
+    let shared = state.shared();
+    check_flow(&app, &shared).await.map(|phase| CheckOutcome { phase })
 }
 
-async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase, UpdateError> {
+/// 统一构造插件 Updater：endpoints 故障切换链 + 指定请求超时。
+fn build_updater(
+    app: &AppHandle,
+    endpoints: &[Url],
+    timeout: Duration,
+) -> Result<tauri_plugin_updater::Updater, UpdateError> {
+    let builder = app
+        .updater_builder()
+        .endpoints(endpoints.to_vec())
+        .map_err(|e| classify_error(&e.to_string()))?;
+    builder.timeout(timeout).build().map_err(|e| classify_error(&e.to_string()))
+}
+
+async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<UpdatePhase, UpdateError> {
     use UpdatePhase as P;
-    state.set_phase(app, P::Checking);
+    set_phase_shared(app, shared, P::Checking);
 
     // 1) 端点表：缓存命中则跳过探测。
-    let endpoints = match state
-        .inner
+    let endpoints = match shared
         .lock()
         .ok()
         .and_then(|g| g.probe_cache.as_ref().and_then(|(urls, at)| {
@@ -301,11 +347,11 @@ async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase,
                     UpdateErrKind::Network,
                     "无法连接更新服务器（直连与全部加速镜像均不可达，请检查本机网络）",
                 );
-                finish_failed(app, &state.shared(), &err);
+                finish_failed(app, shared, &err);
                 return Err(err);
             }
             let urls: Vec<Url> = rank_probe_hits(&hits);
-            if let Ok(mut g) = state.inner.lock() {
+            if let Ok(mut g) = shared.lock() {
                 g.probe_cache = Some((urls.clone(), Instant::now()));
             }
             urls
@@ -313,11 +359,13 @@ async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase,
     };
 
     // 2) 插件拉清单 + semver 比较（验签发生在下载阶段）。
-    let builder = app
-        .updater_builder()
-        .endpoints(endpoints.clone())
-        .map_err(|e| classify_error(&e.to_string()))?;
-    let updater = builder.timeout(UPDATE_TIMEOUT).build().map_err(|e| classify_error(&e.to_string()))?;
+    let updater = match build_updater(app, &endpoints, CHECK_TIMEOUT) {
+        Ok(u) => u,
+        Err(e) => {
+            finish_failed(app, shared, &e);
+            return Err(e);
+        }
+    };
     let update = match updater.check().await {
         Ok(found) => found,
         Err(e) => {
@@ -327,8 +375,10 @@ async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase,
                 classified.message =
                     "还没有可用的已发布版本（首次 Release 发布后即可正常检查更新）".into();
             }
-            state.invalidate_probe(); // 该镜像可能已坏，下次重新探测
-            finish_failed(app, &state.shared(), &classified);
+            if let Ok(mut g) = shared.lock() {
+                g.probe_cache = None; // 该镜像可能已坏，下次重新探测
+            }
+            finish_failed(app, shared, &classified);
             return Err(classified);
         }
     };
@@ -336,7 +386,7 @@ async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase,
     let phase = match update {
         None => P::UpToDate { current: app.package_info().version.to_string() },
         Some(u) => {
-            if let Ok(mut g) = state.inner.lock() {
+            if let Ok(mut g) = shared.lock() {
                 g.pending_endpoints = Some(endpoints);
             }
             P::Available {
@@ -346,39 +396,72 @@ async fn check_flow(app: &AppHandle, state: &UpdateState) -> Result<UpdatePhase,
             }
         }
     };
-    state.set_phase(app, phase.clone());
+    set_phase_shared(app, shared, phase.clone());
     Ok(phase)
 }
 
-/// 下载并安装已发现的更新，成功后自动重启应用。
+/// 下载并安装已发现的更新，成功后由安装器接管重启（Windows NSIS）。
 ///
 /// 立即返回；进度经 updater://progress / updater://phase 事件推送；
 /// 传输类失败自动轮换次优镜像重试（最多 MAX_RETRIES 次）。
+/// 并发安全：busy 标志为锁内原子 check-and-set，重复触发幂等返回。
 #[tauri::command]
 pub async fn update_download_cmd(
     app: AppHandle,
     state: tauri::State<'_, UpdateState>,
 ) -> Result<(), UpdateError> {
-    if state.is_busy() {
+    if !state.try_begin_busy() {
         return Ok(()); // 已有后台任务在跑：幂等返回，前端经事件接续即可。
     }
-    // 未处于「发现新版本」状态则先补一次检查。
+    let shared = state.shared();
+
+    // 未处于「发现新版本」状态则先补一次检查（在后台流程内，保持 busy 防止并发）。
     let need_check = !matches!(
-        state.current_phase(),
+        current_phase_shared(&shared),
         Some(UpdatePhase::Available { .. })
     );
     if need_check {
-        check_flow(&app, &state).await?;
+        let app2 = app.clone();
+        let shared2 = shared.clone();
+        tauri::async_runtime::spawn(async move {
+            match check_flow(&app2, &shared2).await {
+                Ok(UpdatePhase::Available { .. }) => {
+                    let endpoints = shared2
+                        .lock()
+                        .ok()
+                        .and_then(|g| g.pending_endpoints.clone())
+                        .unwrap_or_default();
+                    set_phase_shared(
+                        &app2,
+                        &shared2,
+                        UpdatePhase::Downloading { downloaded: 0, total: None, retrying: false },
+                    );
+                    download_flow(app2, shared2, endpoints).await;
+                }
+                Ok(_) => {
+                    // 已是最新 / 无可用更新：结束流程
+                    if let Ok(mut g) = shared2.lock() {
+                        g.busy = false;
+                    }
+                    set_phase_shared(&app2, &shared2, UpdatePhase::Idle);
+                }
+                Err(_) => {
+                    // check_flow 内部已 finish_failed 并清 busy
+                }
+            }
+        });
+        return Ok(());
     }
-    let endpoints = state
-        .take_pending_endpoints()
-        .ok_or_else(|| UpdateError::new(UpdateErrKind::Unknown, "没有待安装的更新，请先检查更新"))?;
 
-    state.set_busy(true);
-    state.set_phase(&app, UpdatePhase::Downloading { downloaded: 0, total: None, retrying: false });
-    let shared = state.shared();
+    let endpoints = shared
+        .lock()
+        .ok()
+        .and_then(|g| g.pending_endpoints.clone())
+        .ok_or_else(|| UpdateError::new(UpdateErrKind::Unknown, "没有待安装的更新，请先检查更新"))?;
+    set_phase_shared(&app, &shared, UpdatePhase::Downloading { downloaded: 0, total: None, retrying: false });
+    let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        download_flow(app, shared, endpoints).await;
+        download_flow(app2, shared, endpoints).await;
     });
     Ok(())
 }
@@ -421,7 +504,7 @@ async fn run_attempts(
     for attempt in 0..=MAX_RETRIES {
         // 主选轮换：第 k 次尝试以第 k%N 个镜像为主选，其余保持相对顺序兜底。
         let rotated = rotate_by(endpoints, attempt as usize);
-        let builder = match app
+        let mut builder = match app
             .updater_builder()
             .endpoints(rotated)
             .map_err(|e| classify_error(&e.to_string()))
@@ -429,11 +512,26 @@ async fn run_attempts(
             Ok(b) => b,
             Err(e) => return Some(e),
         };
-        let updater = builder
-            .timeout(UPDATE_TIMEOUT)
+        // Windows NSIS 安装流程插件会 `std::process::exit(0)`（下载超时后不返回），
+        // 项目的 Installing/Restarting/restart 永远执行不到——改为在插件的
+        // on_before_exit 钩子（exit 前回调）补发「安装中/即将重启」事件并清 busy，
+        // 前端才能收到最终状态。
+        {
+            let exit_app = app.clone();
+            let exit_state = state.clone();
+            builder = builder.on_before_exit(move || {
+                set_phase_shared(&exit_app, &exit_state, P::Installing);
+                set_phase_shared(&exit_app, &exit_state, P::Restarting);
+                if let Ok(mut g) = exit_state.lock() {
+                    g.busy = false;
+                }
+            });
+        }
+        let updater = match builder
+            .timeout(DOWNLOAD_TIMEOUT)
             .build()
-            .map_err(|e| classify_error(&e.to_string()));
-        let updater = match updater {
+            .map_err(|e| classify_error(&e.to_string()))
+        {
             Ok(u) => u,
             Err(e) => return Some(e),
         };
@@ -447,10 +545,11 @@ async fn run_attempts(
             }
             Err(e) => {
                 let classified = classify_error(&e.to_string());
-                if classified.kind == UpdateErrKind::Signature {
+                // 验签失败/资源缺失/不可重试类 → 立即终结；传输类 → 换镜像重试
+                if plan_retry(classified.kind, attempt, MAX_RETRIES).is_none() {
                     return Some(classified);
                 }
-                continue; // 传输/404 类失败：换镜像重试
+                continue;
             }
         };
 
@@ -491,29 +590,36 @@ async fn run_attempts(
 
         match result {
             Ok(()) => {
+                // Windows 上插件已接管安装并 exit(0)（on_before_exit 已发事件）。
+                // 此分支仅为防御性收尾（非 Windows 或插件未来行为变化）。
                 set_phase_shared(app, state, P::Installing);
-                // 给前端留一帧渲染「安装中」，随后自动重启。
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                set_phase_shared(app, state, P::Restarting);
-                if let Ok(mut g) = state.lock() {
-                    g.busy = false;
-                }
-                app.restart();
+                return None;
             }
             Err(e) => {
                 let classified = classify_error(&e.to_string());
-                if matches!(classified.kind, UpdateErrKind::Signature | UpdateErrKind::Install) {
-                    return Some(classified);
+                match plan_retry(classified.kind, attempt, MAX_RETRIES) {
+                    None => return Some(classified),
+                    Some(_) => {
+                        // 指数退避 1s / 2s 后换主选镜像重试。
+                        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                    }
                 }
-                if attempt >= MAX_RETRIES {
-                    return Some(classified);
-                }
-                // 指数退避 1s / 2s 后换主选镜像重试。
-                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
             }
         }
     }
     None // 循环内必已 return；此处仅为类型闭合。
+}
+
+/// 单次尝试失败后的重试决策（纯函数，单测覆盖）：
+/// Signature/NotFound/Install 重试无意义 → 终结；Network/Unknown 在上限内续重试。
+fn plan_retry(kind: UpdateErrKind, attempt: u32, max: u32) -> Option<u32> {
+    if matches!(kind, UpdateErrKind::Signature | UpdateErrKind::NotFound | UpdateErrKind::Install) {
+        return None;
+    }
+    if attempt >= max {
+        return None;
+    }
+    Some(attempt + 1)
 }
 
 #[derive(Clone, Serialize)]
@@ -627,5 +733,40 @@ mod tests {
 
     fn u_helper(i: usize) -> Url {
         manifest_url(i).unwrap()
+    }
+
+    #[test]
+    fn plan_retry_terminates_unretryable_and_exhausts_cap() {
+        // 无意义重试类一律终结
+        assert_eq!(plan_retry(UpdateErrKind::Signature, 0, 2), None);
+        assert_eq!(plan_retry(UpdateErrKind::NotFound, 0, 2), None);
+        assert_eq!(plan_retry(UpdateErrKind::Install, 0, 2), None);
+        // 传输类在上限内续重试
+        assert_eq!(plan_retry(UpdateErrKind::Network, 0, 2), Some(1));
+        assert_eq!(plan_retry(UpdateErrKind::Unknown, 1, 2), Some(2));
+        // 到达上限终结
+        assert_eq!(plan_retry(UpdateErrKind::Network, 2, 2), None);
+    }
+
+    #[test]
+    fn extend_prefixes_keeps_direct_first_and_cleans_extra() {
+        let base = ["", "https://m1/"];
+        // 空 → 仅内置
+        assert_eq!(extend_prefixes(&base, ""), vec!["", "https://m1/"]);
+        // 清洗：去空白/尾部斜杠、空项过滤；追加在直连之后
+        let got = extend_prefixes(&base, "  https://mirror.internal/ , https://m2.test,,");
+        assert_eq!(
+            got,
+            vec!["", "https://m1/", "https://mirror.internal/", "https://m2.test/"]
+        );
+    }
+
+    #[test]
+    fn classify_maps_disk_full_and_certificate() {
+        let e = classify_error("failed to write file: no space left on device");
+        assert_eq!(e.kind, UpdateErrKind::Install);
+        assert!(e.message.contains("磁盘空间不足"));
+        let e = classify_error("certificate verify failed");
+        assert_eq!(e.kind, UpdateErrKind::Network);
     }
 }
