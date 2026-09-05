@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { computed, nextTick, ref, onMounted, onUnmounted } from "vue";
 import { useSettingsStore } from "../../stores/settings";
 import { invoke, listen } from "../../composables/useTauri";
+import { downloadPercent, updateBarWidth, updateStageText } from "../../utils/update";
 import WorkspaceManager from "./WorkspaceManager.vue";
 import TodoPresetsManager from "./TodoPresetsManager.vue";
 
@@ -80,6 +81,20 @@ const upPhase = ref<string>("idle");
 const upVersion = ref("");
 const upProgressPct = ref<number | null>(null); // null = 总大小未知
 const upRetrying = ref(false);
+const upDownloaded = ref<number | null>(null);
+const upTotal = ref<number | null>(null);
+// 滚动日志框（方向 A：贴合现状的更新日志 + 整体进度条）
+const upLogs = ref<{ level: string; text: string }[]>([]);
+const upLogEl = ref<HTMLElement | null>(null);
+const upBarWidth = computed(() => updateBarWidth(upPhase.value, upDownloaded.value, upTotal.value));
+const updateStage = computed(() => updateStageText(upPhase.value, upProgressPct.value, upRetrying.value));
+
+async function pushLog(level: string, text: string) {
+  upLogs.value.push({ level, text });
+  if (upLogs.value.length > 200) upLogs.value.splice(0, upLogs.value.length - 200);
+  await nextTick();
+  if (upLogEl.value) upLogEl.value.scrollTop = upLogEl.value.scrollHeight;
+}
 const updateResult = ref<string>("");
 const updateError = ref(false);
 const checkingUpdate = ref(false);
@@ -99,7 +114,9 @@ function applyPhase(p: UpdatePhase) {
       updateResult.value = "";
       break;
     case "downloading":
-      upProgressPct.value = p.total ? Math.min(99, Math.round((p.downloaded / p.total) * 100)) : null;
+      upDownloaded.value = p.downloaded;
+      upTotal.value = p.total ?? null;
+      upProgressPct.value = downloadPercent(p.downloaded, p.total ?? null);
       upRetrying.value = p.retrying;
       break;
     case "installing":
@@ -113,6 +130,7 @@ function applyPhase(p: UpdatePhase) {
     case "failed":
       updateResult.value = p.message;
       updateError.value = true;
+      void pushLog("err", p.message);
       break;
     default:
       break;
@@ -163,10 +181,17 @@ onMounted(async () => {
   unlisteners.push(
     await listen<{ downloaded: number; total: number | null }>("updater://progress", (payload) => {
       upPhase.value = "downloading";
-      upProgressPct.value = payload.total ? Math.min(99, Math.round((payload.downloaded / payload.total) * 100)) : null;
+      upDownloaded.value = payload.downloaded;
+      upTotal.value = payload.total;
+      upProgressPct.value = downloadPercent(payload.downloaded, payload.total);
     }),
   );
   unlisteners.push(await listen<UpdatePhase>("updater://phase", (payload) => applyPhase(payload)));
+  unlisteners.push(
+    await listen<{ level: string; text: string }>("updater://log", (payload) => {
+      void pushLog(payload.level ?? "info", payload.text);
+    }),
+  );
 });
 onUnmounted(() => {
   unlisteners.forEach((fn) => fn());
@@ -387,6 +412,16 @@ onMounted(async () => {
           class="result"
         >{{ upRetrying ? "网络不稳定，已自动切换到更快的镜像继续。" : "正在通过最快的镜像下载更新包…" }}</p>
         <p v-if="updateResult" class="result" :class="{ error: updateError }">{{ updateResult }}</p>
+
+        <!-- 更新日志 + 整体进度条（方向 A：贴合现状） -->
+        <div class="update-panel">
+          <div class="up-bar"><i :class="{ busy: upBarWidth === null && upPhase === 'checking' }" :style="upBarWidth !== null ? { width: upBarWidth + '%' } : {}"></i></div>
+          <div class="up-meta"><span>{{ updateStage }}</span><span v-if="upBarWidth !== null">{{ upBarWidth }}%</span></div>
+          <div class="up-log" ref="upLogEl">
+            <p v-if="upLogs.length === 0" class="l-t0">等待操作：点击「检查更新」查看连接检查、镜像选择与下载日志。</p>
+            <div v-for="(l, i) in upLogs" :key="i" :class="'l-' + l.level">{{ l.text }}</div>
+          </div>
+        </div>
 
         <h4 class="about-sec">开源许可</h4>
         <p class="about-line">本软件遵循 GPL v3 许可分发。</p>
@@ -631,6 +666,65 @@ h3 {
 .result.error {
   color: #c0392b;
 }
+
+/* 更新日志 + 进度条（方向 A：贴合现状） */
+.update-panel {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+.up-bar {
+  height: 6px;
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.up-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 4px;
+  background: #4f7cff;
+  transition: width 0.25s ease;
+}
+/* 检查阶段的流动动画（未知总量） */
+.up-bar i.busy {
+  width: 100%;
+  background: repeating-linear-gradient(-45deg, #7ba3ff 0 10px, #4f7cff 10px 20px);
+  animation: up-flow 0.8s linear infinite;
+}
+@keyframes up-flow {
+  to { background-position: 28px 0; }
+}
+.up-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #888;
+  margin-top: 5px;
+}
+.up-log {
+  margin-top: 8px;
+  height: 138px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  background: #faf8f4;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.85;
+  color: #555;
+  font-family: Consolas, "Cascadia Mono", "Courier New", monospace;
+}
+.up-log p { margin: 0; }
+.up-log .l-t0 { color: #aaa; }
+.up-log .l-info { color: #555; }
+.up-log .l-ok { color: #2f9e5f; }
+.up-log .l-warn { color: #d99a1b; }
+.up-log .l-err { color: #d33; }
 
 .foot {
   grid-row: 2;

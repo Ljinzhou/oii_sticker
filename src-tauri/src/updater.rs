@@ -329,6 +329,7 @@ fn build_updater(
 async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<UpdatePhase, UpdateError> {
     use UpdatePhase as P;
     set_phase_shared(app, shared, P::Checking);
+    emit_log(app, "info", "开始检查更新…".into());
 
     // 1) 端点表：缓存命中则跳过探测。
     let endpoints = match shared
@@ -337,12 +338,29 @@ async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<
         .and_then(|g| g.probe_cache.as_ref().and_then(|(urls, at)| {
             (at.elapsed() < PROBE_CACHE).then(|| urls.clone())
         })) {
-        Some(urls) => urls,
+        Some(urls) => {
+            emit_log(app, "info", format!("使用缓存镜像列表（{} 个端点，10 分钟内有效）", urls.len()));
+            urls
+        }
         None => {
             let hits = probe_mirrors().await;
+            for h in &hits {
+                emit_log(
+                    app,
+                    if h.ok { "ok" } else { "warn" },
+                    if h.ok {
+                        format!("  连接正常：{}（{}ms）", h.endpoint, h.latency_ms)
+                    } else if h.responded {
+                        format!("  已响应但异常（HTTP 非 2xx）：{}", h.endpoint)
+                    } else {
+                        format!("  连接失败：{}", h.endpoint)
+                    },
+                );
+            }
             // 只有「连一个 HTTP 响应都没拿到」才算真·网络不可达；
             // 全线 404 之类属于"仓库尚无发布版本"，仍走插件检查以给出准确文案。
             if hits.is_empty() {
+                emit_log(app, "err", "全部服务器不可达（直连与镜像均失败）".into());
                 let err = UpdateError::new(
                     UpdateErrKind::Network,
                     "无法连接更新服务器（直连与全部加速镜像均不可达，请检查本机网络）",
@@ -351,6 +369,9 @@ async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<
                 return Err(err);
             }
             let urls: Vec<Url> = rank_probe_hits(&hits);
+            if let Some(best) = urls.first() {
+                emit_log(app, "ok", format!("已选择最优更新服务器：{best}"));
+            }
             if let Ok(mut g) = shared.lock() {
                 g.probe_cache = Some((urls.clone(), Instant::now()));
             }
@@ -375,6 +396,7 @@ async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<
                 classified.message =
                     "还没有可用的已发布版本（首次 Release 发布后即可正常检查更新）".into();
             }
+            emit_log(app, "err", format!("检查失败：{}", classified.message));
             if let Ok(mut g) = shared.lock() {
                 g.probe_cache = None; // 该镜像可能已坏，下次重新探测
             }
@@ -384,8 +406,12 @@ async fn check_flow(app: &AppHandle, shared: &Arc<Mutex<StateInner>>) -> Result<
     };
 
     let phase = match update {
-        None => P::UpToDate { current: app.package_info().version.to_string() },
+        None => {
+            emit_log(app, "ok", "已是最新版本".into());
+            P::UpToDate { current: app.package_info().version.to_string() }
+        }
         Some(u) => {
+            emit_log(app, "ok", format!("发现新版本 v{}（当前 v{}）", u.version, u.current_version));
             if let Ok(mut g) = shared.lock() {
                 g.pending_endpoints = Some(endpoints);
             }
@@ -504,6 +530,10 @@ async fn run_attempts(
     for attempt in 0..=MAX_RETRIES {
         // 主选轮换：第 k 次尝试以第 k%N 个镜像为主选，其余保持相对顺序兜底。
         let rotated = rotate_by(endpoints, attempt as usize);
+        if attempt > 0 {
+            let primary = rotated.first().map(|u| u.as_str()).unwrap_or("");
+            emit_log(app, "warn", format!("第 {} 次重试：切换到主选服务器 {primary}", attempt + 1));
+        }
         let mut builder = match app
             .updater_builder()
             .endpoints(rotated)
@@ -520,7 +550,9 @@ async fn run_attempts(
             let exit_app = app.clone();
             let exit_state = state.clone();
             builder = builder.on_before_exit(move || {
+                emit_log(&exit_app, "info", "开始安装更新…".into());
                 set_phase_shared(&exit_app, &exit_state, P::Installing);
+                emit_log(&exit_app, "ok", "安装完成，应用即将重启…".into());
                 set_phase_shared(&exit_app, &exit_state, P::Restarting);
                 if let Ok(mut g) = exit_state.lock() {
                     g.busy = false;
@@ -536,8 +568,12 @@ async fn run_attempts(
             Err(e) => return Some(e),
         };
         let update = match updater.check().await {
-            Ok(Some(u)) => u,
+            Ok(Some(u)) => {
+                emit_log(app, "ok", format!("发现新版本 v{}，开始下载更新包…", u.version));
+                u
+            }
             Ok(None) => {
+                emit_log(app, "ok", "已是最新版本".into());
                 set_phase_shared(app, state, P::UpToDate {
                     current: app.package_info().version.to_string(),
                 });
@@ -545,6 +581,7 @@ async fn run_attempts(
             }
             Err(e) => {
                 let classified = classify_error(&e.to_string());
+                emit_log(app, "warn", format!("检查失败（{}），尝试下一个服务器…", classified.message));
                 // 验签失败/资源缺失/不可重试类 → 立即终结；传输类 → 换镜像重试
                 if plan_retry(classified.kind, attempt, MAX_RETRIES).is_none() {
                     return Some(classified);
@@ -559,13 +596,16 @@ async fn run_attempts(
             retrying: attempt > 0,
         });
 
-        // 进度聚合：插件回调给的是「每个分块长度」，这里累加并节流上报。
+        // 进度聚合：插件回调给的是「每个分块长度」，这里累加并节流上报；
+        // 日志按累计百分比 ≥5% 变化追加一条，避免刷屏。
         let app_for_progress = app.clone();
         let downloaded = Arc::new(Mutex::new(0u64));
         let last_emit = Arc::new(Mutex::new(Instant::now() - Duration::from_millis(200)));
+        let last_log_pct = Arc::new(Mutex::new(0i32));
         let result = {
             let downloaded = downloaded.clone();
             let last_emit = last_emit.clone();
+            let last_log_pct = last_log_pct.clone();
             update
                 .download_and_install(
                     move |chunk_len, total| {
@@ -577,6 +617,22 @@ async fn run_attempts(
                         if last.elapsed() >= Duration::from_millis(100) {
                             *last = Instant::now();
                             drop(last);
+                            // 进度日志：每 5% 一档
+                            let pct = total
+                                .filter(|t| *t > 0)
+                                .map(|t| (downloaded_now as f64 / t as f64 * 100.0) as i32)
+                                .unwrap_or(0);
+                            let mut last_pct = last_log_pct.lock().unwrap();
+                            if pct / 5 > *last_pct {
+                                *last_pct = pct / 5;
+                                let size_mb = total.map(|t| format!("{:.1} MB", t as f64 / 1_048_576.0)).unwrap_or_default();
+                                drop(last_pct);
+                                emit_log(
+                                    &app_for_progress,
+                                    "info",
+                                    format!("下载中：{pct}%（{size_mb}）"),
+                                );
+                            }
                             let _ = app_for_progress.emit(
                                 "updater://progress",
                                 ProgressPayload { downloaded: downloaded_now, total },
@@ -590,6 +646,7 @@ async fn run_attempts(
 
         match result {
             Ok(()) => {
+                emit_log(app, "ok", "下载完成，签名校验与解压通过".into());
                 // Windows 上插件已接管安装并 exit(0)（on_before_exit 已发事件）。
                 // 此分支仅为防御性收尾（非 Windows 或插件未来行为变化）。
                 set_phase_shared(app, state, P::Installing);
@@ -597,6 +654,7 @@ async fn run_attempts(
             }
             Err(e) => {
                 let classified = classify_error(&e.to_string());
+                emit_log(app, "err", format!("下载/安装失败：{}", classified.message));
                 match plan_retry(classified.kind, attempt, MAX_RETRIES) {
                     None => return Some(classified),
                     Some(_) => {
@@ -626,6 +684,20 @@ fn plan_retry(kind: UpdateErrKind, attempt: u32, max: u32) -> Option<u32> {
 struct ProgressPayload {
     downloaded: u64,
     total: Option<u64>,
+}
+
+/// updater://log 事件负载（前端滚动日志框消费）。
+type LogLevel = &'static str;
+
+#[derive(Clone, Serialize)]
+struct LogPayload {
+    level: LogLevel, // "info" | "ok" | "warn" | "err"
+    text: String,
+}
+
+/// 发送一条更新日志（前端日志框追加并自动滚动）。
+fn emit_log(app: &AppHandle, level: LogLevel, text: String) {
+    let _ = app.emit("updater://log", LogPayload { level, text });
 }
 
 /// 将端点表旋转 k 位（主选轮换，其余保持相对顺序作为插件级兜底链）。纯函数。
