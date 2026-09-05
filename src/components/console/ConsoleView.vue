@@ -11,6 +11,13 @@ import StickerCard from "./StickerCard.vue";
 
 const notes = useNotesStore();
 const settings = useSettingsStore();
+
+/** 主控台背景透明度（系统设置 → 通用 → 主控台背景透明度；默认 0.94） */
+const consoleBgAlpha = computed(() => {
+  const v = Number(settings.get("console_bg_opacity", "94"));
+  if (!Number.isFinite(v)) return 0.94;
+  return Math.min(1, Math.max(0.3, v / 100));
+});
 const showSettings = ref(false);
 const openIds = ref<number[]>([]);
 const confirming = ref<Sticker | null>(null);
@@ -209,7 +216,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="console">
+  <main class="console" :style="{ background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
       <div class="actions">
