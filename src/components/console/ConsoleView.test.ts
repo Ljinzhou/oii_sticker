@@ -247,4 +247,22 @@ describe("ConsoleView", () => {
     const names = wrapper.findAll(".group-head .group-name").map((h) => h.text());
     expect(names).toContain("学习");
   });
+
+  it("分组 ⋯ 菜单「新建便签」为当前分组创建新便签", async () => {
+    const wrapper = await mountConsole();
+    // 打开「工作」分组（id=10）的菜单
+    await wrapper.findAll(".group-menu-btn")[0]!.trigger("click");
+    const createBtn = wrapper.findAll(".dropdown button").find((b) => b.text().includes("新建便签"))!;
+    await createBtn.trigger("click");
+    await flushPromises();
+
+    const calls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "create_sticker_cmd");
+    expect(calls).toHaveLength(1);
+    // 新便签归属当前分组（group_id=10），而非默认分组
+    expect(calls[0][1].new.group_id).toBe(10);
+    // 分组卡片出现新便签（总数 +1）
+    const workCount = wrapper.findAll(".group-head .group-name").map((h) => h.text());
+    expect(workCount).toContain("工作");
+    expect(wrapper.text()).toContain("新建便签");
+  });
 });

@@ -14,13 +14,14 @@ pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
     let bg = s.bg_color.as_deref();
     conn.execute(
         "INSERT INTO stickers
-           (parent_id, title, content, heading_level,
+           (parent_id, group_id, title, content, heading_level,
             pos_x, pos_y, width, height, opacity, bg_color,
             always_on_top, auto_scroll, is_completed, display_mode)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 ?11, ?12, 0, 'display')",
+                 ?11, ?12, ?13, 0, 'display')",
         params![
             s.parent_id,
+            s.group_id,
             s.title,
             s.content,
             s.heading_level,
@@ -170,6 +171,7 @@ fn row_to_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
 #[serde(default)]
 pub struct NewSticker {
     pub parent_id: Option<i64>,
+    pub group_id: Option<i64>,
     pub title: String,
     pub content: String,
     pub heading_level: i32,
