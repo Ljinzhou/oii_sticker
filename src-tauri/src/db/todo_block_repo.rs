@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::db::sticker_repo;
-use crate::models::{TodoBlock, TodoPatch};
+use crate::models::{TodoBlock, TodoBlockWithSticker, TodoPatch, TodoQueryFilter};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -338,6 +338,65 @@ fn row_to_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlock> {
         sort_order: row.get(14)?, created_at: row.get(15)?, updated_at: row.get(16)?,
         completed_at: row.get(17)?, repeat_anchor: row.get(18)?,
     })
+}
+
+/// 聚合行转换：前 19 列与 `row_to_block` 一致，第 20 列（索引 19）为便签标题。
+fn row_to_block_with_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlockWithSticker> {
+    let block = row_to_block(row)?;
+    let sticker_title = row.get(19)?;
+    Ok(TodoBlockWithSticker { block, sticker_title })
+}
+
+/// 跨便签聚合查询（主控台「任务总览」页）：JOIN `stickers` 取标题，支持可选过滤。
+///
+/// 过滤全部可选组合（completed / due 区间 / remind 区间 / keyword 标题子串）；
+/// 不传 filter = 列出全部任务（含已完成）。排序按便签标题 → 同层序 → 创建时间，
+/// 与 `list_by_sticker` 的分组层序一致，便于前端按便签分组展示。
+pub fn list_all_todos(conn: &Connection, filter: &TodoQueryFilter) -> Result<Vec<TodoBlockWithSticker>> {
+    let mut sql = String::from(
+        "SELECT tb.id, tb.sticker_id, tb.title, tb.block_title, tb.description, tb.is_completed, \
+         tb.parent_id, tb.reminder_at, tb.due_at, tb.repeat_rule, tb.reminded_at, tb.due_notified_at, \
+         tb.reminder_ack_at, tb.due_ack_at, tb.sort_order, tb.created_at, tb.updated_at, \
+         tb.completed_at, tb.repeat_anchor, s.title AS sticker_title \
+         FROM todo_blocks tb JOIN stickers s ON s.id = tb.sticker_id \
+         WHERE tb.parent_id IS NOT NULL",
+    );
+    let mut conds: Vec<&str> = Vec::new();
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    if let Some(v) = filter.completed {
+        conds.push("tb.is_completed = ?");
+        values.push(Box::new(v));
+    }
+    if let Some(v) = filter.due_before.as_deref() {
+        conds.push("tb.due_at IS NOT NULL AND tb.due_at < ?");
+        values.push(Box::new(v));
+    }
+    if let Some(v) = filter.due_after.as_deref() {
+        conds.push("tb.due_at IS NOT NULL AND tb.due_at > ?");
+        values.push(Box::new(v));
+    }
+    if let Some(v) = filter.remind_before.as_deref() {
+        conds.push("tb.reminder_at IS NOT NULL AND tb.reminder_at < ?");
+        values.push(Box::new(v));
+    }
+    if let Some(v) = filter.remind_after.as_deref() {
+        conds.push("tb.reminder_at IS NOT NULL AND tb.reminder_at > ?");
+        values.push(Box::new(v));
+    }
+    if let Some(v) = filter.keyword.as_deref() {
+        conds.push("tb.title LIKE '%' || ? || '%'");
+        values.push(Box::new(v));
+    }
+    if !conds.is_empty() {
+        sql.push_str(" AND ");
+        sql.push_str(&conds.join(" AND "));
+    }
+    sql.push_str(" ORDER BY tb.sticker_id, tb.parent_id IS NOT NULL, tb.sort_order, tb.created_at, tb.id");
+    let mut stmt = conn.prepare_cached(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())), row_to_block_with_sticker)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 // ═══════════════════ 重复任务：重建锚点与逾期后缀 ═══════════════════
@@ -893,5 +952,76 @@ mod tests {
         // 非逾期结尾不误伤
         assert_eq!(strip_overdue_suffix("背单词——2026年9月3日"), "背单词——2026年9月3日");
         assert_eq!(strip_overdue_suffix("——2026-09-03，任务逾期"), "——2026-09-03，任务逾期");
+    }
+
+    /// 跨便签聚合：JOIN 标题正确、按 sticker_id 聚合并按层序排列（分组展示顺序由前端按便签列表决定）。
+    #[test]
+    fn list_all_todos_joins_title_and_sorts() {
+        let conn = conn();
+        let work = sticker_repo::insert(&conn, &sticker_repo::NewSticker { title: "工作".into(), ..Default::default() }).unwrap();
+        let study = sticker_repo::insert(&conn, &sticker_repo::NewSticker { title: "学习".into(), ..Default::default() }).unwrap();
+        // 工作：块 + 父任务 + 子任务
+        let block_w = create(&conn, work, None).unwrap();
+        let root_w = create(&conn, work, Some(&block_w.id)).unwrap();
+        let child_w = create(&conn, work, Some(&root_w.id)).unwrap();
+        // 学习：块 + 父任务
+        let block_s = create(&conn, study, None).unwrap();
+        create(&conn, study, Some(&block_s.id)).unwrap();
+
+        let all = list_all_todos(&conn, &TodoQueryFilter::default()).unwrap();
+        // 3 条任务：root_w / child_w / root_s（块本身不作为任务返回）
+        assert_eq!(all.len(), 3);
+        let titles: Vec<&str> = all.iter().map(|t| t.sticker_title.as_str()).collect();
+        assert_eq!(titles, vec!["工作", "工作", "学习"]);
+        // 同便签内：父任务在前、子任务在后
+        assert_eq!(all[0].block.id, root_w.id);
+        assert_eq!(all[1].block.id, child_w.id);
+        assert!(all[1].block.parent_id.is_some());
+        // JOIN 标题与任务一一对应
+        assert_eq!(all[0].sticker_title, "工作");
+        assert_eq!(all[2].sticker_title, "学习");
+    }
+
+    /// 过滤组合：completed / due 区间 / keyword。
+    #[test]
+    fn list_all_todos_filters() {
+        let conn = conn();
+        let work = sticker_repo::insert(&conn, &sticker_repo::NewSticker { title: "工作".into(), ..Default::default() }).unwrap();
+        let block = create(&conn, work, None).unwrap();
+        let a = create(&conn, work, Some(&block.id)).unwrap();
+        let b = create(&conn, work, Some(&block.id)).unwrap();
+        let c = create(&conn, work, Some(&block.id)).unwrap();
+        let patch = |title: &str, due: Option<&str>, done: bool| TodoPatch {
+            title: Some(title.into()),
+            due_at: due.map(String::from),
+            is_completed: Some(done),
+            ..Default::default()
+        };
+        update(&conn, &a.id, &patch("早会", Some("2026-09-08T02:00:00Z"), true)).unwrap();
+        update(&conn, &b.id, &patch("提交周报", Some("2026-09-10T10:00:00Z"), false)).unwrap();
+        update(&conn, &c.id, &patch("评审 PR", None, false)).unwrap();
+
+        // 全部
+        assert_eq!(list_all_todos(&conn, &TodoQueryFilter::default()).unwrap().len(), 3);
+        // completed=true → 1 条（a）
+        let done = list_all_todos(&conn, &TodoQueryFilter { completed: Some(true), ..Default::default() }).unwrap();
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].block.title, "早会");
+        // due 区间 [09-09, 09-11] → 1 条（b）
+        let due = list_all_todos(&conn, &TodoQueryFilter {
+            due_after: Some("2026-09-09T00:00:00Z".into()),
+            due_before: Some("2026-09-11T00:00:00Z".into()),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].block.title, "提交周报");
+        // keyword 子串 → 命中标题含"周报"的条
+        let kw = list_all_todos(&conn, &TodoQueryFilter { keyword: Some("周报".into()), ..Default::default() }).unwrap();
+        assert_eq!(kw.len(), 1);
+        assert_eq!(kw[0].block.id, b.id);
+        // 空库（无任务）
+        let empty = Connection::open_in_memory().unwrap();
+        schema::run_migrations(&empty).unwrap();
+        assert!(list_all_todos(&empty, &TodoQueryFilter::default()).unwrap().is_empty());
     }
 }

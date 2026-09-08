@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
 use crate::db::sticker_repo::NewSticker;
 use crate::editing;
-use crate::models::{EffectivePrefs, Sticker, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
+use crate::models::{EffectivePrefs, Sticker, StickerPrefs, SystemConfig, TodoBlock, TodoBlockWithSticker, TodoPatch, TodoQueryFilter};
 use crate::workspace::{layout, md_store};
 
 // ── 便签 CRUD ──
@@ -297,6 +297,12 @@ pub fn list_todo_blocks(conn: &Connection, sticker_id: i64) -> Result<(Vec<TodoB
     // 返回是否补写了标记（调用方据此通知便签窗口刷新正文）。
     let retagged = !todo_block_repo::retag_orphans_for_sticker(conn, sticker_id)?.is_empty();
     Ok((todo_block_repo::list_by_sticker(conn, sticker_id)?, retagged))
+}
+
+/// 跨便签 Todo 聚合查询（主控台「任务总览」页与 AI 工具层共用）。
+/// 只读聚合，不触发孤儿补写（无正文关联的写入副作用）。
+pub fn list_all_todos(conn: &Connection, filter: &TodoQueryFilter) -> Result<Vec<TodoBlockWithSticker>> {
+    todo_block_repo::list_all_todos(conn, filter)
 }
 
 pub fn get_todo_block(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
