@@ -131,6 +131,19 @@ export interface TodoPatch {
   repeat_rule?: string;
 }
 
+/** 跨便签 Todo 聚合查询过滤条件（与 Rust `TodoQueryFilter` 对应，全部可选）。 */
+export interface TodoQueryFilter {
+  completed?: boolean;
+  due_before?: string;
+  due_after?: string;
+  remind_before?: string;
+  remind_after?: string;
+  keyword?: string;
+}
+
+/** 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题（JOIN stickers）。 */
+export type TodoBlockWithSticker = TodoBlock & { sticker_title: string };
+
 export interface SlashItem {
   id: string;
   name: string;
