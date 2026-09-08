@@ -582,6 +582,17 @@ fn list_todo_for_sticker_cmd(
     Ok(blocks)
 }
 
+/// 跨便签 Todo 聚合查询（主控台「任务总览」页）：默认全量，可按过滤条件筛选。
+#[tauri::command]
+fn list_all_todos_cmd(
+    state: State<'_, AppState>,
+    filter: Option<models::TodoQueryFilter>,
+) -> Result<Vec<models::TodoBlockWithSticker>, String> {
+    state
+        .with_conn(|c| commands::list_all_todos(c, &filter.unwrap_or_default()))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn create_todo_block_cmd(
     app: tauri::AppHandle,
@@ -1500,6 +1511,7 @@ pub fn run() {
             toggle_todo_cmd,
             get_todo_block_cmd,
             list_todo_for_sticker_cmd,
+            list_all_todos_cmd,
             create_todo_block_cmd,
             update_todo_block_cmd,
             ack_todo_alert_cmd,

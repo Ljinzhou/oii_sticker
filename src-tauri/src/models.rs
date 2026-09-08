@@ -206,6 +206,30 @@ pub struct TodoPatch {
     pub repeat_rule: Option<String>,
 }
 
+/// 跨便签 Todo 聚合查询过滤条件（全部可选；不传 = 列出全部含已完成）。
+/// 供主控台「任务总览」页与 AI 工具层共用（见 05-data-and-ipc.md）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TodoQueryFilter {
+    /// 精确匹配完成态（None = 全部）。
+    pub completed: Option<bool>,
+    /// 截止时间区间（UTC ISO 字符串，与 todo_blocks 存储格式一致）。
+    pub due_before: Option<String>,
+    pub due_after: Option<String>,
+    /// 提醒时间区间（UTC ISO 字符串）。
+    pub remind_before: Option<String>,
+    pub remind_after: Option<String>,
+    /// 标题关键字（子串匹配，不区分大小写）。
+    pub keyword: Option<String>,
+}
+
+/// 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题（JOIN stickers）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoBlockWithSticker {
+    #[serde(flatten)]
+    pub block: TodoBlock,
+    pub sticker_title: String,
+}
+
 /// `system_config` 表条目。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigEntry {
