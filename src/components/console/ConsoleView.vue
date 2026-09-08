@@ -8,6 +8,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { NewSticker, Sticker } from "../../types";
 import SettingsPanel from "./SettingsPanel.vue";
 import StickerCard from "./StickerCard.vue";
+import TodoOverviewView from "./TodoOverviewView.vue";
 
 const notes = useNotesStore();
 const settings = useSettingsStore();
@@ -96,6 +97,18 @@ const viewMode = ref<"section" | "flat">("section");
 function setViewMode(m: "section" | "flat") {
   viewMode.value = m;
   void settings.set("console_group_view", m);
+}
+
+// —— 页面切换（便签 / 任务总览，持久化 system_config.console_page） ——
+const consolePage = ref<"stickers" | "todos">("stickers");
+function setConsolePage(page: "stickers" | "todos") {
+  consolePage.value = page;
+  void settings.set("console_page", page);
+}
+/** 「打开便签」：唤起便签窗口（隐藏中时重建显示）。 */
+async function openSticker(stickerId: number) {
+  await invoke("wake_sticker_cmd", { id: stickerId });
+  showGroupToast("已打开便签窗口");
 }
 
 type Section = {
@@ -208,6 +221,7 @@ onMounted(async () => {
   await settings.refresh(); // 配置回读完成后，再恢复持久化的视图模式
   viewMode.value =
     settings.get("console_group_view", "section") === "flat" ? "flat" : "section";
+  consolePage.value = settings.get("console_page", "stickers") === "todos" ? "todos" : "stickers";
   refreshOpenIds();
   // 后端推送 → 刷新列表 + 窗口打开状态（隐藏/显示按钮实时同步）
   unlisteners.push(
@@ -231,6 +245,14 @@ onBeforeUnmount(() => {
   <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
+      <div class="view-switch page-switch" role="tablist">
+        <button :class="{ on: consolePage === 'stickers' }" @click="setConsolePage('stickers')">
+          <i class="ri-sticky-note-line"></i>便签
+        </button>
+        <button :class="{ on: consolePage === 'todos' }" @click="setConsolePage('todos')">
+          <i class="ri-todo-line"></i>任务总览
+        </button>
+      </div>
       <div class="actions">
         <button class="btn primary" @click="createSticker"><i class="ri-add-line"></i>新建便签</button>
         <button class="btn" @click="showSettings = true"><i class="ri-settings-3-line"></i>系统设置</button>
@@ -241,7 +263,11 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <section class="list">
+    <!-- 任务总览页 -->
+    <TodoOverviewView v-if="consolePage === 'todos'" class="todo-page" @open-sticker="openSticker" />
+
+    <!-- 便签页 -->
+    <section v-else class="list">
       <!-- 视图切换 + 新建分组 -->
       <div class="list-toolbar">
         <div class="view-switch" role="tablist">
@@ -523,6 +549,23 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
+}
+
+/* 页面切换页签（便签 / 任务总览） */
+.page-switch {
+  margin-left: 12px;
+  margin-right: auto;
+}
+.page-switch button .ri {
+  margin-right: 3px;
+  vertical-align: -1px;
+}
+
+/* 任务总览页容器 */
+.todo-page {
+  flex: 1;
+  padding: 12px 18px;
+  overflow-y: auto;
 }
 
 .view-switch button {
