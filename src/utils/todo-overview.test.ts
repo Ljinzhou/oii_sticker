@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { TodoBlockWithSticker } from "../types";
-import { buildGroups, countStats, filterBlocks, type TodoGroup } from "./todo-overview";
+import { buildGroups, countStats, filterBlocks } from "./todo-overview";
 
-function block(part: Partial<TodoBlockWithSticker> & Pick<TodoBlockWithSticker, "id" | "sticker_id">): TodoBlockWithSticker {
+function block(part: Partial<TodoBlockWithSticker>): TodoBlockWithSticker {
   return {
+    id: "b0",
+    sticker_id: 1,
     title: "",
     block_title: "",
     description: null,
