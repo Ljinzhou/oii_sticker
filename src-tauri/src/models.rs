@@ -222,12 +222,21 @@ pub struct TodoQueryFilter {
     pub keyword: Option<String>,
 }
 
-/// 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题（JOIN stickers）。
+/// 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题与所属 todo 块（JOIN stickers / todo_blocks）。
+///
+/// 一个便签可含多个 todo 块（第 0 层容器，父任务与子任务挂在块下），
+/// `owner_block_*` 供任务总览页按「便签 → 块 → 任务」三层区分展示；
+/// 命名带 `owner_` 前缀以避开 TodoBlock 自身的 `block_title`（任务自身的卡头标题）。
+/// 前端对应类型：`src/types.ts` 的 `TodoBlockWithSticker`（手工保持一致）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoBlockWithSticker {
     #[serde(flatten)]
     pub block: TodoBlock,
     pub sticker_title: String,
+    /// 所属 todo 块 id（第 0 层容器）。
+    pub owner_block_id: String,
+    /// 所属 todo 块标题（块自身 `block_title`，空串 = 未命名块）。
+    pub owner_block_title: String,
 }
 
 /// `system_config` 表条目。

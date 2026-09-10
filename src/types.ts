@@ -141,8 +141,19 @@ export interface TodoQueryFilter {
   keyword?: string;
 }
 
-/** 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题（JOIN stickers）。 */
-export type TodoBlockWithSticker = TodoBlock & { sticker_title: string };
+/** 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题与所属 todo 块。
+ *
+ * 一个便签可含多个 todo 块（第 0 层容器），`owner_block_*` 供任务总览页
+ * 按「便签 → 块 → 任务」三层区分展示；命名带 `owner_` 前缀以避开
+ * TodoBlock 自身的 `block_title`（任务自身的卡头标题）。
+ */
+export type TodoBlockWithSticker = TodoBlock & {
+  sticker_title: string;
+  /** 所属 todo 块 id（第 0 层容器）。 */
+  owner_block_id: string;
+  /** 所属 todo 块标题（空串 = 未命名块）。 */
+  owner_block_title: string;
+};
 
 export interface SlashItem {
   id: string;

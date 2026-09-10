@@ -3,7 +3,7 @@
 // 支持筛选/搜索/分组展示、增删改查、提醒/截止/重复设置与提醒状态确认(ack)。
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { listen } from "../../composables/useTauri";
+import { invoke, listen } from "../../composables/useTauri";
 import { useNotesStore } from "../../stores/notes";
 import { useSettingsStore } from "../../stores/settings";
 import { useTodoOverviewStore } from "../../stores/todo-overview";
@@ -54,16 +54,20 @@ const counts = computed(() => {
   };
 });
 
-// ── 分组折叠（会话级） ──
-const collapsed = ref<Record<number, boolean>>({});
-function toggleCollapse(stickerId: number) {
-  collapsed.value[stickerId] = !collapsed.value[stickerId];
+// ── 分组/分块折叠（会话级；key 形如 "s:12"（便签）/"b:t-xxxx"（块）） ──
+const collapsed = ref<Record<string, boolean>>({});
+function toggleCollapse(key: string) {
+  collapsed.value[key] = !collapsed.value[key];
+}
+function isCollapsed(key: string): boolean {
+  return Boolean(collapsed.value[key]);
 }
 
 // ── 任务行状态 ──
-/** 子任务判定：parent 指向另一条任务（块本身不在返回集合中）。 */
+/** 子任务判定：parent 指向同一块内的另一条任务（块自身不在返回集合中）。
+ *  父任务的 parent_id 恰为所属块 id，故用 owner_block_id 比较即可，不依赖父任务是否被筛掉。 */
 function isSubTask(item: TodoBlockWithSticker): boolean {
-  return Boolean(item.parent_id && store.blocks.some((b) => b.id === item.parent_id));
+  return Boolean(item.parent_id && item.parent_id !== item.owner_block_id);
 }
 function isReminded(item: TodoBlockWithSticker): boolean {
   return !item.is_completed && todoHighlightState(item).reminded;
@@ -107,11 +111,20 @@ async function onAck(item: TodoBlockWithSticker) {
     showToast(messageOf(error));
   }
 }
-async function onAddTask(stickerId: number) {
+/** 在该块下新建父任务（task 创建后立即打开编辑浮层）。 */
+async function onAddTask(stickerId: number, blockId: string) {
   try {
-    const created = await store.create(stickerId);
+    const created = await store.create(stickerId, blockId);
     const fresh = store.blocks.find((b) => b.id === created.id);
     openEdit(fresh ?? (created as TodoBlockWithSticker));
+  } catch (error) {
+    showToast(messageOf(error));
+  }
+}
+/** 打开该 todo 块的任务窗口（与便签内点击任务卡打开的是同一个窗口）。 */
+async function openTodoWindow(blockId: string) {
+  try {
+    await invoke("open_todo_window_cmd", { id: blockId });
   } catch (error) {
     showToast(messageOf(error));
   }
@@ -258,49 +271,68 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 按便签分组卡片 -->
+    <!-- 按「便签 → 块 → 任务」三层分组卡片 -->
     <div v-if="store.loading && groups.length === 0" class="ov-loading">加载中…</div>
     <template v-else>
       <div v-for="group in groups" :key="group.stickerId" class="ov-group">
-        <header class="ov-group-head" @click="toggleCollapse(group.stickerId)">
-          <span class="ov-caret"><i :class="collapsed[group.stickerId] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
+        <header class="ov-group-head" @click="toggleCollapse('s:' + group.stickerId)">
+          <span class="ov-caret"><i :class="isCollapsed('s:' + group.stickerId) ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
           <i class="ri-sticky-note-fill ov-g-icon"></i>
           <span class="ov-group-name">{{ group.stickerTitle }}</span>
-          <span class="ov-group-count">{{ group.items.length }} 项</span>
+          <span class="ov-group-count">{{ group.itemCount }} 项</span>
+          <span v-if="group.blocks.length > 1" class="ov-group-blocks">{{ group.blocks.length }} 个任务块</span>
           <button class="ov-open-sticker" title="打开便签" @click.stop="emit('open-sticker', group.stickerId)">
             <i class="ri-external-link-line"></i>打开便签
           </button>
         </header>
-        <div v-show="!collapsed[group.stickerId]" class="ov-rows">
-          <div
-            v-for="item in group.items"
-            :key="item.id"
-            class="ov-row"
-            :class="{ done: item.is_completed, reminded: isReminded(item), overdue: isOverdue(item), sub: isSubTask(item) }"
-            @click="openEdit(item)"
-          >
-            <input
-              type="checkbox"
-              class="wb"
-              :checked="item.is_completed"
-              @click.stop
-              @change="onToggle(item, $event)"
-            />
-            <span class="ov-lbl">
-              {{ item.title || "未命名任务" }}
-              <span v-if="isSubTask(item)" class="ov-sub-tag">子任务</span>
-            </span>
-            <span class="ov-badges">
-              <span v-if="item.reminder_at" class="hl time"><i class="ri-time-line"></i>提醒 {{ formatTodoDate(item.reminder_at) }}</span>
-              <span v-if="item.due_at" class="hl time"><i class="ri-calendar-line"></i>截止 {{ formatTodoDate(item.due_at) }}</span>
-              <span v-if="item.repeat_rule" class="hl todo"><i class="ri-restart-line"></i>{{ formatTodoRepeat(item.repeat_rule) }}</span>
-            </span>
-            <button v-if="isReminded(item) || isOverdue(item)" class="ov-ack" title="确认收到提醒，不再高亮" @click.stop="onAck(item)">
-              <i class="ri-check-double-line"></i>已确认
-            </button>
-            <button class="ov-del" title="删除任务" @click.stop="onRemove(item)"><i class="ri-close-line"></i></button>
+        <div v-show="!isCollapsed('s:' + group.stickerId)" class="ov-blocks">
+          <!-- 每个 todo 块一个小节：用块自身标题区分同一便签下的多个块 -->
+          <div v-for="blockGroup in group.blocks" :key="blockGroup.blockId" class="ov-block">
+            <div class="ov-block-head" @click="toggleCollapse('b:' + blockGroup.blockId)">
+              <span class="ov-caret"><i :class="isCollapsed('b:' + blockGroup.blockId) ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
+              <i class="ri-checkbox-multiple-line ov-b-icon"></i>
+              <span class="ov-block-name" :class="{ unnamed: !blockGroup.blockTitle }">
+                {{ blockGroup.blockTitle || "未命名任务块" }}
+              </span>
+              <span class="ov-block-count">{{ blockGroup.items.length }} 项</span>
+              <button class="ov-open-block" title="打开该任务块的窗口" @click.stop="openTodoWindow(blockGroup.blockId)">
+                <i class="ri-window-line"></i>打开任务块
+              </button>
+            </div>
+            <div v-show="!isCollapsed('b:' + blockGroup.blockId)" class="ov-rows">
+              <div
+                v-for="item in blockGroup.items"
+                :key="item.id"
+                class="ov-row"
+                :class="{ done: item.is_completed, reminded: isReminded(item), overdue: isOverdue(item), sub: isSubTask(item) }"
+                @click="openEdit(item)"
+              >
+                <input
+                  type="checkbox"
+                  class="wb"
+                  :checked="item.is_completed"
+                  @click.stop
+                  @change="onToggle(item, $event)"
+                />
+                <span class="ov-lbl">
+                  {{ item.title || "未命名任务" }}
+                  <span v-if="isSubTask(item)" class="ov-sub-tag">子任务</span>
+                </span>
+                <span class="ov-badges">
+                  <span v-if="item.reminder_at" class="hl time"><i class="ri-time-line"></i>提醒 {{ formatTodoDate(item.reminder_at) }}</span>
+                  <span v-if="item.due_at" class="hl time"><i class="ri-calendar-line"></i>截止 {{ formatTodoDate(item.due_at) }}</span>
+                  <span v-if="item.repeat_rule" class="hl todo"><i class="ri-restart-line"></i>{{ formatTodoRepeat(item.repeat_rule) }}</span>
+                </span>
+                <button v-if="isReminded(item) || isOverdue(item)" class="ov-ack" title="确认收到提醒，不再高亮" @click.stop="onAck(item)">
+                  <i class="ri-check-double-line"></i>已确认
+                </button>
+                <button class="ov-del" title="删除任务" @click.stop="onRemove(item)"><i class="ri-close-line"></i></button>
+              </div>
+              <button class="ov-add-task" @click="onAddTask(group.stickerId, blockGroup.blockId)">
+                <i class="ri-add-line"></i>添加任务
+              </button>
+            </div>
           </div>
-          <button class="ov-add-task" @click="onAddTask(group.stickerId)"><i class="ri-add-line"></i>添加任务</button>
         </div>
       </div>
 
@@ -549,10 +581,89 @@ onBeforeUnmount(() => {
   background: #eae2cf;
   color: #6b5d3e;
 }
+.ov-group-blocks {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(153, 138, 102, 0.14);
+  color: #8a7a55;
+}
+
+/* 任务块小节：一个便签可含多个 todo 块，用块标题区分 */
+.ov-blocks {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(153, 138, 102, 0.25);
+}
+.ov-block + .ov-block {
+  margin-top: 6px;
+}
+.ov-block-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  background: rgba(79, 124, 255, 0.05);
+  border-radius: 7px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.ov-block-head:hover {
+  background: rgba(79, 124, 255, 0.11);
+}
+.ov-b-icon {
+  flex: none;
+  color: #4f7cff;
+  font-size: 13px;
+  opacity: 0.75;
+}
+.ov-block-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #3b5bdb;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-block-name.unnamed {
+  font-weight: 500;
+  color: #9aa4c4;
+}
+.ov-block-count {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(79, 124, 255, 0.1);
+  color: #3b67e8;
+}
+.ov-open-block {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: #7d8bb5;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: inherit;
+}
+.ov-open-block:hover {
+  background: rgba(79, 124, 255, 0.14);
+  color: #3b67e8;
+}
 
 /* 任务行 */
 .ov-rows {
-  margin-top: 6px;
+  margin-top: 4px;
 }
 .ov-row {
   display: flex;
