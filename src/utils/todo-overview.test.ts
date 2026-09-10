@@ -17,6 +17,8 @@ function block(part: Partial<TodoBlockWithSticker>): TodoBlockWithSticker {
     created_at: "2026-09-01T00:00:00.000Z",
     updated_at: "2026-09-01T00:00:00.000Z",
     sticker_title: "便签",
+    owner_block_id: "blk-1",
+    owner_block_title: "",
     ...part,
   };
 }
@@ -27,15 +29,41 @@ function isoFromNow(offsetMs: number): string {
 }
 
 describe("buildGroups", () => {
-  it("按 sticker_id 分组并保持输入顺序", () => {
+  it("按「便签 → 块 → 任务」三层分组，并保持输入顺序", () => {
     const blocks = [
       block({ id: "b1", sticker_id: 2, sticker_title: "学习" }),
-      block({ id: "b2", sticker_id: 1, sticker_title: "工作", parent_id: "root" }),
-      block({ id: "b3", sticker_id: 1, sticker_title: "工作" }),
+      block({ id: "b2", sticker_id: 1, sticker_title: "工作", owner_block_id: "blkA" }),
+      block({ id: "b3", sticker_id: 1, sticker_title: "工作", owner_block_id: "blkA" }),
     ];
     const groups = buildGroups(blocks);
     expect(groups.map((g) => g.stickerId)).toEqual([2, 1]);
-    expect(groups.find((g) => g.stickerId === 1)?.items.map((i) => i.id)).toEqual(["b2", "b3"]);
+    const work = groups.find((g) => g.stickerId === 1)!;
+    expect(work.blocks).toHaveLength(1);
+    expect(work.blocks[0]!.blockId).toBe("blkA");
+    expect(work.blocks[0]!.items.map((i) => i.id)).toEqual(["b2", "b3"]);
+    expect(work.itemCount).toBe(2);
+  });
+
+  it("同一便签的多个 todo 块各自成组，块标题随块携带", () => {
+    const blocks = [
+      block({ id: "t1", sticker_id: 1, owner_block_id: "blkPlan", owner_block_title: "本周计划" }),
+      block({ id: "t2", sticker_id: 1, owner_block_id: "blkPlan", owner_block_title: "本周计划", parent_id: "t1" }),
+      block({ id: "t3", sticker_id: 1, owner_block_id: "blkReview", owner_block_title: "评审清单" }),
+    ];
+    const groups = buildGroups(blocks);
+    expect(groups).toHaveLength(1);
+    const [g] = groups;
+    expect(g!.blocks.map((b) => b.blockId)).toEqual(["blkPlan", "blkReview"]);
+    expect(g!.blocks.map((b) => b.blockTitle)).toEqual(["本周计划", "评审清单"]);
+    expect(g!.blocks[0]!.items.map((i) => i.id)).toEqual(["t1", "t2"]);
+    expect(g!.blocks[1]!.items.map((i) => i.id)).toEqual(["t3"]);
+    expect(g!.itemCount).toBe(3);
+  });
+
+  it("未命名块（块标题为空串）也能成组，标题留空由 UI 兜底", () => {
+    const blocks = [block({ id: "t1", sticker_id: 1, owner_block_id: "blkX", owner_block_title: "" })];
+    const [g] = buildGroups(blocks);
+    expect(g!.blocks[0]!.blockTitle).toBe("");
   });
 
   it("按便签列表顺序重排分组，未出现的便签排最后", () => {
@@ -103,6 +131,17 @@ describe("filterBlocks", () => {
         block({ id: "b", title: "写周报", sticker_title: "工作" }),
       ],
       { keyword: "review" },
+    );
+    expect(hits.map((h) => h.id)).toEqual(["a"]);
+  });
+
+  it("keyword 也能命中所属块标题（便于按块检索）", () => {
+    const hits = filterBlocks(
+      [
+        block({ id: "a", title: "写文档", owner_block_title: "本周计划" }),
+        block({ id: "b", title: "写文档", owner_block_title: "评审清单" }),
+      ],
+      { keyword: "本周计划" },
     );
     expect(hits.map((h) => h.id)).toEqual(["a"]);
   });

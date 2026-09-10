@@ -1,4 +1,8 @@
 //! 独立 Todo 块的 CRUD，保留 todo_items 作为旧 Markdown 任务实现。
+//!
+//! 三层结构：**块(0)** → 父任务(1) → 子任务(2)。块自身是容器（`parent_id IS NULL`），
+//! 由编辑器 `/` 菜单创建、标题存于 `block_title`；一个便签可含多个块。
+//! 任务总览页按「便签 → 块 → 任务」展示，故 `list_all_todos` 会一并返回所属块。
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -340,25 +344,39 @@ fn row_to_block(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlock> {
     })
 }
 
-/// 聚合行转换：前 19 列与 `row_to_block` 一致，第 20 列（索引 19）为便签标题。
+/// 聚合行转换：前 19 列与 `row_to_block` 一致，第 20 列（索引 19）为便签标题，
+/// 第 21/22 列（索引 20/21）为所属 todo 块的 id 与标题。
 fn row_to_block_with_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<TodoBlockWithSticker> {
     let block = row_to_block(row)?;
     let sticker_title = row.get(19)?;
-    Ok(TodoBlockWithSticker { block, sticker_title })
+    let owner_block_id = row.get(20)?;
+    let owner_block_title = row.get(21)?;
+    Ok(TodoBlockWithSticker { block, sticker_title, owner_block_id, owner_block_title })
 }
 
-/// 跨便签聚合查询（主控台「任务总览」页）：JOIN `stickers` 取标题，支持可选过滤。
+/// 跨便签聚合查询（主控台「任务总览」页）：JOIN `stickers` 取便签标题、
+/// 经两次 LEFT JOIN 推导任务所属的 **todo 块**（第 0 层容器）及其标题。
+///
+/// 所属块推导：一个便签可含多个 todo 块，块(0) → 父任务(1) → 子任务(2)。
+///   - `p`  = 本行的直接父级：父任务行为块本身，子任务行为其父任务；
+///   - `gp` = 父级的父级：子任务行为块本身，父任务行为 NULL（块的 parent_id 恒为 NULL）；
+///   - 故所属块 = `COALESCE(gp.id, p.id)`，块标题 = `COALESCE(gp.block_title, p.block_title, '')`。
 ///
 /// 过滤全部可选组合（completed / due 区间 / remind 区间 / keyword 标题子串）；
-/// 不传 filter = 列出全部任务（含已完成）。排序按便签标题 → 同层序 → 创建时间，
-/// 与 `list_by_sticker` 的分组层序一致，便于前端按便签分组展示。
+/// 不传 filter = 列出全部任务（含已完成）。
+/// 排序按 便签 → 所属块 → 同层序 → 创建时间，便于前端按「便签 → 块 → 任务」三层展示。
 pub fn list_all_todos(conn: &Connection, filter: &TodoQueryFilter) -> Result<Vec<TodoBlockWithSticker>> {
     let mut sql = String::from(
         "SELECT tb.id, tb.sticker_id, tb.title, tb.block_title, tb.description, tb.is_completed, \
          tb.parent_id, tb.reminder_at, tb.due_at, tb.repeat_rule, tb.reminded_at, tb.due_notified_at, \
          tb.reminder_ack_at, tb.due_ack_at, tb.sort_order, tb.created_at, tb.updated_at, \
-         tb.completed_at, tb.repeat_anchor, s.title AS sticker_title \
-         FROM todo_blocks tb JOIN stickers s ON s.id = tb.sticker_id \
+         tb.completed_at, tb.repeat_anchor, s.title AS sticker_title, \
+         COALESCE(gp.id, p.id) AS owner_block_id, \
+         COALESCE(gp.block_title, p.block_title, '') AS owner_block_title \
+         FROM todo_blocks tb \
+         JOIN stickers s ON s.id = tb.sticker_id \
+         LEFT JOIN todo_blocks p ON p.id = tb.parent_id \
+         LEFT JOIN todo_blocks gp ON gp.id = p.parent_id \
          WHERE tb.parent_id IS NOT NULL",
     );
     let mut conds: Vec<&str> = Vec::new();
@@ -391,7 +409,9 @@ pub fn list_all_todos(conn: &Connection, filter: &TodoQueryFilter) -> Result<Vec
         sql.push_str(" AND ");
         sql.push_str(&conds.join(" AND "));
     }
-    sql.push_str(" ORDER BY tb.sticker_id, tb.parent_id IS NOT NULL, tb.sort_order, tb.created_at, tb.id");
+    sql.push_str(
+        " ORDER BY tb.sticker_id, owner_block_id, tb.parent_id IS NOT NULL, tb.sort_order, tb.created_at, tb.id",
+    );
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())), row_to_block_with_sticker)?
@@ -980,6 +1000,59 @@ mod tests {
         // JOIN 标题与任务一一对应
         assert_eq!(all[0].sticker_title, "工作");
         assert_eq!(all[2].sticker_title, "学习");
+    }
+
+    /// 同一便签含多个 todo 块时，任务须归到各自所属块（含块标题），
+    /// 父任务与子任务都取到同一个块。
+    #[test]
+    fn list_all_todos_distinguishes_multiple_blocks_in_one_sticker() {
+        let conn = conn();
+        let sticker = sticker_repo::insert(&conn, &sticker_repo::NewSticker { title: "工作".into(), ..Default::default() }).unwrap();
+        // 同一便签下两个 todo 块，各自设置块标题
+        let plan = create(&conn, sticker, None).unwrap();
+        update(&conn, &plan.id, &TodoPatch { block_title: Some("本周计划".into()), ..Default::default() }).unwrap();
+        let review = create(&conn, sticker, None).unwrap();
+        update(&conn, &review.id, &TodoPatch { block_title: Some("评审清单".into()), ..Default::default() }).unwrap();
+        // 计划块：父任务 + 子任务；评审块：父任务
+        let plan_root = create(&conn, sticker, Some(&plan.id)).unwrap();
+        let plan_child = create(&conn, sticker, Some(&plan_root.id)).unwrap();
+        let review_root = create(&conn, sticker, Some(&review.id)).unwrap();
+
+        let all = list_all_todos(&conn, &TodoQueryFilter::default()).unwrap();
+        assert_eq!(all.len(), 3);
+        let find = |id: &str| all.iter().find(|t| t.block.id == id).unwrap();
+
+        // 父任务与子任务都归到「本周计划」块
+        assert_eq!(find(&plan_root.id).owner_block_id, plan.id);
+        assert_eq!(find(&plan_root.id).owner_block_title, "本周计划");
+        assert_eq!(find(&plan_child.id).owner_block_id, plan.id);
+        assert_eq!(find(&plan_child.id).owner_block_title, "本周计划");
+        // 另一块的任务归到「评审清单」
+        assert_eq!(find(&review_root.id).owner_block_id, review.id);
+        assert_eq!(find(&review_root.id).owner_block_title, "评审清单");
+        // 排序：同便签内先按所属块聚拢，再父任务在前、子任务紧随
+        // （块内判定：parent_id == 所属块 id 即父任务，指向另一任务即子任务）
+        let kinds: Vec<(&str, bool)> = all
+            .iter()
+            .map(|t| (t.block.id.as_str(), t.block.parent_id.as_deref() == Some(t.owner_block_id.as_str())))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![(plan_root.id.as_str(), true), (plan_child.id.as_str(), false), (review_root.id.as_str(), true)]
+        );
+    }
+
+    /// 未命名块（block_title 为空串）也应能区分归属，标题返回空串由前端兜底展示。
+    #[test]
+    fn list_all_todos_unnamed_block_returns_empty_title() {
+        let conn = conn();
+        let sticker = sticker_repo::insert(&conn, &sticker_repo::NewSticker { title: "工作".into(), ..Default::default() }).unwrap();
+        let block = create(&conn, sticker, None).unwrap();
+        let task = create(&conn, sticker, Some(&block.id)).unwrap();
+        let all = list_all_todos(&conn, &TodoQueryFilter::default()).unwrap();
+        let found = all.iter().find(|t| t.block.id == task.id).unwrap();
+        assert_eq!(found.owner_block_id, block.id);
+        assert_eq!(found.owner_block_title, "");
     }
 
     /// 过滤组合：completed / due 区间 / keyword。

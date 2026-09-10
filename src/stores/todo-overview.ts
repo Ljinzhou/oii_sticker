@@ -39,11 +39,15 @@ export const useTodoOverviewStore = defineStore("todo-overview", () => {
     await load();
   }
 
-  /** 在某便签下新建任务（父任务）；返回新块供 UI 选中编辑。 */
-  async function create(stickerId: number): Promise<TodoBlock> {
+  /** 在指定 todo 块下新建**父任务**（parentId = 块 id，第 0 层）；返回新任务供 UI 选中编辑。
+   *
+   * 注意：parentId 必须传块 id——传 null 会被后端当作"新建块"（第 0 层容器），
+   * 那会凭空多出一个空 todo 块，而不是在目标块里加任务。
+   */
+  async function create(stickerId: number, blockId: string): Promise<TodoBlock> {
     const block = await invoke<TodoBlock>("create_todo_block_cmd", {
       stickerId,
-      parentId: null,
+      parentId: blockId,
     });
     await load();
     return block;

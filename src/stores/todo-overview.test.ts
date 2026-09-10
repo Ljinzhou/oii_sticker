@@ -9,6 +9,8 @@ const item = {
   id: "t-1",
   sticker_id: 7,
   sticker_title: "工作",
+  owner_block_id: "blk-1",
+  owner_block_title: "本周计划",
   title: "提交周报",
   block_title: "",
   description: null,
@@ -72,8 +74,9 @@ describe("todo-overview store", () => {
 
     invokeMock.mockResolvedValueOnce({ ...item, id: "t-2", title: "" });
     invokeMock.mockResolvedValueOnce([{ ...item, id: "t-2", title: "" }]);
-    const created = await store.create(7);
-    expect(invokeMock).toHaveBeenNthCalledWith(5, "create_todo_block_cmd", { stickerId: 7, parentId: null });
+    // 在指定块下新建父任务：parentId 必须是块 id（传 null 会新建一个空块）
+    const created = await store.create(7, "blk-1");
+    expect(invokeMock).toHaveBeenNthCalledWith(5, "create_todo_block_cmd", { stickerId: 7, parentId: "blk-1" });
     expect(created.id).toBe("t-2");
 
     invokeMock.mockResolvedValueOnce({ ...item, due_at: "2026-09-10T10:00:00Z" });
