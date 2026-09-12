@@ -56,7 +56,8 @@ import {
   buildWrapTransaction,
 } from "./liveTransforms";
 import { TableToolbar, type TableToolbarAnchor } from "./tableToolbar";
-import { resolveTableEdit, type TableEditContext } from "./liveTableEdits";
+import { resolveTableAround, type TableEditContext } from "./liveTableEdits";
+import { endTableEditing } from "./liveWidgets";
 import { mathInstancePromise } from "../../../utils/markdown";
 import { invoke } from "../../../composables/useTauri";
 import type { TodoBlock } from "../../../types";
@@ -347,6 +348,8 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   // 表格工具条挂在编辑器根元素内（.cm-editor 是定位上下文），
   // 位置取光标所在表格首行的坐标 → 浮在表格上方。
   toolbar = new TableToolbar((action) => {
+    // 单元格可能正在输入：先把未提交内容落盘，再执行表格级动作
+    endTableEditing();
     const spec = buildTableEditTransaction(view.state.doc.toString(), view.state.selection.main, action);
     if (!spec) return; // 无实际变化（例如对齐未变）时不打断撤销栈
     view.dispatch(spec);
@@ -505,6 +508,7 @@ function tableToolbarAnchor(view: EditorView, ctx: TableEditContext): TableToolb
 /** 依据光标位置刷新表格工具条：不在表格内即隐藏。 */
 function syncTableToolbar(view: EditorView, toolbar: TableToolbar): void {
   if (!view.dom.isConnected) return;
-  const ctx = resolveTableEdit(view.state.doc.toString(), view.state.selection.main.head);
+  // 表格永远渲染（源码被折叠）：用邻位探测识别光标所在的表格
+  const ctx = resolveTableAround(view.state.doc.toString(), view.state.selection.main.head);
   toolbar.update(ctx, ctx ? tableToolbarAnchor(view, ctx) : null);
 }

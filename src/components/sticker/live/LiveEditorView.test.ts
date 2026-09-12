@@ -517,7 +517,7 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.destroy();
   });
 
-  it("表格渲染：光标在表格外渲染为 HTML 表格，光标进入表格显示源码", () => {
+  it("表格始终渲染为 HTML 表格：光标进入表格也不再回退源码", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
     const view = createLiveView(host, {
@@ -526,15 +526,61 @@ describe("LiveEditorView（CM6 内核）", () => {
       onDocChange: () => {},
       onSave: () => {},
     });
-    // 光标在表格之后的正文 → 整表渲染为 HTML 表格（含表头与对齐）
+    // 光标在表格之后的正文 → 整表渲染（含表头与对齐）
     view.dispatch({ selection: { anchor: source.length } });
     expect(host.querySelector(".live-table-block table")).not.toBeNull();
     expect(host.querySelector(".live-table-block th")?.textContent).toBe("名称");
     expect(host.querySelector<HTMLElement>(".live-table-block th:nth-child(2)")?.style.textAlign).toBe("right");
-    // 光标进入表格 → 退回源码（widget 消失），便于精确编辑单元格
+    // 光标进入表格：仍然渲染（不回退成 | --- | 源码）
     view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
-    expect(host.querySelector(".live-table-block")).toBeNull();
-    expect(host.textContent).toContain("| 苹果 | 2 |");
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    expect(host.textContent).not.toContain("| --- |");
+    view.destroy();
+  });
+
+  it("表格单元格可直接编辑：失焦后写回 Markdown 源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]');
+    expect(cell).not.toBeNull();
+    expect(cell!.getAttribute("contenteditable")).toBe("true");
+
+    cell!.textContent = "香蕉";
+    cell!.dispatchEvent(new Event("blur"));
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 香蕉 | 2 |");
+    // 写回后仍然渲染（不回退源码）
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    view.destroy();
+  });
+
+  it("拖拽表头手柄调整列宽：写回分隔行（持久化）", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const handle = host.querySelector<HTMLElement>('.live-table-block th[data-col="0"] .tbl-col-resize');
+    expect(handle).not.toBeNull();
+    handle!.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, bubbles: true }));
+    // jsdom 无布局：perChar 退化为 startWidth*8/startWidth = 8px/字符 → 48px = +6 字符
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 148 }));
+    document.dispatchEvent(new MouseEvent("mouseup"));
+    expect(view.state.doc.toString().split("\n")[1]).toBe("| --------- | ---: |");
+    // 内容行不受影响
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
     view.destroy();
   });
   it("表格工具条：光标进入表格浮现，离开后隐藏，点击按钮改写源码", () => {
