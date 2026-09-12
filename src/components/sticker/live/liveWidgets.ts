@@ -62,6 +62,30 @@ export class MathBlockWidget extends WidgetType {
   }
 }
 
+/** 将完整 GFM 表格渲染为 HTML 表格。
+ *  表格整体作为一个块级 widget：单元格内文本不再单独走行内 decoration，
+ *  否则同一行会被拆成「单元格装饰 + 表格装饰」两层互相覆盖。 */
+export class TableBlockWidget extends WidgetType {
+  constructor(readonly source: string) {
+    super();
+  }
+
+  eq(other: TableBlockWidget) {
+    return other.source === this.source;
+  }
+
+  toDOM() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "live-table-block";
+    wrapper.innerHTML = renderMarkdownEditable(this.source);
+    return wrapper;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+}
+
 /** 将受控 Todo 标签替换为与展示模式一致的任务卡片（含用户折叠状态）。 */
 export class TodoBlockWidget extends WidgetType {
   constructor(

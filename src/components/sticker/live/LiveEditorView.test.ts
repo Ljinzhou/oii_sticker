@@ -516,4 +516,73 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect(view.state.doc.toString()).toBe("biao'ti");
     view.destroy();
   });
+
+  it("表格渲染：光标在表格外渲染为 HTML 表格，光标进入表格显示源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 光标在表格之后的正文 → 整表渲染为 HTML 表格（含表头与对齐）
+    view.dispatch({ selection: { anchor: source.length } });
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    expect(host.querySelector(".live-table-block th")?.textContent).toBe("名称");
+    expect(host.querySelector<HTMLElement>(".live-table-block th:nth-child(2)")?.style.textAlign).toBe("right");
+    // 光标进入表格 → 退回源码（widget 消失），便于精确编辑单元格
+    view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
+    expect(host.querySelector(".live-table-block")).toBeNull();
+    expect(host.textContent).toContain("| 苹果 | 2 |");
+    view.destroy();
+  });
+  it("表格工具条：光标进入表格浮现，离开后隐藏，点击按钮改写源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+
+    const barEl = () => host.querySelector<HTMLElement>(".tbl-bar");
+    const barVisible = () => {
+      const el = barEl();
+      return !!el && !el.hidden;
+    };
+
+    // 光标在表格外：工具条隐藏
+    view.dispatch({ selection: { anchor: source.length } });
+    expect(barVisible()).toBe(false);
+
+    // 光标进入表格：浮现 14 个操作按钮（4 对齐 + 5 行 + 5 列）
+    view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
+    expect(barVisible()).toBe(true);
+    const bar = barEl()!;
+    expect(bar!.querySelectorAll(".tbl-btn")).toHaveLength(14);
+
+    // 首列不可左移；当前列（默认对齐）的「默认」按钮为激活态
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="col-move-left"]')!.disabled).toBe(true);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-up"]')!.disabled).toBe(false);
+
+    // 点击「居中」：分隔行第一列改写为 :---:（其余列不动）
+    bar!.querySelector<HTMLButtonElement>('[data-act="align-center"]')!.click();
+    expect(view.state.doc.toString().split("\n")[1]).toBe("| :---: | ---: |");
+
+    // 点击「删除列」：两列变一列
+    const afterAlign = host.querySelector(".tbl-bar")!;
+    afterAlign.querySelector<HTMLButtonElement>('[data-act="col-delete"]')!.click();
+    expect(view.state.doc.toString().split("\n")[0]).toBe("| 数量 |");
+    // 只剩一列：删除按钮禁用
+    expect(
+      host.querySelector<HTMLButtonElement>('.tbl-bar [data-act="col-delete"]')!.disabled,
+    ).toBe(true);
+
+    // 光标离开表格：工具条隐藏
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    expect(barVisible()).toBe(false);
+    view.destroy();
+  });
 });

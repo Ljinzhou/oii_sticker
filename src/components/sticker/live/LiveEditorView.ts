@@ -51,9 +51,12 @@ import {
   buildShiftTabTransaction,
   buildTabTransaction,
   buildTableBackwardTransaction,
+  buildTableEditTransaction,
   buildTableForwardTransaction,
   buildWrapTransaction,
 } from "./liveTransforms";
+import { TableToolbar, type TableToolbarAnchor } from "./tableToolbar";
+import { resolveTableEdit, type TableEditContext } from "./liveTableEdits";
 import { mathInstancePromise } from "../../../utils/markdown";
 import { invoke } from "../../../composables/useTauri";
 import type { TodoBlock } from "../../../types";
@@ -250,6 +253,8 @@ let lineNumberCompartment: Compartment | null = null;
 
 /** 创建 CM6 编辑器实例。 */
 export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): EditorView {
+  // 表格工具条实例（视图创建后赋值；updateListener 通过它同步显隐）
+  let toolbar: TableToolbar | null = null;
   fontSizeCompartment = new Compartment();
   fontFamilyCompartment = new Compartment();
   lineNumberCompartment = new Compartment();
@@ -328,6 +333,9 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
           opts.onDocChange(doc);
         }
         if (u.docChanged || u.selectionSet) reportSlash(u.view, (query, from, to, anchor) => opts.onSlash?.(query, from, to, anchor), () => opts.onSlashClose?.());
+        if (toolbar && (u.docChanged || u.selectionSet || u.viewportChanged || u.geometryChanged)) {
+          syncTableToolbar(u.view, toolbar);
+        }
         void handlePastedLinks(u, opts);
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
@@ -336,6 +344,25 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     ],
   });
   const view = new EditorView({ state, parent });
+  // 表格工具条挂在编辑器根元素内（.cm-editor 是定位上下文），
+  // 位置取光标所在表格首行的坐标 → 浮在表格上方。
+  toolbar = new TableToolbar((action) => {
+    const spec = buildTableEditTransaction(view.state.doc.toString(), view.state.selection.main, action);
+    if (!spec) return; // 无实际变化（例如对齐未变）时不打断撤销栈
+    view.dispatch(spec);
+    view.focus();
+  });
+  view.dom.append(toolbar.dom);
+  syncTableToolbar(view, toolbar);
+  // 滚动时跟随（rAF 合并高频事件）；视图已销毁则跳过
+  let scrollFrame = 0;
+  view.scrollDOM.addEventListener("scroll", () => {
+    if (scrollFrame) cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (toolbar && view.dom.isConnected) syncTableToolbar(view, toolbar);
+    });
+  }, { passive: true });
   view.dom.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
     // 折叠/子任务/已完成折叠箭头优先于「点卡片开编辑窗」：
@@ -454,4 +481,30 @@ function deleteBlockLineBeforeCursor(view: EditorView): boolean {
     userEvent: "delete.backward",
   });
   return true;
+}
+
+/** 工具条上浮偏移：工具条高 34px + 间距 4px。 */
+const TABLE_TOOLBAR_OFFSET = 38;
+
+/** 表格首行在编辑器坐标系中的位置（cursorAtPos 在无布局环境可能失败 → 返回 null）。 */
+function tableToolbarAnchor(view: EditorView, ctx: TableEditContext): TableToolbarAnchor | null {
+  try {
+    const line = view.state.doc.line(ctx.startLine + 1);
+    const coords = view.coordsAtPos(line.from);
+    const rect = view.dom.getBoundingClientRect();
+    if (!coords || !rect) return null;
+    return {
+      left: coords.left - rect.left,
+      top: coords.top - rect.top - TABLE_TOOLBAR_OFFSET,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 依据光标位置刷新表格工具条：不在表格内即隐藏。 */
+function syncTableToolbar(view: EditorView, toolbar: TableToolbar): void {
+  if (!view.dom.isConnected) return;
+  const ctx = resolveTableEdit(view.state.doc.toString(), view.state.selection.main.head);
+  toolbar.update(ctx, ctx ? tableToolbarAnchor(view, ctx) : null);
 }
