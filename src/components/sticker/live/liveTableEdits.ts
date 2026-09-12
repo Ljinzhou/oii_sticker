@@ -127,6 +127,17 @@ export function resolveTableEdit(text: string, position: number): TableEditConte
   };
 }
 
+/** 表格始终渲染时源码行被折叠，光标只能停在表格边界：
+ *  向前后各探一步再判定，保证工具条仍能识别"光标就在这张表上"。 */
+export function resolveTableAround(text: string, position: number): TableEditContext | null {
+  for (const probe of [position, position - 1, position + 1]) {
+    if (probe < 0 || probe > text.length) continue;
+    const ctx = resolveTableEdit(text, probe);
+    if (ctx) return ctx;
+  }
+  return null;
+}
+
 /** 表格内"视觉行" → 表格行数组下标（含分隔行）。 */
 function inlineRowIndex(row: number): number {
   return row === 0 ? 0 : row + 1;
@@ -324,4 +335,74 @@ export function tableActionDisabled(action: TableToolbarAction, ctx: TableEditCo
     default:
       return false;
   }
+}
+
+/** 单元格内容区间（去掉两侧空格；空单元格退化为插入点）。 */
+function cellBounds(line: string, column: number): { from: number; to: number } | null {
+  const pipes: number[] = [];
+  for (let index = 0; index < line.length; index++) {
+    if (line[index] === "|" && line[index - 1] !== "\\") pipes.push(index);
+  }
+  const leading = line.trimStart().startsWith("|");
+  const index = leading ? column : column - 1;
+  const start = pipes[index];
+  const end = pipes[index + 1];
+  if (start === undefined || end === undefined) return null;
+  // 区间含两侧空格：写回时统一补标准空格，避免出现 `|a|` 这类紧凑写法
+  return { from: start + 1, to: end };
+}
+
+/** 单元格文本规范化：合并换行、转义竖线（否则会撑破表格结构）。 */
+export function escapeCell(value: string): string {
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .replace(/(?<!\\)\|/g, "\\|")
+    .trim();
+}
+
+/** 写回单元格内容：返回精确替换区间（渲染态直接编辑用，最小 diff）。 */
+export function setTableCell(
+  text: string,
+  position: number,
+  row: number,
+  column: number,
+  value: string,
+): { from: number; to: number; insert: string } | null {
+  const ctx = resolveTableEdit(text, position);
+  if (!ctx) return null;
+  if (row < 0 || row >= ctx.rowCount || column < 0 || column >= ctx.columnCount) return null;
+  const lines = text.split("\n");
+  const lineIndex = ctx.startLine + inlineRowIndex(row);
+  const line = lines[lineIndex];
+  if (line === undefined) return null;
+  const bounds = cellBounds(line, column);
+  if (!bounds) return null;
+  const lineStart = lines.slice(0, lineIndex).reduce((sum, item) => sum + item.length + 1, 0);
+  const escaped = escapeCell(value);
+  return {
+    from: lineStart + bounds.from,
+    to: lineStart + bounds.to,
+    insert: escaped ? ` ${escaped} ` : "",
+  };
+}
+
+/** 调整列宽：只改分隔行该列（宽度 = 该列连字符基准，最少 3；保留对齐冒号）。 */
+export function setColumnWidth(text: string, position: number, width: number): TableEditResult | null {
+  return runTableEdit(text, position, (rows, ctx) => {
+    const index = ctx.delimiterLine - ctx.startLine;
+    const cells = splitRow(rows[index] ?? "");
+    const cell = cells[ctx.column];
+    if (cell === undefined) return null;
+    cells[ctx.column] = alignCell(parseAlignCell(cell), Math.max(3, Math.round(width)));
+    rows[index] = joinRow(cells);
+    return { row: ctx.row, column: ctx.column };
+  });
+}
+
+/** 各列显示宽度基准（分隔行单元格字符数，含对齐冒号）。 */
+export function columnWidths(text: string, position: number): number[] {
+  const ctx = resolveTableEdit(text, position);
+  if (!ctx) return [];
+  const lines = text.split("\n");
+  return splitRow(lines[ctx.delimiterLine] ?? "").map((cell) => cell.length);
 }

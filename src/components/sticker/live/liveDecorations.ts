@@ -500,8 +500,9 @@ export function buildLiveBlockDecorations(state: EditorState): DecorationSet {
   const { ui, uiKey } = state.field(liveUiStateField, false) ?? { ui: DEFAULT_BLOCK_UI, uiKey: "" };
   const decorations = collectBlockRangesFromState(state)
     .filter((range) => range.kind === "code-block" || range.kind === "math-block" || range.kind === "table-block" || range.kind === "todo-block" || range.kind === "done-block")
-    // todo/done 块不受选区影响：永远显示卡片；代码/公式块保留「光标所在行显示源码」
-    .filter((range) => (range.kind === "todo-block" || range.kind === "done-block") || !selectionTouchesRange(state, range.from, range.to))
+    // todo/done/表格块不受选区影响：永远渲染（表格单元格可直接编辑）；
+    // 代码/公式块保留「光标所在行显示源码」
+    .filter((range) => (range.kind === "todo-block" || range.kind === "done-block" || range.kind === "table-block") || !selectionTouchesRange(state, range.from, range.to))
     .map((range) => blockDecoration(range, todoBlocks, ui, uiKey).range(range.from, range.to));
   return Decoration.set(decorations, true);
 }

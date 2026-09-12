@@ -444,6 +444,34 @@ defineExpose({ flush, isDirty });
   font-weight: 600;
 }
 
+/* 表格单元格：渲染态直接编辑 */
+.live-host :deep(.live-table-block td),
+.live-host :deep(.live-table-block th) {
+  position: relative;
+  cursor: text;
+  outline: none;
+}
+.live-host :deep(.live-table-block td:focus),
+.live-host :deep(.live-table-block th:focus) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.35);
+}
+/* 列宽拖拽手柄（表头单元格右边界） */
+.live-host :deep(.tbl-col-resize) {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 2;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+}
+.live-host :deep(.live-table-block th:hover .tbl-col-resize) {
+  background: rgba(0, 0, 0, 0.12);
+}
+.live-host :deep(.tbl-col-resize:hover) {
+  background: rgba(79, 124, 255, 0.35);
+}
+
 /* ── 表格浮动工具条（光标位于表格内时浮现） ── */
 .live-host :deep(.tbl-bar) {
   position: absolute;
