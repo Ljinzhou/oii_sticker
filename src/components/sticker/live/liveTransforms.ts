@@ -5,6 +5,7 @@ import {
   handleTabAtCursor,
 } from "../../../utils/edit-actions";
 import { moveTableCell } from "./liveTables";
+import { applyTableAction, type TableToolbarAction } from "./liveTableEdits";
 
 /** Build one minimal CodeMirror change for a pure text transformation. */
 function toTransaction(
@@ -111,6 +112,18 @@ export function buildTableForwardTransaction(text: string, selection: SelectionR
 
 export function buildTableBackwardTransaction(text: string, selection: SelectionRange): TransactionSpec | null {
   return buildTableNavigation(text, selection, -1);
+}
+
+/** 表格工具窗动作 → 最小 CodeMirror 事务（与 Tab 单元格导航共用一套 diff 逻辑）。 */
+export function buildTableEditTransaction(
+  text: string,
+  selection: SelectionRange,
+  action: TableToolbarAction,
+): TransactionSpec | null {
+  if (!selection.empty) return null;
+  const result = applyTableAction(text, selection.head, action);
+  if (!result) return null;
+  return toTransaction(text, result.text, result.cursor, "input.table");
 }
 
 export function buildWrapTransaction(
