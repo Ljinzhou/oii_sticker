@@ -458,33 +458,25 @@ defineExpose({ flush, isDirty });
 .live-host :deep(.live-table-block th:focus) {
   box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.35);
 }
-/* 编辑表格期间：编辑器绘制的光标/选区/当前行按「编辑器光标」绘制，
-   会停在表格外误导用户（实测：光标画在第 20 行），必须隐藏。 */
-.live-host :deep(.cm-editor.cm-table-editing .cm-cursorLayer),
-.live-host :deep(.cm-editor.cm-table-editing .cm-selectionLayer) {
+/* 焦点在表格单元格内时：编辑器绘制的光标/选区/当前行按「编辑器光标」绘制，
+   会停在表格外误导用户（实测：光标画在第 20 行），必须隐藏。
+   用 :has() 直接依据焦点状态判断——EditorView 会改写编辑器根的 class，
+   由 JS 维护标记会被它冲掉。 */
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-cursorLayer),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-cursorLayer),
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-selectionLayer),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-selectionLayer) {
   display: none !important;
 }
-.live-host :deep(.cm-editor.cm-table-editing .cm-activeLine) {
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-activeLine),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-activeLine) {
   background: transparent !important;
 }
-/* 单元格编辑框（覆盖在单元格上；真正的焦点元素，插入点/输入法原生可控） */
-.live-host :deep(.tbl-cell-editor) {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  box-sizing: border-box;
-  width: 100%;
-  height: 100%;
-  padding: 4px 9px;
-  border: none;
+/* 单元格直接编辑（Typora 式）：单元格自身是编辑宿主，聚焦时给蓝色描边 */
+.live-host :deep(.live-table-block td:focus),
+.live-host :deep(.live-table-block th:focus) {
   outline: none;
-  background: #fff;
   box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.45);
-  color: #2e3238;
-  font: inherit;
-  font-size: 0.95em;
-  line-height: 1.5;
-  caret-color: #3b63d6;
 }
 
 /* 正在编辑的单元格：焦点宿主始终是编辑器正文，用选区高亮指示编辑目标 */

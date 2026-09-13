@@ -164,47 +164,18 @@ export class TableBlockWidget extends WidgetType {
     return true;
   }
 
-  /** 声明 widget 内容可编辑：CodeMirror 仅在此为 true 时不给 widget 根节点设置
-   *  contenteditable="false"（该属性会压制单元格上的 contenteditable）。 */
-  get editable() {
-    return true;
-  }
-
   /** 单元格编辑与列宽拖拽。
-   *  编辑用「覆盖式 input」：contenteditable 单元格拿不到焦点（焦点宿主是编辑器正文），
-   *  依赖 DOM 选区的方案会被编辑器在退格/方向键后重置；input 是真正的焦点元素，
-   *  输入、退格、方向键、输入法、插入点全部原生可控。 */
+   *  单元格自身就是编辑宿主：widget 根由 CodeMirror 设为 contenteditable="false"，
+   *  单元格上的 contenteditable="true" + tabindex 让浏览器把插入点直接放进单元格
+   *  （Typora 式直接编辑）。键盘、输入法、退格、插入点全部原生；
+   *  事件目标落在 widget 内，编辑器因 ignoreEvent 不会插手。 */
   private enableEditing(wrapper: HTMLElement, table: HTMLTableElement): void {
     const widget = this;
-    for (const [rowIndex, row] of Array.from(table.rows).entries()) {
-      for (const [columnIndex, cell] of Array.from(row.cells).entries()) {
-        cell.dataset.row = String(rowIndex);
-        cell.dataset.col = String(columnIndex);
-      }
-    }
+    let editingDom: HTMLTableCellElement | null = null;
+    let originalHtml = "";
 
-    let editor: HTMLInputElement | null = null;
-    let editingCell: HTMLTableCellElement | null = null;
-
-    const setEditingClass = (on: boolean) => {
-      viewFromDOM(wrapper)?.dom.classList.toggle("cm-table-editing", on);
-    };
-
-    /** 结束编辑；commit 为 true 时把内容写回 Markdown 源码。 */
-    const closeEditor = (commit: boolean) => {
-      const input = editor;
-      const cell = editingCell;
-      editor = null;
-      editingCell = null;
-      if (!input || !cell) return;
-      const value = input.value;
-      input.remove();
-      cell.classList.remove("is-editing");
-      cell.style.removeProperty("position");
-      setEditingClass(false);
-      if (editingTable === widget) editingTable = null;
-      editingCellRef = null;
-      if (!commit) return;
+    /** 单元格内容 → Markdown 源码（保留 **、` 等标记）。 */
+    const commitCell = (cell: HTMLTableCellElement) => {
       const view = viewFromDOM(wrapper);
       if (!view || !wrapper.isConnected) return;
       const pos = widgetPos(view, wrapper);
@@ -214,7 +185,7 @@ export class TableBlockWidget extends WidgetType {
         pos + 1,
         Number(cell.dataset.row ?? 0),
         Number(cell.dataset.col ?? 0),
-        value,
+        cellMarkdown(cell),
       );
       if (!edit) return;
       view.dispatch({
@@ -223,60 +194,60 @@ export class TableBlockWidget extends WidgetType {
       });
     };
 
-    /** 在单元格上打开编辑框（保留单元格的 Markdown 原文，含 **、` 等标记）。 */
-    const openEditor = (cell: HTMLTableCellElement) => {
-      if (editor && editingCell === cell) return;
-      closeEditor(true);
-      editingCell = cell;
-      editingCellRef = { commit: () => closeEditor(true) };
+    const enterEditing = (cell: HTMLTableCellElement) => {
+      editingDom = cell;
+      originalHtml = cell.innerHTML;
+      // 编辑期间保持保护：装饰重建时复用本 widget 的 DOM，焦点与插入点不丢
       editingTable = widget;
+      editingCellRef = { commit: () => commitCell(cell) };
       cell.classList.add("is-editing");
-      setEditingClass(true);
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "tbl-cell-editor";
-      input.spellcheck = false;
-      input.value = cellMarkdown(cell);
-      input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          closeEditor(true);
-        } else if (event.key === "Escape") {
-          event.preventDefault();
-          closeEditor(false);
-        } else if (event.key === "Tab") {
-          event.preventDefault();
-          moveToSibling(cell, event.shiftKey ? -1 : 1);
-        }
-      });
-      input.addEventListener("blur", () => closeEditor(true));
-      cell.append(input);
-      editor = input;
-      input.focus();
-      input.select();
+    };
+
+    const leaveEditing = (cell: HTMLTableCellElement) => {
+      if (editingDom !== cell) return;
+      commitCell(cell); // 此时仍在编辑保护中 → DOM 不被替换 → 焦点保持
+      editingDom = null;
+      editingCellRef = null;
+      cell.classList.remove("is-editing");
+      if (editingTable === widget) editingTable = null;
     };
 
     /** Tab / Shift+Tab 在单元格之间移动。 */
     const moveToSibling = (cell: HTMLTableCellElement, direction: 1 | -1) => {
       const cells = Array.from(wrapper.querySelectorAll<HTMLTableCellElement>("td, th"));
       const next = cells[cells.indexOf(cell) + direction];
-      if (next) openEditor(next);
-      else closeEditor(true);
+      if (next) next.focus();
+      else cell.blur();
     };
 
-    // 点击单元格 → 打开编辑框；阻止默认行为避免插入点落到编辑器正文
-    wrapper.addEventListener("mousedown", (event) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest(".tbl-col-resize")) return; // 列宽手柄单独处理
-      if (editor && target === editor) return;       // 点在编辑框内：交给 input 自己
-      const cell = target.closest<HTMLTableCellElement>("td, th");
-      if (!cell || !wrapper.contains(cell)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      openEditor(cell);
+    for (const [rowIndex, row] of Array.from(table.rows).entries()) {
+      for (const [columnIndex, cell] of Array.from(row.cells).entries()) {
+        cell.dataset.row = String(rowIndex);
+        cell.dataset.col = String(columnIndex);
+        cell.setAttribute("contenteditable", "true");
+        cell.setAttribute("tabindex", "0");
+        cell.spellcheck = false;
+        cell.addEventListener("focus", () => enterEditing(cell));
+        cell.addEventListener("blur", () => leaveEditing(cell));
+        cell.addEventListener("keydown", (event) => {
+          if (event.isComposing) return; // 输入法组词期间不特殊处理
+          if (event.key === "Enter") {
+            event.preventDefault(); // 单元格内不换行
+            commitCell(cell);
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            cell.innerHTML = originalHtml; // 放弃这次修改
+            cell.blur();
+          } else if (event.key === "Tab") {
+            event.preventDefault();
+            moveToSibling(cell, event.shiftKey ? -1 : 1);
+          }
+        });
+      }
+    }
+    this.cleanups.push(() => {
+      editingDom = null;
     });
-    this.cleanups.push(() => closeEditor(false));
 
     this.enableColumnResize(wrapper, table);
   }
