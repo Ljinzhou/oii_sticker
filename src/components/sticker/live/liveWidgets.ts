@@ -1,8 +1,18 @@
 import { EditorView, WidgetType } from "@codemirror/view";
+import type { TransactionSpec } from "@codemirror/state";
 import { renderMarkdown } from "../../../utils/markdown";
 import { htmlToMarkdown, renderMarkdownEditable } from "../../../utils/markdown-editable";
 import { DEFAULT_BLOCK_UI, type BlockUiState } from "../../../utils/block-ui";
-import { columnWidths, setColumnWidth, setTableCell } from "./liveTableEdits";
+import {
+  alignMarker,
+  columnAligns,
+  columnWidths,
+  setColumnWidth,
+  setTableCell,
+  type TableCellFormat,
+  type TableCellRange,
+} from "./liveTableEdits";
+import { buildTableRangeTransaction } from "./liveTransforms";
 import type { TodoBlock } from "../../../types";
 
 /** 渲染 markdown-it 片段并提取行内 HTML。 */
@@ -101,6 +111,184 @@ function widgetPos(view: EditorView, wrapper: HTMLElement): number {
   }
 }
 
+/* ── 单元格选区（表格内的「选单元格」而非「选文字」） ── */
+
+export interface TableCellPos {
+  row: number;
+  column: number;
+}
+
+/** 当前正在交互的单元格选区：anchor = 起点（点击/聚焦的格），head = 终点（拖拽经过的格）。 */
+export interface ActiveTableCell {
+  /** widget 根元素（.live-table-block）。 */
+  host: HTMLElement;
+  table: HTMLTableElement;
+  anchor: TableCellPos;
+  head: TableCellPos;
+  /** true = 区域选择（拖拽 / Shift+点击，可多格）；false = 单格光标编辑。 */
+  multi: boolean;
+}
+
+let activeCell: ActiveTableCell | null = null;
+
+/** 当前单元格选区；widget 已从文档移除时自动失效（工具条据此定位动作目标）。 */
+export function getActiveTableCell(): ActiveTableCell | null {
+  if (activeCell && !activeCell.host.isConnected) activeCell = null;
+  return activeCell;
+}
+
+/** 单元格选区的行列范围。 */
+export function tableCellRange(state: ActiveTableCell): TableCellRange {
+  return {
+    fromRow: Math.min(state.anchor.row, state.head.row),
+    toRow: Math.max(state.anchor.row, state.head.row),
+    fromColumn: Math.min(state.anchor.column, state.head.column),
+    toColumn: Math.max(state.anchor.column, state.head.column),
+  };
+}
+
+/** 当前选区的行列范围（无选区返回 null）。 */
+export function activeTableCellRange(): TableCellRange | null {
+  const state = getActiveTableCell();
+  return state ? tableCellRange(state) : null;
+}
+
+/** 清空单元格选区（点击表格外 / Esc / 表格被移除）。 */
+export function clearActiveTableCell(): void {
+  const state = activeCell;
+  activeCell = null;
+  if (state?.host.isConnected) paintCellSelection(state.host, null);
+}
+
+/** 高亮区域内单元格（range 为 null 时清除高亮）。 */
+function paintCellSelection(host: HTMLElement, range: TableCellRange | null): void {
+  for (const cell of Array.from(host.querySelectorAll<HTMLTableCellElement>("td, th"))) {
+    const row = Number(cell.dataset.row ?? 0);
+    const column = Number(cell.dataset.col ?? 0);
+    const selected = !!range
+      && row >= range.fromRow
+      && row <= range.toRow
+      && column >= range.fromColumn
+      && column <= range.toColumn;
+    cell.classList.toggle("is-cell-selected", selected);
+  }
+}
+
+/** 取表格内指定行列的单元格（越界夹取到最近可聚焦单元格 → 结构变化后仍能落点）。 */
+function cellAt(table: HTMLTableElement, row: number, column: number): HTMLTableCellElement | null {
+  const rows = table.rows;
+  if (!rows.length) return null;
+  const rowEl = rows[Math.min(Math.max(row, 0), rows.length - 1)];
+  if (!rowEl) return null;
+  const cell = rowEl.cells[Math.min(Math.max(column, 0), rowEl.cells.length - 1)];
+  return (cell as HTMLTableCellElement | undefined) ?? null;
+}
+
+/** widget 在编辑器中的序号：同一次动作前后不变（前面的表格未被改动）→ 用于定位重建后的 DOM。 */
+export function tableBlockIndexOf(view: EditorView, host: HTMLElement): number {
+  return Array.from(view.dom.querySelectorAll(".live-table-block")).indexOf(host);
+}
+
+/** 表格被源码动作改写后 widget DOM 会重建：按序号找回新 DOM，恢复单元格选区与焦点。
+ *  DOM 尚未重建时顺延到下一帧（CodeMirror 更新与渲染时序差异）。 */
+export function restoreTableCellSelection(
+  view: EditorView,
+  blockIndex: number,
+  range: TableCellRange,
+  multi: boolean,
+  tries = 2,
+): void {
+  if (!view.dom.isConnected || blockIndex < 0) return;
+  const host = view.dom.querySelectorAll<HTMLElement>(".live-table-block")[blockIndex];
+  const table = host?.querySelector<HTMLTableElement>("table") ?? null;
+  if (!host || !table) {
+    if (tries > 0) requestAnimationFrame(() => restoreTableCellSelection(view, blockIndex, range, multi, tries - 1));
+    return;
+  }
+  const anchorCell = cellAt(table, range.fromRow, range.fromColumn);
+  const headCell = cellAt(table, range.toRow, range.toColumn);
+  if (!anchorCell || !headCell) return;
+  const state: ActiveTableCell = {
+    host,
+    table,
+    anchor: { row: Number(anchorCell.dataset.row ?? 0), column: Number(anchorCell.dataset.col ?? 0) },
+    head: { row: Number(headCell.dataset.row ?? 0), column: Number(headCell.dataset.col ?? 0) },
+    multi,
+  };
+  activeCell = state;
+  paintCellSelection(host, multi ? tableCellRange(state) : null);
+  anchorCell.focus();
+}
+
+/** 是否具备真实布局（jsdom 无布局：elementFromPoint 不可用，退回事件目标）。 */
+function hasLayout(): boolean {
+  return typeof document.elementFromPoint === "function"
+    && typeof document.body?.getBoundingClientRect === "function"
+    && document.body.getBoundingClientRect().height > 0;
+}
+
+/** 鼠标位置 → 单元格（拖拽选中文字时浏览器会把 mousemove 重定向到起点，需按坐标反查）。 */
+function cellFromPoint(node: Node | null, clientX: number, clientY: number): HTMLTableCellElement | null {
+  const hit: Element | null = node?.nodeType === Node.ELEMENT_NODE
+    ? (node as Element)
+    : node?.parentElement ?? null;
+  if (hasLayout()) {
+    try {
+      return (document.elementFromPoint(clientX, clientY) ?? hit)?.closest<HTMLTableCellElement>("td, th") ?? null;
+    } catch {
+      // 无布局环境：忽略
+    }
+  }
+  return hit?.closest<HTMLTableCellElement>("td, th") ?? null;
+}
+
+/** 单元格里是否已有文字选区（有 → 交浏览器原生加粗/斜体，保留插入点与撤销）。 */
+function cellTextSelection(cell: HTMLElement): Selection | null {
+  const selection = document.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const node = selection.anchorNode;
+  return node && cell.contains(node) ? selection : null;
+}
+
+/** 单元格是否落在选区内。 */
+function cellInRange(range: TableCellRange, cell: TableCellPos): boolean {
+  return cell.row >= range.fromRow
+    && cell.row <= range.toRow
+    && cell.column >= range.fromColumn
+    && cell.column <= range.toColumn;
+}
+
+/** 复制用单元格文本：去掉列宽手柄等非内容节点后取 Markdown。 */
+function copyCellMarkdown(cell: HTMLTableCellElement): string {
+  const clone = cell.cloneNode(true) as HTMLElement;
+  clone.querySelectorAll(".tbl-col-resize").forEach((node) => node.remove());
+  return cellMarkdown(clone);
+}
+
+/** 选区 → Markdown 表格源码（区域首行作表头；列对齐沿用源码分隔行）。 */
+function tableRangeMarkdown(state: ActiveTableCell, source: string): string {
+  const range = tableCellRange(state);
+  const aligns = columnAligns(source, 0).slice(range.fromColumn, range.toColumn + 1);
+  const cells = new Map<string, HTMLTableCellElement>();
+  for (const cell of Array.from(state.table.querySelectorAll<HTMLTableCellElement>("td, th"))) {
+    cells.set(`${cell.dataset.row ?? 0}:${cell.dataset.col ?? 0}`, cell);
+  }
+  const lines: string[] = [];
+  for (let row = range.fromRow; row <= range.toRow; row++) {
+    const values: string[] = [];
+    for (let column = range.fromColumn; column <= range.toColumn; column++) {
+      const cell = cells.get(`${row}:${column}`);
+      values.push(cell ? copyCellMarkdown(cell) : "");
+    }
+    lines.push(`| ${values.join(" | ")} |`);
+    if (row === range.fromRow) {
+      // 首行作为表头，紧随一行分隔行才是合法 Markdown 表格
+      lines.push(`| ${values.map((_, index) => alignMarker(aligns[index] ?? "default", 3)).join(" | ")} |`);
+    }
+  }
+  return lines.join("\n");
+}
+
 /** 用最小 diff 写回全文（整表改动：例如列宽拖拽）。 */
 function replaceDoc(view: EditorView, next: string, userEvent: string): void {
   const current = view.state.doc.toString();
@@ -164,15 +352,38 @@ export class TableBlockWidget extends WidgetType {
     return true;
   }
 
-  /** 单元格编辑与列宽拖拽。
+  /** 单元格编辑、单元格区域选择与列宽拖拽。
    *  单元格自身就是编辑宿主：widget 根由 CodeMirror 设为 contenteditable="false"，
    *  单元格上的 contenteditable="true" + tabindex 让浏览器把插入点直接放进单元格
    *  （Typora 式直接编辑）。键盘、输入法、退格、插入点全部原生；
-   *  事件目标落在 widget 内，编辑器因 ignoreEvent 不会插手。 */
+   *  事件目标落在 widget 内，编辑器因 ignoreEvent 不会插手。
+   *  跨格拖拽 / Shift+点击 → 转为「选单元格」（区域高亮，可批量格式化 / 复制 / 删行列）。 */
   private enableEditing(wrapper: HTMLElement, table: HTMLTableElement): void {
     const widget = this;
     let editingDom: HTMLTableCellElement | null = null;
     let originalHtml = "";
+    /** 拖拽选择的起点（mousedown 记录，mouseup 结束）。 */
+    let dragAnchor: HTMLTableCellElement | null = null;
+    /** 已从「格内选字」切到「选单元格」：接管这次拖拽，禁止原生文本选择扩张。 */
+    let cellDragging = false;
+
+    const pos = (cell: HTMLTableCellElement): TableCellPos => ({
+      row: Number(cell.dataset.row ?? 0),
+      column: Number(cell.dataset.col ?? 0),
+    });
+
+    /** 本 widget 自己的选区（不同表格的选区互斥）。 */
+    const selection = (): ActiveTableCell | null =>
+      activeCell && activeCell.host === wrapper ? activeCell : null;
+
+    const select = (anchor: TableCellPos, head: TableCellPos, multi: boolean) => {
+      if (activeCell && activeCell.host !== wrapper && activeCell.host.isConnected) {
+        paintCellSelection(activeCell.host, null); // 另一张表的选择随之取消
+      }
+      const state: ActiveTableCell = { host: wrapper, table, anchor, head, multi };
+      activeCell = state;
+      paintCellSelection(wrapper, multi ? tableCellRange(state) : null);
+    };
 
     /** 单元格内容 → Markdown 源码（保留 **、` 等标记）。 */
     const commitCell = (cell: HTMLTableCellElement) => {
@@ -194,7 +405,65 @@ export class TableBlockWidget extends WidgetType {
       });
     };
 
+    /** 提交未落盘输入 → 单事务改写源码 → 恢复单元格选区与焦点（DOM 会随之重建）。 */
+    const runSourceAction = (
+      build: (
+        text: string,
+        tablePos: number,
+        range: TableCellRange | null,
+      ) => { spec: TransactionSpec; range: TableCellRange } | null,
+    ): boolean => {
+      const view = viewFromDOM(wrapper);
+      if (!view) return false;
+      const tablePos = widgetPos(view, wrapper);
+      if (tablePos < 0) return false;
+      const current = selection();
+      const range = current ? tableCellRange(current) : null;
+      const multi = current?.multi ?? false;
+      // 先记下 widget 序号：源码更新后 DOM 重建，本表之前的表格未被改动 → 序号不变
+      const index = tableBlockIndexOf(view, wrapper);
+      endTableEditing(); // 未提交的输入先落盘
+      const built = build(view.state.doc.toString(), tablePos + 1, range);
+      if (!built) return false;
+      view.dispatch(built.spec);
+      restoreTableCellSelection(view, index, built.range, multi);
+      return true;
+    };
+
+    /** 加粗 / 斜体 / 删除线：格内已选字 → 交浏览器原生（turndown 回写标记）；
+     *  否则作用于「选中的单元格」整体（源码级，可撤销）。 */
+    const handleFormatKey = (cell: HTMLTableCellElement, event: KeyboardEvent): boolean => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod || event.altKey) return false;
+      const key = event.key.toLowerCase();
+      const format: TableCellFormat | null = key === "b"
+        ? "bold"
+        : key === "i"
+          ? "italic"
+          : key === "x" && event.shiftKey
+            ? "strike"
+            : null;
+      if (!format) return false;
+      if (cellTextSelection(cell)) {
+        // 格内选字：用浏览器编辑命令（turndown 回写 ** / * / ~~），保留插入点与撤销
+        const command = format === "bold" ? "bold" : format === "italic" ? "italic" : "strikeThrough";
+        if (typeof document.execCommand !== "function") return false;
+        event.preventDefault();
+        document.execCommand(command);
+        return true;
+      }
+      event.preventDefault(); // 源码由表格层维护，不让浏览器直接改 DOM
+      return runSourceAction((text, tablePos, range) =>
+        buildTableRangeTransaction(text, tablePos, range, format));
+    };
+
     const enterEditing = (cell: HTMLTableCellElement) => {
+      const target = pos(cell);
+      const current = selection();
+      // 焦点落在当前区域选区内（动作后恢复焦点）→ 保留区域选择；否则收敛为单格
+      if (!current?.multi || !cellInRange(tableCellRange(current), target)) {
+        select(target, target, false);
+      }
       editingDom = cell;
       originalHtml = cell.innerHTML;
       // 编辑期间保持保护：装饰重建时复用本 widget 的 DOM，焦点与插入点不丢
@@ -210,6 +479,12 @@ export class TableBlockWidget extends WidgetType {
       editingCellRef = null;
       cell.classList.remove("is-editing");
       if (editingTable === widget) editingTable = null;
+      // 焦点已离开本表格 → 清掉单元格选区（工具条随之隐藏）
+      window.setTimeout(() => {
+        const active = document.activeElement as HTMLElement | null;
+        if (active?.closest?.(".live-table-block") === wrapper) return;
+        if (activeCell?.host === wrapper) clearActiveTableCell();
+      }, 0);
     };
 
     /** Tab / Shift+Tab 在单元格之间移动。 */
@@ -218,6 +493,80 @@ export class TableBlockWidget extends WidgetType {
       const next = cells[cells.indexOf(cell) + direction];
       if (next) next.focus();
       else cell.blur();
+    };
+
+    /** 普通按下 = 单格光标（格内仍可选字）；Shift+按下 = 从锚点扩展单元格选区。 */
+    const onCellMouseDown = (cell: HTMLTableCellElement, event: MouseEvent) => {
+      if (event.button !== 0) return;
+      if ((event.target as HTMLElement | null)?.closest?.(".tbl-col-resize")) return;
+      if (event.shiftKey) {
+        event.preventDefault(); // 不扩展文本选区，改为扩展单元格选区
+        select(selection()?.anchor ?? pos(cell), pos(cell), true);
+        return;
+      }
+      dragAnchor = cell;
+      cellDragging = false;
+      select(pos(cell), pos(cell), false);
+      document.addEventListener("mousemove", onDocumentMove);
+      document.addEventListener("mouseup", onDocumentUp);
+    };
+
+    /** 拖拽经过其它单元格 → 转为「选单元格」并接管这次拖拽。 */
+    const onDocumentMove = (event: MouseEvent) => {
+      if (!dragAnchor) return;
+      const target = cellFromPoint(event.target as Node | null, event.clientX, event.clientY);
+      if (!target || !wrapper.contains(target)) return;
+      if (target !== dragAnchor) cellDragging = true;
+      if (!cellDragging) return; // 仍在同一格内：保留原生「格内选字」
+      event.preventDefault();
+      document.getSelection()?.removeAllRanges(); // 去掉拖拽途中的文本选区，只留单元格高亮
+      select(pos(dragAnchor), pos(target), true);
+    };
+
+    const onDocumentUp = () => {
+      dragAnchor = null;
+      cellDragging = false;
+      document.removeEventListener("mousemove", onDocumentMove);
+      document.removeEventListener("mouseup", onDocumentUp);
+    };
+
+    /** 进入「选单元格」阶段后：阻止原生文本选择继续扩张。 */
+    const onSelectStart = (event: Event) => {
+      if (cellDragging) event.preventDefault();
+    };
+
+    /** Ctrl+C：区域选择时复制为 Markdown 表格源码（格内选字仍走原生复制）。 */
+    const onCopy = (event: ClipboardEvent) => {
+      const current = selection();
+      if (!current?.multi) return;
+      const text = tableRangeMarkdown(current, this.source);
+      if (!text) return;
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", text);
+    };
+
+    const onCellKeyDown = (cell: HTMLTableCellElement, event: KeyboardEvent) => {
+      if (event.isComposing) return; // 输入法组词期间不特殊处理
+      if (handleFormatKey(cell, event)) return;
+      if (event.key === "Enter") {
+        event.preventDefault(); // 单元格内不换行
+        commitCell(cell);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        if (selection()?.multi) {
+          clearActiveTableCell(); // 先退出区域选择，再按一次才是放弃修改
+          return;
+        }
+        cell.innerHTML = originalHtml; // 放弃这次修改
+        cell.blur();
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        moveToSibling(cell, event.shiftKey ? -1 : 1);
+      } else if ((event.key === "Backspace" || event.key === "Delete") && selection()?.multi) {
+        event.preventDefault();
+        runSourceAction((text, tablePos, range) =>
+          buildTableRangeTransaction(text, tablePos, range, "cells-clear"));
+      }
     };
 
     for (const [rowIndex, row] of Array.from(table.rows).entries()) {
@@ -229,24 +578,23 @@ export class TableBlockWidget extends WidgetType {
         cell.spellcheck = false;
         cell.addEventListener("focus", () => enterEditing(cell));
         cell.addEventListener("blur", () => leaveEditing(cell));
-        cell.addEventListener("keydown", (event) => {
-          if (event.isComposing) return; // 输入法组词期间不特殊处理
-          if (event.key === "Enter") {
-            event.preventDefault(); // 单元格内不换行
-            commitCell(cell);
-          } else if (event.key === "Escape") {
-            event.preventDefault();
-            cell.innerHTML = originalHtml; // 放弃这次修改
-            cell.blur();
-          } else if (event.key === "Tab") {
-            event.preventDefault();
-            moveToSibling(cell, event.shiftKey ? -1 : 1);
-          }
-        });
+        cell.addEventListener("mousedown", (event) => onCellMouseDown(cell, event));
+        cell.addEventListener("keydown", (event) => onCellKeyDown(cell, event));
       }
     }
+    wrapper.addEventListener("selectstart", onSelectStart);
+    wrapper.addEventListener("copy", onCopy);
     this.cleanups.push(() => {
       editingDom = null;
+      if (editingTable === widget) {
+        editingTable = null;
+        editingCellRef = null;
+      }
+      wrapper.removeEventListener("selectstart", onSelectStart);
+      wrapper.removeEventListener("copy", onCopy);
+      document.removeEventListener("mousemove", onDocumentMove);
+      document.removeEventListener("mouseup", onDocumentUp);
+      if (activeCell?.host === wrapper) activeCell = null;
     });
 
     this.enableColumnResize(wrapper, table);

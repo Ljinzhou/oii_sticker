@@ -484,6 +484,16 @@ defineExpose({ flush, isDirty });
 .live-host :deep(.live-table-block th.is-editing) {
   box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.4);
 }
+/* 单元格区域选择（拖拽 / Shift+点击）：「选单元格」整体高亮，可批量格式化 / 复制 / 删行列 */
+.live-host :deep(.live-table-block td.is-cell-selected),
+.live-host :deep(.live-table-block th.is-cell-selected) {
+  background: rgba(79, 124, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(79, 124, 255, 0.3);
+}
+.live-host :deep(.live-table-block td.is-cell-selected.is-editing),
+.live-host :deep(.live-table-block th.is-cell-selected.is-editing) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.55);
+}
 /* 列宽拖拽手柄（表头单元格右边界） */
 .live-host :deep(.tbl-col-resize) {
   position: absolute;
