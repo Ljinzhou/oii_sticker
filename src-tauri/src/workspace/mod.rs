@@ -7,6 +7,7 @@ pub mod backup;
 pub mod cmds;
 pub mod layout;
 pub mod md_store;
+pub mod restore;
 
 /// 工作控件目录有效性：签名文件与数据库至少其一存在。
 /// （两者都缺失 = 目录被删除/清空，注册表记录已失效。）

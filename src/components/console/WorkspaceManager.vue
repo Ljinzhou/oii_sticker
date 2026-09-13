@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { open as pickDirectory, save as saveFileDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "../../composables/useTauri";
 import type { WorkspaceEntry } from "../../types";
+import WorkspaceRestore from "./WorkspaceRestore.vue";
 
 // —— 数据 ——
 const entries = ref<WorkspaceEntry[]>([]);
@@ -280,6 +281,12 @@ async function tryTransfer(id: string, dest: string) {
           <button class="ws-btn hero-transfer" :disabled="busy" @click="openTransfer(current.id)">
             <span v-if="busyKey === `transfer:${current.id}`" class="spin"></span>转移
           </button>
+          <WorkspaceRestore
+            :workspaces="entries"
+            :current-id="currentId"
+            :parent-busy="busy"
+            @done="refresh"
+          />
         </div>
 
         <p v-if="backupResult" class="ws-ok-line">{{ backupResult }}</p>

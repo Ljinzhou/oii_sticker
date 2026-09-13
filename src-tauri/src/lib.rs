@@ -1543,7 +1543,9 @@ pub fn run() {
             workspace_default_path_cmd,
             workspace_backup_cmd,
             workspace_transfer_cmd,
-            workspace_bootstrap_cmd
+            workspace_bootstrap_cmd,
+            workspace::restore::workspace_inspect_backup_cmd,
+            workspace::restore::workspace_restore_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
