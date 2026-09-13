@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::layout::{ensure_layout, read_signature, Layout};
+use super::layout::{read_signature, Layout};
 
 /// 备份工作空间：SQLite 在线快照 + zip（排除 cache/）。
 /// dest_zip 为输出 zip 完整路径；返回 zip 字节数。
