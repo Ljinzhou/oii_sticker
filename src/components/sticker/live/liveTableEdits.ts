@@ -693,7 +693,9 @@ export function setTableCell(
   return {
     from: lineStart + bounds.from,
     to: lineStart + bounds.to,
-    insert: escaped ? ` ${escaped} ` : "",
+    // 清空单元格时保留两侧空格（`|  |`）：否则写完会变成 `||`，与其它行格式不一致，
+    // 也会让「DOM 与源码是否一致」的判断把空单元格误判成有未提交输入
+    insert: escaped ? ` ${escaped} ` : "  ",
   };
 }
 
