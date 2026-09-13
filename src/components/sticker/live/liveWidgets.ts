@@ -128,8 +128,16 @@ function replaceDoc(view: EditorView, next: string, userEvent: string): void {
  * - 表头单元格右侧有列宽拖拽手柄：拖动只改分隔行的连字符宽度（持久化到源码）。
  */
 export class TableBlockWidget extends WidgetType {
+  /** widget 内注册的 document 级监听清理函数（widget 被移除时调用）。 */
+  private cleanups: Array<() => void> = [];
+
   constructor(readonly source: string) {
     super();
+  }
+
+  destroy() {
+    for (const cleanup of this.cleanups) cleanup();
+    this.cleanups = [];
   }
 
   eq(other: TableBlockWidget) {
@@ -163,7 +171,10 @@ export class TableBlockWidget extends WidgetType {
     return true;
   }
 
-  /** 单元格编辑与列宽拖拽（均在 DOM 事件里通过 DOM 反查编辑器，避免持有 stale view）。 */
+  /** 单元格编辑与列宽拖拽。
+   *  浏览器把插入点放进单元格（DOM 选区在 td 内），但焦点宿主始终是编辑器正文、
+   *  input 事件的目标是编辑器行元素——所以监听只能挂在 document 捕获阶段，
+   *  再依据 DOM 选区判定到底编辑的是哪个单元格。 */
   private enableEditing(wrapper: HTMLElement, table: HTMLTableElement): void {
     const widget = this;
     for (const [rowIndex, row] of Array.from(table.rows).entries()) {
@@ -172,69 +183,115 @@ export class TableBlockWidget extends WidgetType {
         cell.dataset.col = String(columnIndex);
         cell.setAttribute("contenteditable", "true");
         cell.spellcheck = false;
-
-        let timer = 0;
-        const commit = () => {
-          if (timer) window.clearTimeout(timer);
-          timer = 0;
-          const view = viewFromDOM(wrapper);
-          if (!view || !wrapper.isConnected) return;
-          const pos = widgetPos(view, wrapper);
-          if (pos < 0) return;
-          const edit = setTableCell(
-            view.state.doc.toString(),
-            pos + 1,
-            rowIndex,
-            columnIndex,
-            cellMarkdown(cell),
-          );
-          if (!edit) return;
-          view.dispatch({
-            changes: { from: edit.from, to: edit.to, insert: edit.insert },
-            userEvent: "input.table",
-          });
-        };
-
-        cell.addEventListener("focus", () => {
-          editingTable = widget;
-          editingCell = { commit };
-          // 注意：这里不能 dispatch 编辑器选区——编辑器写回 DOM 选区会把焦点从
-          // 单元格抢回正文（表现为「点进去立刻又跳出来」）。工具条改由
-          // LiveEditorView 的 focusin 监听按 DOM 位置定位。
-        });
-        cell.addEventListener("input", () => {
-          if (timer) window.clearTimeout(timer);
-          timer = window.setTimeout(commit, 300);
-        });
-        cell.addEventListener("blur", () => {
-          commit();
-          if (editingTable === widget) editingTable = null;
-          editingCell = null;
-          // 让 DOM 与源码重新对齐（格式化、其它窗口的改动等）
-          const view = viewFromDOM(wrapper);
-          if (view && view.dom.isConnected) {
-            view.dispatch({ effects: refreshLivePreview.of(null) });
-          }
-        });
-        cell.addEventListener("keydown", (event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            cell.blur();
-          }
-        });
-        cell.addEventListener("paste", (event) => {
-          // 只接收纯文本：外部富文本会带样式进来，无法用 Markdown 表达
-          const text = event.clipboardData?.getData("text/plain");
-          if (text === undefined) return;
-          event.preventDefault();
-          const selection = window.getSelection();
-          if (!selection) return;
-          selection.deleteFromDocument();
-          selection.getRangeAt(0).insertNode(document.createTextNode(text.replace(/\s*\n+\s*/g, " ")));
-          selection.collapseToEnd();
-        });
       }
     }
+
+    /** 当前 DOM 选区所在的单元格（限本 widget 内）。 */
+    const selectionCell = (): HTMLTableCellElement | null => {
+      const node = document.getSelection()?.anchorNode ?? null;
+      if (!node) return null;
+      const element = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node.parentElement;
+      const cell = element?.closest<HTMLTableCellElement>("td, th") ?? null;
+      return cell && wrapper.contains(cell) ? cell : null;
+    };
+
+    let timer = 0;
+    let edited: HTMLTableCellElement | null = null;
+
+    const commit = (cell: HTMLTableCellElement | null) => {
+      if (timer) window.clearTimeout(timer);
+      timer = 0;
+      if (!cell) return;
+      const view = viewFromDOM(wrapper);
+      if (!view || !wrapper.isConnected) return;
+      const pos = widgetPos(view, wrapper);
+      if (pos < 0) return;
+      const edit = setTableCell(
+        view.state.doc.toString(),
+        pos + 1,
+        Number(cell.dataset.row ?? 0),
+        Number(cell.dataset.col ?? 0),
+        cellMarkdown(cell),
+      );
+      if (!edit) return;
+      view.dispatch({
+        changes: { from: edit.from, to: edit.to, insert: edit.insert },
+        userEvent: "input.table",
+      });
+    };
+
+    const markEditing = (cell: HTMLTableCellElement) => {
+      edited = cell;
+      editingTable = widget;
+      editingCell = { commit: () => commit(cell) };
+    };
+
+    // 输入期间【不写回】：写回会 view.dispatch → 编辑器把 DOM 光标同步出单元格，
+    // 用户打第二个字就落到正文里（逐字输入实测：只有第一个字进得了单元格）。
+    // 单元格内容交给浏览器原生编辑，等离开单元格时再一次性落盘。
+    const onInput = () => {
+      const cell = selectionCell();
+      if (cell) markEditing(cell);
+    };
+    // 回车提交（单元格内不换行）；Ctrl/Cmd+S 先把单元格内容落盘再交给保存流程
+    const onKeydown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      const cell = selectionCell();
+      if (!cell) return;
+      const save = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
+      if (event.key !== "Enter" && !save) return;
+      if (event.key === "Enter") event.preventDefault();
+      commit(cell);
+    };
+    // 粘贴只收纯文本（富文本无法用 Markdown 表达）
+    const onPaste = (event: ClipboardEvent) => {
+      const cell = selectionCell();
+      if (!cell) return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (text === undefined) return;
+      event.preventDefault();
+      const selection = document.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const node = document.createTextNode(text.replace(/\s*\n+\s*/g, " "));
+      range.insertNode(node);
+      range.setStartAfter(node);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      markEditing(cell);
+    };
+    // 选区变化：高亮正在编辑的单元格；离开表格则落盘并让 DOM 与源码对齐
+    const onSelectionChange = () => {
+      const cell = selectionCell();
+      wrapper.querySelectorAll("td.is-editing, th.is-editing").forEach((el) => el.classList.remove("is-editing"));
+      if (cell) {
+        cell.classList.add("is-editing");
+        markEditing(cell);
+        return;
+      }
+      if (!edited) return;
+      const leaving = edited;
+      edited = null;
+      commit(leaving);
+      if (editingTable === widget) editingTable = null;
+      editingCell = null;
+      const view = viewFromDOM(wrapper);
+      if (view && view.dom.isConnected) view.dispatch({ effects: refreshLivePreview.of(null) });
+    };
+
+    document.addEventListener("input", onInput, true);
+    document.addEventListener("keydown", onKeydown, true);
+    document.addEventListener("paste", onPaste, true);
+    document.addEventListener("selectionchange", onSelectionChange);
+    this.cleanups.push(
+      () => document.removeEventListener("input", onInput, true),
+      () => document.removeEventListener("keydown", onKeydown, true),
+      () => document.removeEventListener("paste", onPaste, true),
+      () => document.removeEventListener("selectionchange", onSelectionChange),
+    );
+
     this.enableColumnResize(wrapper, table);
   }
 

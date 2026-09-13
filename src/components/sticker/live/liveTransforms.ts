@@ -114,14 +114,14 @@ export function buildTableBackwardTransaction(text: string, selection: Selection
   return buildTableNavigation(text, selection, -1);
 }
 
-/** 表格工具窗动作 → 最小 CodeMirror 事务（与 Tab 单元格导航共用一套 diff 逻辑）。 */
+/** 表格工具窗动作 → 最小 CodeMirror 事务（与 Tab 单元格导航共用一套 diff 逻辑）。
+ *  position 为表格内任意偏移（由工具条按表格 DOM 定位提供，而非编辑器光标）。 */
 export function buildTableEditTransaction(
   text: string,
-  selection: SelectionRange,
+  position: number,
   action: TableToolbarAction,
 ): TransactionSpec | null {
-  if (!selection.empty) return null;
-  const result = applyTableAction(text, selection.head, action);
+  const result = applyTableAction(text, position, action);
   if (!result) return null;
   return toTransaction(text, result.text, result.cursor, "input.table");
 }
