@@ -22,21 +22,35 @@ function lineStarts(text: string): number[] {
   return starts;
 }
 
+/** GFM 表格行的判定与 markdown-it / lezer 保持一致：
+ *  - 含未转义竖线即可，首尾竖线可省略（`a | b` 也是表格行）；
+ *  - 分隔行每格只要求 1 个以上连字符（`| - |` 同样是合法表格）。
+ *  判定比渲染器更严格会出现「渲染成表格、却解析不到表格」——
+ *  表现为选中单元格不弹工具条、表格工具条动作全部失效。 */
 function isTableRow(line: string): boolean {
-  return /^\s*\|.*\|\s*$/.test(line);
+  return line.trim() !== "" && /(^|[^\\])\|/.test(line);
+}
+
+/** 按未转义竖线切分（去掉首尾竖线，保留格内空白供分隔行判定）。 */
+function splitRowLoose(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split(/(?<!\\)\|/);
 }
 
 function isDelimiterRow(line: string): boolean {
   if (!isTableRow(line)) return false;
-  const cells = line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|");
-  return cells.length >= 1 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
+  const cells = splitRowLoose(line);
+  return cells.length >= 1 && cells.every((cell) => /^\s*:?-+:?\s*$/.test(cell));
 }
 
 function parseCells(line: string, start: number, row: number): TableCell[] {
   const cells: TableCell[] = [];
   const pipes: number[] = [];
   for (let index = 0; index < line.length; index++) {
-    if (line[index] === "|") pipes.push(index);
+    if (line[index] === "|" && line[index - 1] !== "\\") pipes.push(index);
   }
   const first = line.trimStart().startsWith("|") ? 0 : -1;
   const last = line.trimEnd().endsWith("|") ? pipes.length - 1 : pipes.length;

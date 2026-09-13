@@ -718,10 +718,15 @@ export function setColumnWidth(
   });
 }
 
-/** 各列显示宽度基准（分隔行单元格字符数，含对齐冒号）。 */
+/** 各列显示宽度基准（分隔行单元格字符数，含对齐冒号）。
+ *  以表头行列数为准补齐 / 裁剪：手写表格的分隔行格数常与表头不一致，
+ *  不齐会让 colgroup 错位（表现为某一列被压得很窄）。 */
 export function columnWidths(text: string, position: number): number[] {
   const ctx = resolveTableEdit(text, position);
   if (!ctx) return [];
   const lines = text.split("\n");
-  return splitRow(lines[ctx.delimiterLine] ?? "").map((cell) => cell.length);
+  const widths = splitRow(lines[ctx.delimiterLine] ?? "").map((cell) => cell.length);
+  widths.length = Math.min(widths.length, ctx.columnCount);
+  while (widths.length < ctx.columnCount) widths.push(3);
+  return widths;
 }
