@@ -543,11 +543,11 @@ describe("LiveEditorView（CM6 内核）", () => {
     // 编辑器必须忽略 widget 内的鼠标事件，否则 mousedown 被接管 → 点不进单元格
     expect(widget.ignoreEvent(new MouseEvent("mousedown"))).toBe(true);
     expect(widget.ignoreEvent(new Event("input"))).toBe(true);
-    // 且声明可编辑：CodeMirror 才不会给 widget 根节点设 contenteditable="false"
-    expect((widget as unknown as { editable: boolean }).editable).toBe(true);
+    // widget 根必须保持不可编辑：单元格上的 contenteditable 才会成为独立编辑宿主
+    expect((widget as unknown as { editable: boolean }).editable).toBe(false);
   });
 
-  it("点击单元格弹出编辑框：回车把内容写回 Markdown 源码", () => {
+  it("单元格可直接编辑（Typora 式）：聚焦后回车把内容写回源码", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
     const view = createLiveView(host, {
@@ -560,27 +560,25 @@ describe("LiveEditorView（CM6 内核）", () => {
 
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]');
     expect(cell).not.toBeNull();
-    // widget 根节点不得是 contenteditable="false"
-    expect(host.querySelector(".live-table-block")?.getAttribute("contenteditable")).not.toBe("false");
+    // 单元格自身是编辑宿主：可编辑 + 可聚焦
+    expect(cell!.getAttribute("contenteditable")).toBe("true");
+    expect(cell!.getAttribute("tabindex")).toBe("0");
+    // widget 根必须不可编辑，单元格才会成为独立编辑宿主（焦点才落得进单元格）
+    expect(host.querySelector(".live-table-block")?.getAttribute("contenteditable")).not.toBe("true");
 
-    // 点击单元格 → 覆盖式编辑框出现并带入 Markdown 原文
-    cell!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    const input = cell!.querySelector<HTMLInputElement>(".tbl-cell-editor");
-    expect(input).not.toBeNull();
-    expect(input!.value).toBe("苹果");
-
-    // 编辑中：源码不变（写回会让编辑器重置 DOM/选区，必须等离开单元格再落盘）
-    input!.value = "香蕉";
+    cell!.dispatchEvent(new FocusEvent("focus"));
+    cell!.textContent = "香蕉";
+    // 编辑期间源码不动（写回会让编辑器重建 DOM、丢掉插入点）
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
 
-    // 回车 → 落盘
-    input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // 回车落盘
+    cell!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 香蕉 | 2 |");
-    expect(cell!.querySelector(".tbl-cell-editor")).toBeNull();
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
     view.destroy();
   });
 
-  it("编辑框失焦（点到别处）时自动落盘", () => {
+  it("单元格失焦时自动落盘", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
     const view = createLiveView(host, {
@@ -591,15 +589,14 @@ describe("LiveEditorView（CM6 内核）", () => {
     });
     view.dispatch({ selection: { anchor: source.length } });
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="1"]')!;
-    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    const input = cell.querySelector<HTMLInputElement>(".tbl-cell-editor")!;
-    input.value = "9";
-    input.dispatchEvent(new Event("blur"));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.textContent = "9";
+    cell.dispatchEvent(new FocusEvent("blur"));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 9 |");
     view.destroy();
   });
 
-  it("编辑框里按 Esc 放弃修改", () => {
+  it("单元格内按 Esc 放弃本次修改", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |";
     const view = createLiveView(host, {
@@ -610,10 +607,9 @@ describe("LiveEditorView（CM6 内核）", () => {
     });
     view.dispatch({ selection: { anchor: source.length } });
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
-    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    const input = cell.querySelector<HTMLInputElement>(".tbl-cell-editor")!;
-    input.value = "不该保存";
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.textContent = "不该保存";
+    cell.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
     view.destroy();
   });
