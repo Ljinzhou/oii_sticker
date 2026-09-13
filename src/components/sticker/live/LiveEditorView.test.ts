@@ -656,15 +656,17 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.dispatch({ selection: { anchor: source.length } });
     expect(barVisible()).toBe(false);
 
-    // 光标进入表格：浮现 14 个操作按钮（4 对齐 + 5 行 + 5 列）
+    // 光标进入表格：浮现 17 个操作按钮（3 格式 + 4 对齐 + 5 行 + 5 列）
     view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
     expect(barVisible()).toBe(true);
     const bar = barEl()!;
-    expect(bar!.querySelectorAll(".tbl-btn")).toHaveLength(14);
+    expect(bar!.querySelectorAll(".tbl-btn")).toHaveLength(17);
 
-    // 首列不可左移；当前列（默认对齐）的「默认」按钮为激活态
+    // 第一数据行不可上移（表头固定）、首列不可左移；当前列（默认对齐）的「默认」按钮为激活态
     expect(bar!.querySelector<HTMLButtonElement>('[data-act="col-move-left"]')!.disabled).toBe(true);
-    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-up"]')!.disabled).toBe(false);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-up"]')!.disabled).toBe(true);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-down"]')!.disabled).toBe(false);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="align-default"]')!.classList.contains("is-on")).toBe(true);
 
     // 点击「居中」：分隔行第一列改写为 :---:（其余列不动）
     bar!.querySelector<HTMLButtonElement>('[data-act="align-center"]')!.click();
@@ -682,6 +684,107 @@ describe("LiveEditorView（CM6 内核）", () => {
     // 光标离开表格：工具条隐藏
     view.dispatch({ selection: { anchor: view.state.doc.length } });
     expect(barVisible()).toBe(false);
+    view.destroy();
+  });
+
+  it("拖拽跨格选中单元格（选单元格而非选文字）：区域高亮 + Ctrl+C 复制 Markdown 表格", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const first = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    const second = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    // 按住从 1,1 拖到 2,2：整块 2×2 单元格被选中
+    first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    second.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    first.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    const selected = () =>
+      Array.from(
+        host.querySelectorAll<HTMLElement>(".live-table-block td.is-cell-selected, .live-table-block th.is-cell-selected"),
+      ).map((cell) => `${cell.dataset.row}:${cell.dataset.col}`);
+    expect(selected()).toEqual(["1:0", "1:1", "2:0", "2:1"]);
+
+    // Ctrl+C：复制选区为 Markdown 表格源码（区域首行作表头 + 分隔行）
+    const copied = new Map<string, string>();
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: { setData: (type: string, value: string) => copied.set(type, value) },
+    });
+    first.dispatchEvent(copyEvent);
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(copied.get("text/plain")).toBe("| 苹果 | 2 |\n| --- | --- |\n| 香蕉 | 1 |");
+
+    // 区域选择下按 Ctrl+B：选中的四个单元格一起加粗（不是只加粗光标所在格）
+    first.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString().split("\n").slice(2, 4)).toEqual([
+      "| **苹果** | **2** |",
+      "| **香蕉** | **1** |",
+    ]);
+
+    // 动作后焦点与区域选择落回同一位置；Esc 退出区域选择
+    await tick();
+    expect(host.querySelectorAll(".live-table-block .is-cell-selected")).toHaveLength(4);
+    const restored = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    restored.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(host.querySelectorAll(".live-table-block .is-cell-selected")).toHaveLength(0);
+    view.destroy();
+  });
+
+  it("工具条动作按「选中的单元格」生效：插入行落在该行上下、移动按钮可用", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    // 点选第 3 行（香蕉）第 2 列
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await tick(); // 工具条按单元格选区刷新（mouseup 后异步同步）
+
+    const bar = () => host.querySelector<HTMLElement>(".tbl-bar")!;
+    const button = (act: string) => bar().querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+    expect(bar().hidden).toBe(false);
+    // 选中的是数据行：上移可用、左移可用；末行不可下移、末列不可右移
+    expect(button("row-up").disabled).toBe(false);
+    expect(button("col-move-left").disabled).toBe(false);
+    expect(button("row-down").disabled).toBe(true);
+    expect(button("col-move-right").disabled).toBe(true);
+
+    // 「在上方插入行」：新行插在选中行之上（不再固定插到第一行）
+    button("row-above").click();
+    expect(view.state.doc.toString().split("\n")).toEqual([
+      "| 名称 | 数量 |",
+      "| --- | --- |",
+      "| 苹果 | 2 |",
+      "|  |  |",
+      "| 香蕉 | 1 |",
+      "",
+      "正文",
+    ]);
+
+    // 新行成为选区（焦点落在新行）→ 继续用工具条左移该列
+    await tick();
+    expect(host.querySelector(".live-table-block td.is-editing")?.getAttribute("data-row")).toBe("2");
+    button("col-move-left").click();
+    expect(view.state.doc.toString().split("\n")[0]).toBe("| 数量 | 名称 |");
     view.destroy();
   });
 });

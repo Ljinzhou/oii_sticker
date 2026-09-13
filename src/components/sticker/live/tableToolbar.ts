@@ -1,13 +1,16 @@
 // 表格浮动工具条（Obsidian / Notion 风格）：
-// 光标位于表格内时浮现在表格上方；每个按钮直接改写 Markdown 源码。
+// 光标 / 选中单元格位于表格内时浮现在表格上方；每个按钮直接改写 Markdown 源码。
 // 采用纯 DOM 实现（与 liveWidgets 同思路）：位置依赖编辑器布局，由 LiveEditorView 驱动更新。
 import {
   tableActionDisabled,
-  type TableEditContext,
+  type TableAlign,
+  type TableCellFormat,
+  type TableCellRange,
   type TableToolbarAction,
+  type TableToolbarState,
 } from "./liveTableEdits";
 
-/* ── 图标：统一「表格网格 + 高亮带 + 操作符号」底座，保证 14 个按钮视觉一致 ── */
+/* ── 图标：统一「表格网格 + 高亮带 + 操作符号」底座，保证按钮视觉一致 ── */
 const ROW_TOP = [2.2, 6.06, 9.93];
 const ROW_H = 3.86;
 const COL_X = [1.2, 6];
@@ -56,7 +59,7 @@ function gridIcon({ row, col, symbol, danger }: GridIcon): string {
   </svg>`;
 }
 
-function alignIcon(mode: "left" | "center" | "right" | "default"): string {
+function alignIcon(mode: TableAlign): string {
   const stroke = `stroke="currentColor" stroke-width="1.6" stroke-linecap="round"`;
   if (mode === "default") {
     return `<svg viewBox="0 0 16 16" aria-hidden="true"><path ${stroke} stroke-dasharray="2.5 2.1" d="M2.4 8h11.2"/></svg>`;
@@ -73,6 +76,21 @@ function alignIcon(mode: "left" | "center" | "right" | "default"): string {
   return `<svg viewBox="0 0 16 16" aria-hidden="true"><path ${stroke} d="${paths}"/></svg>`;
 }
 
+/** 单元格格式按钮图标：字母字形（删除线额外压一条横线）。 */
+function formatIcon(format: TableCellFormat): string {
+  const letter = format === "bold" ? "B" : format === "italic" ? "I" : "S";
+  const weight = format === "bold" ? 800 : 650;
+  const skew = format === "italic" ? ` transform="skewX(-12)"` : "";
+  const overline = format === "strike"
+    ? `<path stroke="currentColor" stroke-width="1.4" stroke-linecap="round" d="M3.6 8h8.8"/>`
+    : "";
+  return `<svg viewBox="0 0 16 16" aria-hidden="true">
+    <text x="8" y="8.4" text-anchor="middle" dominant-baseline="central" font-size="11.5" font-weight="${weight}"
+      font-family="Georgia, 'Times New Roman', serif" fill="currentColor"${skew}>${letter}</text>
+    ${overline}
+  </svg>`;
+}
+
 interface ToolbarButton {
   act: TableToolbarAction;
   label: string;
@@ -80,8 +98,13 @@ interface ToolbarButton {
   danger?: boolean;
 }
 
-/** 按钮顺序即工具条顺序；组间以分隔线区隔（对齐 | 行 | 列）。 */
+/** 按钮顺序即工具条顺序；组间以分隔线区隔（格式 | 对齐 | 行 | 列）。 */
 const GROUPS: ToolbarButton[][] = [
+  [
+    { act: "bold", label: "加粗 (Ctrl+B)", icon: () => formatIcon("bold") },
+    { act: "italic", label: "斜体 (Ctrl+I)", icon: () => formatIcon("italic") },
+    { act: "strike", label: "删除线 (Ctrl+Shift+X)", icon: () => formatIcon("strike") },
+  ],
   [
     { act: "align-left", label: "左对齐", icon: () => alignIcon("left") },
     { act: "align-center", label: "居中对齐", icon: () => alignIcon("center") },
@@ -116,6 +139,9 @@ export class TableToolbar {
    *  不能依赖编辑器光标：点击单元格不会移动编辑器选区。 */
   tablePos = -1;
 
+  /** 当前选中的单元格区域（同步时写入；动作按该区域生效）。 */
+  range: TableCellRange | null = null;
+
   private readonly buttons = new Map<TableToolbarAction, HTMLButtonElement>();
 
   constructor(private readonly onAction: (action: TableToolbarAction) => void) {
@@ -124,7 +150,7 @@ export class TableToolbar {
     this.dom.hidden = true;
     this.dom.setAttribute("role", "toolbar");
     this.dom.setAttribute("aria-label", "表格工具");
-    // 工具条自身不参与编辑器选区/输入：按下即阻止默认，保持编辑器焦点
+    // 工具条自身不参与编辑器选区/输入：按下即阻止默认，保持单元格焦点不变
     this.dom.addEventListener("mousedown", (event) => event.preventDefault());
 
     GROUPS.forEach((group, index) => {
@@ -153,16 +179,27 @@ export class TableToolbar {
     });
   }
 
-  /** 更新按钮状态与浮层位置；ctx 为 null 表示光标不在表格内 → 隐藏。 */
-  update(ctx: TableEditContext | null, anchor: TableToolbarAnchor | null): void {
-    if (!ctx) {
+  /** 更新按钮状态与浮层位置；state 为 null 表示目标不在表格内 → 隐藏。
+   *  tablePos 传入时同步更新（表格内稳定位置，动作据此定位）。 */
+  update(
+    state: TableToolbarState | null,
+    anchor: TableToolbarAnchor | null,
+    tablePos?: number,
+  ): void {
+    if (!state) {
       this.hide();
+      this.tablePos = -1;
+      this.range = null;
       return;
     }
+    if (tablePos !== undefined) this.tablePos = tablePos;
+    this.range = state.range;
     for (const [action, button] of this.buttons) {
-      button.disabled = tableActionDisabled(action, ctx);
+      button.disabled = tableActionDisabled(action, state);
       if (action.startsWith("align-")) {
-        button.classList.toggle("is-on", ctx.aligns[ctx.column] === action.slice("align-".length));
+        button.classList.toggle("is-on", state.align === action.slice("align-".length));
+      } else if (action === "bold" || action === "italic" || action === "strike") {
+        button.classList.toggle("is-on", state.formats[action]);
       }
     }
     if (anchor) {
