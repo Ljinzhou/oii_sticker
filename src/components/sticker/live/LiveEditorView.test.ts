@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize, setLiveLineNumbers } from "./LiveEditorView";
 import { mathInstancePromise } from "../../../utils/markdown";
-import { MathBlockWidget } from "./liveWidgets";
+import { MathBlockWidget, TableBlockWidget } from "./liveWidgets";
 
 // CM6 在 jsdom 中需要 ResizeObserver / rAF / DOMRect polyfill
 class ResizeObserverMock {
@@ -538,6 +538,15 @@ describe("LiveEditorView（CM6 内核）", () => {
     view.destroy();
   });
 
+  it("表格 widget 自己处理内部事件（否则编辑器接管点击、单元格无法聚焦）", () => {
+    const widget = new TableBlockWidget("| 名称 |\n| --- |\n| 苹果 |");
+    // 编辑器必须忽略 widget 内的鼠标事件，否则 mousedown 被接管 → 点不进单元格
+    expect(widget.ignoreEvent(new MouseEvent("mousedown"))).toBe(true);
+    expect(widget.ignoreEvent(new Event("input"))).toBe(true);
+    // 且声明可编辑：CodeMirror 才不会给 widget 根节点设 contenteditable="false"
+    expect((widget as unknown as { editable: boolean }).editable).toBe(true);
+  });
+
   it("表格单元格可直接编辑：失焦后写回 Markdown 源码", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
@@ -552,12 +561,36 @@ describe("LiveEditorView（CM6 内核）", () => {
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]');
     expect(cell).not.toBeNull();
     expect(cell!.getAttribute("contenteditable")).toBe("true");
+    // widget 根节点不得是 contenteditable="false"（那会压制单元格可编辑性）
+    expect(host.querySelector(".live-table-block")?.getAttribute("contenteditable")).not.toBe("false");
 
     cell!.textContent = "香蕉";
     cell!.dispatchEvent(new Event("blur"));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 香蕉 | 2 |");
     // 写回后仍然渲染（不回退源码）
     expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    view.destroy();
+  });
+
+  it("单元格获得焦点时工具条浮现（按 DOM 定位，不改编辑器选区）", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 光标停在文档末尾（远离表格）→ 工具条隐藏
+    view.dispatch({ selection: { anchor: source.length } });
+    expect(Boolean(host.querySelector<HTMLElement>(".tbl-bar")?.hidden)).toBe(true);
+
+    // 单元格获得焦点 → 工具条浮现；编辑器选区保持不动（否则焦点会被抢回正文）
+    const head = view.state.selection.main.head;
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    cell.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(Boolean(host.querySelector<HTMLElement>(".tbl-bar")?.hidden)).toBe(false);
+    expect(view.state.selection.main.head).toBe(head);
     view.destroy();
   });
 
