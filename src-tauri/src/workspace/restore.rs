@@ -165,6 +165,11 @@ pub fn restore_overwrite_data(root: &Path, zip: &Path) -> Result<(u64, PathBuf)>
     }
     std::fs::create_dir_all(&staging)?;
     backup::extract(zip, &staging).context("解压备份失败")?;
+    // 目录结构补齐：备份里可能没有 stickers/assets/library（备份时它们就是空的），
+    // 而工作空间缺这些目录会让之后的 md 写入失败（新建/编辑便签报错）
+    for dir in ["stickers", "assets", "library"] {
+        std::fs::create_dir_all(staging.join(dir))?;
+    }
     let rollback_dir = layout.cache_dir().join(format!("rollback-{}.tmp", now_tag()));
     let result = apply_restore(root, &staging, &rollback_dir);
     let _ = remove_any(&staging); // 内容已被 rename 走，剩下空壳
@@ -313,6 +318,38 @@ mod tests {
         let sig = layout::read_signature(&layout.signature_path()).unwrap().unwrap();
         assert_eq!(sig.name, "保留");
         assert!(root.join("stickers").join("1-旧.md").is_file(), "回滚应把旧便签放回");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 备份里没有 stickers/ 等目录（备份时它们就是空的）时，覆盖恢复后目录必须仍在：
+    /// 否则之后新建/编辑便签（写 md）会因为目录缺失而失败。
+    #[test]
+    fn restore_overwrite_recreates_missing_dirs() {
+        let base = temp_dir("dirs");
+        // 造一个「没有任何便签」的备份：zip 内不含 stickers/ 条目
+        let src = Layout::at(&base.join("empty-ws"));
+        layout::ensure_layout(&src, "空工作空间").unwrap();
+        let conn = rusqlite::Connection::open(src.db_path()).unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        let _ = conn.close();
+        let zip = base.join("empty.zip");
+        let conn = rusqlite::Connection::open(src.db_path()).unwrap();
+        bk::backup(&src, &conn, &zip).unwrap();
+        let _ = conn.close();
+
+        let target = base.join("target-ws");
+        let layout = Layout::at(&target);
+        layout::ensure_layout(&layout, "目标").unwrap();
+        std::fs::write(layout.stickers_dir().join("1-旧.md"), "# 旧").unwrap();
+        let conn = rusqlite::Connection::open(layout.db_path()).unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        let _ = conn.close();
+
+        restore_overwrite_data(&target, &zip).unwrap();
+        assert!(layout.stickers_dir().is_dir(), "恢复后 stickers/ 必须存在");
+        assert!(layout.assets_dir().is_dir(), "恢复后 assets/ 必须存在");
+        assert!(layout.library_dir().is_dir(), "恢复后 library/ 必须存在");
+        assert!(!layout.stickers_dir().join("1-旧.md").exists(), "旧便签应被清掉");
         let _ = std::fs::remove_dir_all(&base);
     }
 
