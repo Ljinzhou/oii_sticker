@@ -787,4 +787,105 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect(view.state.doc.toString().split("\n")[0]).toBe("| 数量 | 名称 |");
     view.destroy();
   });
+
+  it("末格按 Tab（Typora 行为）：追加一整行并把焦点落到新行首格", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const editing = () => host.querySelector<HTMLElement>(".live-table-block td.is-editing");
+    const last = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    last.dispatchEvent(new FocusEvent("focus"));
+    last.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+
+    // 末格 Tab：完整追加一行空单元格（源码级，可撤销）
+    expect(view.state.doc.toString().split("\n")).toEqual([
+      "| 名称 | 数量 |",
+      "| --- | --- |",
+      "| 苹果 | 2 |",
+      "| 香蕉 | 1 |",
+      "|  |  |",
+      "",
+      "正文",
+    ]);
+
+    // 焦点落到新行首格，可以继续 Tab 前进
+    await tick();
+    expect(editing()?.getAttribute("data-row")).toBe("3");
+    expect(editing()?.getAttribute("data-col")).toBe("0");
+    const before = view.state.doc.toString();
+    editing()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    expect(view.state.doc.toString()).toBe(before); // 非末格 Tab 只移动焦点
+    expect(editing()?.getAttribute("data-col")).toBe("1");
+    view.destroy();
+  });
+
+  it("单元格里 Ctrl+Z 撤销表格动作（插行/移动），Ctrl+Shift+Z 重做", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    // 点选第 3 行第 2 列 → 工具条「在上方插入行」
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await tick();
+    host.querySelector<HTMLElement>('.tbl-bar [data-act="row-above"]')!.click();
+    const inserted = view.state.doc.toString();
+    expect(inserted.split("\n")[3]).toBe("|  |  |");
+
+    // Ctrl+Z：插行被撤销（焦点仍在表格单元格里，撤销键由 widget 转给编辑器历史）
+    await tick();
+    const undoCell = host.querySelector<HTMLElement>(".live-table-block td.is-editing")
+      ?? host.querySelector<HTMLElement>(".live-table-block td")!;
+    undoCell.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe(source);
+
+    // Ctrl+Shift+Z：重做（真实浏览器里 Shift+z 的 event.key 是大写 "Z"）
+    await tick();
+    const redoCell = host.querySelector<HTMLElement>(".live-table-block td.is-editing")
+      ?? host.querySelector<HTMLElement>(".live-table-block td")!;
+    redoCell.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Z", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe(inserted);
+    view.destroy();
+  });
+
+  it("外部同步不进撤销栈：Ctrl+Z 只撤销自己的编辑", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "初始内容",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 外部（另一个窗口 / 数据层）写进来的内容
+    setLiveDoc(view, "外部写入的内容");
+    expect(view.state.doc.toString()).toBe("外部写入的内容");
+    // 自己的编辑 → 撤销：应回到外部内容，而不是被外部同步顶掉的「初始内容」
+    view.dispatch({ changes: { from: 0, to: 0, insert: "用户-" } });
+    host.querySelector<HTMLElement>(".cm-content")!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe("外部写入的内容");
+    view.destroy();
+  });
 });

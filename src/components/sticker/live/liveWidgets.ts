@@ -1,5 +1,6 @@
 import { EditorView, WidgetType } from "@codemirror/view";
 import type { TransactionSpec } from "@codemirror/state";
+import { redo, undo } from "@codemirror/commands";
 import { renderMarkdown } from "../../../utils/markdown";
 import { htmlToMarkdown, renderMarkdownEditable } from "../../../utils/markdown-editable";
 import { DEFAULT_BLOCK_UI, type BlockUiState } from "../../../utils/block-ui";
@@ -7,6 +8,7 @@ import {
   alignMarker,
   columnAligns,
   columnWidths,
+  escapeCell,
   setColumnWidth,
   setTableCell,
   type TableCellFormat,
@@ -391,14 +393,18 @@ export class TableBlockWidget extends WidgetType {
       if (!view || !wrapper.isConnected) return;
       const pos = widgetPos(view, wrapper);
       if (pos < 0) return;
+      const text = view.state.doc.toString();
       const edit = setTableCell(
-        view.state.doc.toString(),
+        text,
         pos + 1,
         Number(cell.dataset.row ?? 0),
         Number(cell.dataset.col ?? 0),
         cellMarkdown(cell),
       );
       if (!edit) return;
+      // 内容没变就不写回：等文本替换在 CodeMirror 里也会占一步撤销栈，
+      // 会让 Ctrl+Z 的第一次撤销「什么都看不到」（表格操作好像撤销不了）
+      if (text.slice(edit.from, edit.to) === edit.insert) return;
       view.dispatch({
         changes: { from: edit.from, to: edit.to, insert: edit.insert },
         userEvent: "input.table",
@@ -487,12 +493,13 @@ export class TableBlockWidget extends WidgetType {
       }, 0);
     };
 
-    /** Tab / Shift+Tab 在单元格之间移动。 */
-    const moveToSibling = (cell: HTMLTableCellElement, direction: 1 | -1) => {
+    /** Tab / Shift+Tab 在单元格之间移动；返回是否真的移动（末格 / 首格返回 false）。 */
+    const moveToSibling = (cell: HTMLTableCellElement, direction: 1 | -1): boolean => {
       const cells = Array.from(wrapper.querySelectorAll<HTMLTableCellElement>("td, th"));
       const next = cells[cells.indexOf(cell) + direction];
-      if (next) next.focus();
-      else cell.blur();
+      if (!next) return false;
+      next.focus();
+      return true;
     };
 
     /** 普通按下 = 单格光标（格内仍可选字）；Shift+按下 = 从锚点扩展单元格选区。 */
@@ -545,9 +552,72 @@ export class TableBlockWidget extends WidgetType {
       event.clipboardData?.setData("text/plain", text);
     };
 
+    /** 单元格里是否有未提交的输入（DOM 内容与源码不一致）→ Ctrl+Z 先交浏览器原生撤销。 */
+    const cellHasPendingInput = (cell: HTMLTableCellElement): boolean => {
+      const view = viewFromDOM(wrapper);
+      if (!view) return false;
+      const tablePos = widgetPos(view, wrapper);
+      if (tablePos < 0) return false;
+      const text = view.state.doc.toString();
+      const edit = setTableCell(
+        text,
+        tablePos + 1,
+        Number(cell.dataset.row ?? 0),
+        Number(cell.dataset.col ?? 0),
+        cellMarkdown(cell),
+      );
+      if (!edit) return false;
+      // 用规范化后的值比较（空单元格的两侧空格、`\|` 转义差异不算改动）
+      return escapeCell(text.slice(edit.from, edit.to)) !== escapeCell(cellMarkdown(cell));
+    };
+
+    /** Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y：
+     *  表格源码被 widget 整体折叠、焦点在单元格里，CodeMirror 的 historyKeymap 收不到按键，
+     *  所以要显式调用编辑器历史（插行插列、移动行列、对齐、加粗等动作都在同一个历史里）。
+     *  格内还有没提交的字时先撤销 DOM 输入——源码此刻还没变，直接撤销源码会跳到更早的动作。 */
+    const handleHistoryKey = (cell: HTMLTableCellElement, event: KeyboardEvent): boolean => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod || event.altKey) return false;
+      const key = event.key.toLowerCase();
+      if (key !== "z" && key !== "y") return false;
+      const redoAction = key === "y" || event.shiftKey;
+      if (cellHasPendingInput(cell)) {
+        if (typeof document.execCommand !== "function") return false;
+        event.preventDefault();
+        document.execCommand(redoAction ? "redo" : "undo");
+        return true;
+      }
+      // 视图反查：widget 重建后闭包里的 wrapper 可能已脱离文档 → 依次尝试单元格所在表格、
+      // 闭包里的 wrapper、编辑器根元素，任一成功即可
+      const host = cell.closest<HTMLElement>(".live-table-block") ?? wrapper;
+      let view: EditorView | null = null;
+      for (const node of [host, wrapper, document.querySelector<HTMLElement>(".cm-editor")]) {
+        if (!node) continue;
+        view = viewFromDOM(node);
+        if (view) break;
+      }
+      if (!view) return false;
+      const current = selection();
+      const range = current ? tableCellRange(current) : null;
+      const multi = current?.multi ?? false;
+      const index = tableBlockIndexOf(view, host);
+      // 先解除「编辑期间复用 DOM」保护，否则撤销后表格 DOM 不会重建（画面停在旧内容）
+      endTableEditing();
+      // 显式调用编辑器历史：CodeMirror 把重做绑在 Ctrl+Y（Mod-Shift-z 只在 mac 上），
+      // 只靠转发按键在 Windows 上会重做不了
+      const done = redoAction ? redo(view) : undo(view);
+      if (!done) return false; // 没有可撤销的表格动作
+      // 源码已由编辑器历史改写：阻止浏览器再对 contenteditable 做一次原生撤销
+      event.preventDefault();
+      if (range && index >= 0) restoreTableCellSelection(view, index, range, multi);
+      else view.focus();
+      return true;
+    };
+
     const onCellKeyDown = (cell: HTMLTableCellElement, event: KeyboardEvent) => {
       if (event.isComposing) return; // 输入法组词期间不特殊处理
       if (handleFormatKey(cell, event)) return;
+      if (handleHistoryKey(cell, event)) return;
       if (event.key === "Enter") {
         event.preventDefault(); // 单元格内不换行
         commitCell(cell);
@@ -561,7 +631,13 @@ export class TableBlockWidget extends WidgetType {
         cell.blur();
       } else if (event.key === "Tab") {
         event.preventDefault();
-        moveToSibling(cell, event.shiftKey ? -1 : 1);
+        if (moveToSibling(cell, event.shiftKey ? -1 : 1)) return;
+        if (event.shiftKey) return; // 首格 Shift+Tab：没有上一格，保持焦点不动
+        // 末格 Tab（Typora 行为）：末行下方追加一整行（可撤销），焦点落到新行首格
+        const lastRow = { row: table.rows.length - 1, column: 0 };
+        select(lastRow, lastRow, false);
+        runSourceAction((text, tablePos, range) =>
+          buildTableRangeTransaction(text, tablePos, range, "row-below"));
       } else if ((event.key === "Backspace" || event.key === "Delete") && selection()?.multi) {
         event.preventDefault();
         runSourceAction((text, tablePos, range) =>
