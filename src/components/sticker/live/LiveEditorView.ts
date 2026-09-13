@@ -357,6 +357,20 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   });
   view.dom.append(toolbar.dom);
   syncTableToolbar(view, toolbar);
+  // 单元格编辑：工具条按表格 DOM 位置显示（不改编辑器选区，避免抢走单元格焦点）
+  view.dom.addEventListener("focusin", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!toolbar || !target?.closest?.(".live-table-block")) return;
+    syncTableToolbarForElement(view, toolbar, target);
+  });
+  view.dom.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!toolbar || !view.dom.isConnected) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest?.(".live-table-block")) return; // 焦点仍在表格单元格里
+      syncTableToolbar(view, toolbar);
+    }, 0);
+  });
   // 滚动时跟随（rAF 合并高频事件）；视图已销毁则跳过
   let scrollFrame = 0;
   view.scrollDOM.addEventListener("scroll", () => {
@@ -503,6 +517,32 @@ function tableToolbarAnchor(view: EditorView, ctx: TableEditContext): TableToolb
   } catch {
     return null;
   }
+}
+
+/** 工具条更新：单元格获得焦点时按表格 DOM 位置显示（不触碰编辑器选区）。 */
+function syncTableToolbarForElement(
+  view: EditorView,
+  toolbar: TableToolbar,
+  element: HTMLElement,
+): boolean {
+  const block = element.closest<HTMLElement>(".live-table-block");
+  const table = block?.querySelector("table");
+  if (!block || !table || !view.dom.isConnected) return false;
+  let pos = 0;
+  try {
+    pos = view.posAtDOM(block);
+  } catch {
+    return false;
+  }
+  const ctx = resolveTableAround(view.state.doc.toString(), pos + 1);
+  if (!ctx) return false;
+  const editorRect = view.dom.getBoundingClientRect();
+  const tableRect = table.getBoundingClientRect();
+  toolbar.update(ctx, {
+    left: tableRect.left - editorRect.left,
+    top: tableRect.top - editorRect.top - TABLE_TOOLBAR_OFFSET,
+  });
+  return true;
 }
 
 /** 依据光标位置刷新表格工具条：不在表格内即隐藏。 */

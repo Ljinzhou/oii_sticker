@@ -150,8 +150,17 @@ export class TableBlockWidget extends WidgetType {
     return wrapper;
   }
 
-  ignoreEvent() {
-    return false;
+  /** widget 内的事件由 widget 自己处理。
+   *  若交给编辑器（返回 false），mousedown 会被编辑器接管：光标被移到表格前/后并
+   *  preventDefault，单元格永远拿不到焦点（表现为「点不进单元格」）。 */
+  ignoreEvent(_event: Event) {
+    return true;
+  }
+
+  /** 声明 widget 内容可编辑：CodeMirror 仅在此为 true 时不给 widget 根节点设置
+   *  contenteditable="false"（该属性会压制单元格上的 contenteditable）。 */
+  get editable() {
+    return true;
   }
 
   /** 单元格编辑与列宽拖拽（均在 DOM 事件里通过 DOM 反查编辑器，避免持有 stale view）。 */
@@ -189,12 +198,9 @@ export class TableBlockWidget extends WidgetType {
         cell.addEventListener("focus", () => {
           editingTable = widget;
           editingCell = { commit };
-          // 选区移到表格边界：工具条据此显示，且不抢走单元格焦点
-          const view = viewFromDOM(wrapper);
-          const pos = view ? widgetPos(view, wrapper) : -1;
-          if (view && pos >= 0 && view.state.selection.main.head !== pos) {
-            view.dispatch({ selection: { anchor: pos } });
-          }
+          // 注意：这里不能 dispatch 编辑器选区——编辑器写回 DOM 选区会把焦点从
+          // 单元格抢回正文（表现为「点进去立刻又跳出来」）。工具条改由
+          // LiveEditorView 的 focusin 监听按 DOM 位置定位。
         });
         cell.addEventListener("input", () => {
           if (timer) window.clearTimeout(timer);
