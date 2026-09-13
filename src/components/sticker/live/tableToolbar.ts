@@ -112,6 +112,10 @@ export interface TableToolbarAnchor {
 export class TableToolbar {
   readonly dom: HTMLDivElement;
 
+  /** 当前工具条作用的表格在文档中的位置（表格内任意偏移，由调用方在同步时更新）。
+   *  不能依赖编辑器光标：点击单元格不会移动编辑器选区。 */
+  tablePos = -1;
+
   private readonly buttons = new Map<TableToolbarAction, HTMLButtonElement>();
 
   constructor(private readonly onAction: (action: TableToolbarAction) => void) {

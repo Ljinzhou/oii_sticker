@@ -12,6 +12,7 @@ import {
   setLiveLineNumbers,
   setLiveTodoBlocksInView,
   setLiveUiStateInView,
+  flushTableEditing,
 } from "./live/LiveEditorView";
 import type { TodoBlock } from "../../types";
 import type { SlashAnchor } from "../slash/types";
@@ -79,6 +80,8 @@ function scheduleEmit(doc: string) {
 function flush() {
   if (emitTimer) window.clearTimeout(emitTimer);
   emitTimer = undefined;
+  // 单元格内容在离开单元格时才落盘：保存前必须先提交
+  flushTableEditing();
   if (view) {
     const doc = view.state.doc.toString();
     lastEmitted = doc;
@@ -454,6 +457,11 @@ defineExpose({ flush, isDirty });
 .live-host :deep(.live-table-block td:focus),
 .live-host :deep(.live-table-block th:focus) {
   box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.35);
+}
+/* 正在编辑的单元格：焦点宿主始终是编辑器正文，用选区高亮指示编辑目标 */
+.live-host :deep(.live-table-block td.is-editing),
+.live-host :deep(.live-table-block th.is-editing) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.4);
 }
 /* 列宽拖拽手柄（表头单元格右边界） */
 .live-host :deep(.tbl-col-resize) {

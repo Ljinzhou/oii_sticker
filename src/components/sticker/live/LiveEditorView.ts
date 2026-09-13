@@ -319,7 +319,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         { key: "Mod-i", run: (view) => runFormat(view, "*", "*", "input.format.italic") },
         { key: "Mod-Shift-x", run: (view) => runFormat(view, "~~", "~~", "input.format.strike") },
         indentWithTab,
-        { key: "Mod-s", run: () => { opts.onSave(); return true; } },
+        { key: "Mod-s", run: () => { endTableEditing(); opts.onSave(); return true; } },
       ])),
       EditorView.lineWrapping,
       liveTodoBlocksField.init(() => opts.todoBlocks ?? []),
@@ -350,7 +350,9 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   toolbar = new TableToolbar((action) => {
     // 单元格可能正在输入：先把未提交内容落盘，再执行表格级动作
     endTableEditing();
-    const spec = buildTableEditTransaction(view.state.doc.toString(), view.state.selection.main, action);
+    const bar = toolbar;
+    if (!bar || bar.tablePos < 0) return;
+    const spec = buildTableEditTransaction(view.state.doc.toString(), bar.tablePos, action);
     if (!spec) return; // 无实际变化（例如对齐未变）时不打断撤销栈
     view.dispatch(spec);
     view.focus();
@@ -358,6 +360,15 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
   view.dom.append(toolbar.dom);
   syncTableToolbar(view, toolbar);
   // 单元格编辑：工具条按表格 DOM 位置显示（不改编辑器选区，避免抢走单元格焦点）
+  // 鼠标/键盘操作后按 DOM 选区刷新工具条：单元格不获得焦点（焦点宿主是编辑器正文），
+  // 只有选区能指示"正在编辑哪张表"。
+  const syncFromSelection = () => {
+    window.setTimeout(() => {
+      if (toolbar && view.dom.isConnected) syncTableToolbarFromSelection(view, toolbar);
+    }, 0);
+  };
+  view.dom.addEventListener("mouseup", syncFromSelection);
+  view.dom.addEventListener("keyup", syncFromSelection);
   view.dom.addEventListener("focusin", (event) => {
     const target = event.target as HTMLElement | null;
     if (!toolbar || !target?.closest?.(".live-table-block")) return;
@@ -423,6 +434,11 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     }
   });
   return view;
+}
+
+/** 提交正在编辑的表格单元格（保存 / 切换模式前调用，避免未落盘的单元格输入丢失）。 */
+export function flushTableEditing(): void {
+  endTableEditing();
 }
 
 /** 外部内容更新 → 同步进编辑器（最小差异替换，保留光标；组词期间跳过）。 */
@@ -536,6 +552,7 @@ function syncTableToolbarForElement(
   }
   const ctx = resolveTableAround(view.state.doc.toString(), pos + 1);
   if (!ctx) return false;
+  toolbar.tablePos = pos + 1; // 表格级动作据此定位（不依赖编辑器光标）
   const editorRect = view.dom.getBoundingClientRect();
   const tableRect = table.getBoundingClientRect();
   toolbar.update(ctx, {
@@ -545,10 +562,24 @@ function syncTableToolbarForElement(
   return true;
 }
 
+/** 依据 DOM 选区刷新工具条：选区在表格单元格内 → 按表格 DOM 位置显示。 */
+function syncTableToolbarFromSelection(view: EditorView, toolbar: TableToolbar): void {
+  const node = document.getSelection()?.anchorNode ?? null;
+  if (node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node.parentElement;
+    if (element?.closest?.(".live-table-block") && syncTableToolbarForElement(view, toolbar, element)) return;
+  }
+  syncTableToolbar(view, toolbar);
+}
+
 /** 依据光标位置刷新表格工具条：不在表格内即隐藏。 */
 function syncTableToolbar(view: EditorView, toolbar: TableToolbar): void {
   if (!view.dom.isConnected) return;
   // 表格永远渲染（源码被折叠）：用邻位探测识别光标所在的表格
   const ctx = resolveTableAround(view.state.doc.toString(), view.state.selection.main.head);
+  if (ctx) {
+    const line = view.state.doc.line(ctx.startLine + 1);
+    toolbar.tablePos = Math.min(line.from + 1, line.to);
+  }
   toolbar.update(ctx, ctx ? tableToolbarAnchor(view, ctx) : null);
 }

@@ -38,6 +38,7 @@ vi.mock("./live/LiveEditorView", () => ({
   setLiveFontSize: mocks.setLiveFontSize,
   setLiveLineNumbers: mocks.setLiveLineNumbers,
   setLiveTodoBlocksInView: mocks.setLiveTodoBlocksInView,
+  flushTableEditing: vi.fn(),
 }));
 
 function lastOpts() {
