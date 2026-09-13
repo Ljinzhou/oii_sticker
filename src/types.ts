@@ -88,6 +88,35 @@ export interface WorkspaceEntry {
   created_at: string;
 }
 
+/** 备份文件信息（`workspace_inspect_backup_cmd` 返回值）。 */
+export interface BackupInfo {
+  format: number;
+  has_manifest: boolean;
+  name: string;
+  workspace_id: string;
+  created_at: string;
+  /** 备份时刻（Unix 毫秒；旧版备份回退为 zip 文件的修改时间）。 */
+  backup_at_ms: number;
+  app_version: string;
+  schema_version: number;
+  entries: number;
+  bytes: number;
+  zip_bytes: number;
+}
+
+/** 恢复结果（`workspace_restore_cmd` 返回值）。 */
+export interface RestoreOutcome {
+  mode: string;
+  name: string;
+  root: string;
+  entries: number;
+  workspace: WorkspaceEntry | null;
+  /** 覆盖模式的事前完整备份（可据此回退整个恢复）。 */
+  rollback_zip: string | null;
+  /** 覆盖模式旧数据的存放目录（未删除，确认无误后可手动清理）。 */
+  rollback_dir: string | null;
+}
+
 export interface StickerGroup {
   id: number;
   name: string;
