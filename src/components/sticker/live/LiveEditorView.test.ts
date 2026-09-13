@@ -547,7 +547,7 @@ describe("LiveEditorView（CM6 内核）", () => {
     expect((widget as unknown as { editable: boolean }).editable).toBe(true);
   });
 
-  it("表格单元格可直接编辑：编辑期间不写回，回车才落盘", async () => {
+  it("点击单元格弹出编辑框：回车把内容写回 Markdown 源码", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
     const view = createLiveView(host, {
@@ -560,36 +560,27 @@ describe("LiveEditorView（CM6 内核）", () => {
 
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]');
     expect(cell).not.toBeNull();
-    expect(cell!.getAttribute("contenteditable")).toBe("true");
-    // widget 根节点不得是 contenteditable="false"（那会压制单元格可编辑性）
+    // widget 根节点不得是 contenteditable="false"
     expect(host.querySelector(".live-table-block")?.getAttribute("contenteditable")).not.toBe("false");
 
-    // 真实浏览器行为：插入点在单元格内（DOM 选区落在 td 里），input 事件目标是编辑器行元素
-    const putCaretInCell = (target: HTMLElement) => {
-      const range = document.createRange();
-      range.selectNodeContents(target);
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    };
-    const pressEnter = () =>
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    // 点击单元格 → 覆盖式编辑框出现并带入 Markdown 原文
+    cell!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    const input = cell!.querySelector<HTMLInputElement>(".tbl-cell-editor");
+    expect(input).not.toBeNull();
+    expect(input!.value).toBe("苹果");
 
-    // 编辑中：源码保持不变（写回会把编辑器光标同步出单元格，导致只能输入一个字）
-    cell!.textContent = "香蕉";
-    putCaretInCell(cell!);
-    document.dispatchEvent(new Event("input", { bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // 编辑中：源码不变（写回会让编辑器重置 DOM/选区，必须等离开单元格再落盘）
+    input!.value = "香蕉";
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
 
-    // 回车：单元格内容落盘到源码，且表格仍渲染（不回退源码）
-    pressEnter();
+    // 回车 → 落盘
+    input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 香蕉 | 2 |");
-    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    expect(cell!.querySelector(".tbl-cell-editor")).toBeNull();
     view.destroy();
   });
 
-  it("表格单元格：选区离开表格时自动落盘", () => {
+  it("编辑框失焦（点到别处）时自动落盘", () => {
     const host = mountHost();
     const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
     const view = createLiveView(host, {
@@ -600,47 +591,30 @@ describe("LiveEditorView（CM6 内核）", () => {
     });
     view.dispatch({ selection: { anchor: source.length } });
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="1"]')!;
-
-    cell.textContent = "9";
-    const range = document.createRange();
-    range.selectNodeContents(cell);
-    const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    document.dispatchEvent(new Event("input", { bubbles: true }));
-    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
-
-    // 选区移到表格外的正文 → 落盘
-    const body = host.querySelector(".cm-content") ?? host;
-    const outside = document.createRange();
-    outside.selectNodeContents(body);
-    outside.collapse(true);
-    selection?.removeAllRanges();
-    selection?.addRange(outside);
-    document.dispatchEvent(new Event("selectionchange"));
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    const input = cell.querySelector<HTMLInputElement>(".tbl-cell-editor")!;
+    input.value = "9";
+    input.dispatchEvent(new Event("blur"));
     expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 9 |");
     view.destroy();
   });
 
-  it("单元格获得焦点时工具条浮现（按 DOM 定位，不改编辑器选区）", () => {
+  it("编辑框里按 Esc 放弃修改", () => {
     const host = mountHost();
-    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |";
     const view = createLiveView(host, {
       doc: source,
       fontSize: 14,
       onDocChange: () => {},
       onSave: () => {},
     });
-    // 光标停在文档末尾（远离表格）→ 工具条隐藏
     view.dispatch({ selection: { anchor: source.length } });
-    expect(Boolean(host.querySelector<HTMLElement>(".tbl-bar")?.hidden)).toBe(true);
-
-    // 单元格获得焦点 → 工具条浮现；编辑器选区保持不动（否则焦点会被抢回正文）
-    const head = view.state.selection.main.head;
     const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
-    cell.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
-    expect(Boolean(host.querySelector<HTMLElement>(".tbl-bar")?.hidden)).toBe(false);
-    expect(view.state.selection.main.head).toBe(head);
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    const input = cell.querySelector<HTMLInputElement>(".tbl-cell-editor")!;
+    input.value = "不该保存";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
     view.destroy();
   });
 
