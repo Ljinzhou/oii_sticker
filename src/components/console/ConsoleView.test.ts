@@ -263,7 +263,8 @@ describe("ConsoleView", () => {
     await flushPromises();
     const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_create_cmd");
     expect(call).toBeTruthy();
-    expect(call![1]).toEqual({ name: "学习" });
+    // 顶层新建分组：parentId 显式传 null（分组即文件夹，可指定父级成为子分组）
+    expect(call![1]).toEqual({ name: "学习", parentId: null });
     // 新分组出现在分区列表
     const names = wrapper.findAll(".group-head .group-name").map((h) => h.text());
     expect(names).toContain("学习");
