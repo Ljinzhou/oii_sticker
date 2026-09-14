@@ -203,7 +203,7 @@ pub fn builtin_commands() -> Vec<SlashCommand> {
             alias: "table, grid, 表",
             category: "高级",
             hint: "| 列 |",
-            insert: |_| Some("| 列1 | 列2 |\n| --- | --- |\n|  |  |".to_string()),
+            insert: |_| Some("|  |  |\n| --- | --- |\n|  |  |".to_string()),
         },
     ]
 }

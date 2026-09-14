@@ -69,6 +69,8 @@ function setupInvoke(configEntries: Record<string, string> = {}) {
         return Promise.resolve([...db.groups]);
       case "list_open_sticker_ids_cmd":
         return Promise.resolve([...db.openIds]);
+      case "list_all_todos_cmd":
+        return Promise.resolve([]);
       case "get_config_cmd":
         return Promise.resolve({ entries: { ...configEntries } });
       case "set_config_cmd": {
@@ -150,7 +152,7 @@ describe("ConsoleView", () => {
   });
 
   it("视图切换持久化到 system_config（console_group_view）", async () => {    const wrapper = await mountConsole();
-    const btns = wrapper.findAll(".view-switch button");
+    const btns = wrapper.findAll(".list .view-switch button");
     await btns[1]!.trigger("click"); // 平铺
     let call = mocks.invokeMock.mock.calls.find((c) => c[0] === "set_config_cmd");
     expect(call).toBeTruthy();
@@ -163,16 +165,35 @@ describe("ConsoleView", () => {
   it("启动时在设置回读后恢复持久化的视图模式（flat）", async () => {
     setupInvoke({ console_group_view: "flat" });
     const wrapper = await mountConsole();
-    const btns = wrapper.findAll(".view-switch button");
+    const btns = wrapper.findAll(".list .view-switch button");
     expect(btns[1]!.classes()).toContain("on"); // 平铺激活
     expect(btns[0]!.classes()).not.toContain("on");
     // 平铺视图已生效：筛选 chips 可见
     expect(wrapper.find(".filter-chips").exists()).toBe(true);
   });
 
+  it("页面切换：点「任务总览」持久化 console_page 并渲染总览页", async () => {
+    setupInvoke();
+    const wrapper = await mountConsole();
+    const tabs = wrapper.findAll(".page-switch button");
+    await tabs[1]!.trigger("click");
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "set_config_cmd");
+    expect(call).toBeTruthy();
+    expect(call![1]).toMatchObject({ key: "console_page", value: "todos" });
+    expect(wrapper.find(".todo-page").exists()).toBe(true);
+    expect(wrapper.find(".list").exists()).toBe(false);
+  });
+
+  it("启动时恢复持久化的页面（console_page=todos）", async () => {
+    setupInvoke({ console_page: "todos" });
+    const wrapper = await mountConsole();
+    expect(wrapper.findAll(".page-switch button")[1]!.classes()).toContain("on");
+    expect(wrapper.find(".todo-page").exists()).toBe(true);
+  });
+
   it("平铺视图筛选 chips 过滤卡片", async () => {
     const wrapper = await mountConsole();
-    await wrapper.findAll(".view-switch button")[1]!.trigger("click");
+    await wrapper.findAll(".list .view-switch button")[1]!.trigger("click");
     // 全部
     let cards = wrapper.findAll(".cards .card");
     expect(cards).toHaveLength(3);
@@ -242,7 +263,8 @@ describe("ConsoleView", () => {
     await flushPromises();
     const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_create_cmd");
     expect(call).toBeTruthy();
-    expect(call![1]).toEqual({ name: "学习" });
+    // 顶层新建分组：parentId 显式传 null（分组即文件夹，可指定父级成为子分组）
+    expect(call![1]).toEqual({ name: "学习", parentId: null });
     // 新分组出现在分区列表
     const names = wrapper.findAll(".group-head .group-name").map((h) => h.text());
     expect(names).toContain("学习");

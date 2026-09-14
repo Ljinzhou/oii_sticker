@@ -235,235 +235,323 @@ onMounted(async () => {
         class="nav-item"
         :class="{ active: activeMenu === 'general' }"
         @click="activeMenu = 'general'"
-      >通用设置</button>
+      ><i class="ri-settings-3-line"></i><span>通用设置</span></button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'defaults' }"
         @click="activeMenu = 'defaults'"
-      >便签样式</button>
-      <button class="nav-item" :class="{ active: activeMenu === 'todo' }" @click="activeMenu = 'todo'">Todo 设置</button>
+      ><i class="ri-sticky-note-line"></i><span>便签样式</span></button>
+      <button class="nav-item" :class="{ active: activeMenu === 'todo' }" @click="activeMenu = 'todo'">
+        <i class="ri-checkbox-multiple-line"></i><span>Todo 设置</span>
+      </button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'workspace' }"
         @click="activeMenu = 'workspace'"
-      >工作空间</button>
+      ><i class="ri-folder-3-line"></i><span>工作空间</span></button>
       <button
         class="nav-item"
         :class="{ active: activeMenu === 'about' }"
         @click="activeMenu = 'about'"
-      >关于</button>
+      ><i class="ri-information-line"></i><span>关于</span></button>
+      <div class="side-foot">v{{ appVersion }}</div>
     </aside>
 
     <section class="content">
-      <!-- 通用 -->
-      <div v-if="activeMenu === 'general'">
-        <h3>通用</h3>
-        <label class="row">
-          <span>开机自启</span>
-          <input type="checkbox" :checked="autoStart" :disabled="autostartBusy" @change="toggleAutoStart" />
-        </label>
-        <p v-if="autostartError" class="hint error">{{ autostartError }}</p>
-        <label class="row">
-          <span>关闭主控台时</span>
-          <select :value="closeBehavior" @change="(e) => setCloseBehavior((e.target as HTMLSelectElement).value)">
-            <option value="hide">隐藏到系统托盘</option>
-            <option value="quit">退出程序</option>
-          </select>
-        </label>
-        <label class="row">
-          <span>主控台背景透明度</span>
-          <input
-            type="range"
-            min="30"
-            max="100"
-            :value="Number(settings.get('console_bg_opacity', '94'))"
-            @input="(e) => settings.set('console_bg_opacity', (e.target as HTMLInputElement).value)"
-          />
-          <span class="console-opacity-val">{{ Math.round(Number(settings.get('console_bg_opacity', '94'))) }}%</span>
-        </label>
-        <label class="row">
-          <span>交互模式自动收起（秒）</span>
-          <input
-            type="number"
-            min="1"
-            max="60"
-            :value="settings.get('auto_collapse_secs', '5')"
-            @change="(e) => settings.set('auto_collapse_secs', (e.target as HTMLInputElement).value)"
-          />
-        </label>
-        <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
-        <p class="hint">点击主控台右上角「关闭」按钮时的行为（隐藏后可从托盘图标恢复）。</p>
-      </div>
+      <div class="pane">
+        <!-- 通用 -->
+        <template v-if="activeMenu === 'general'">
+          <header class="pane-head">
+            <h3>通用</h3>
+            <p class="pane-sub">启动、窗口与主控台行为</p>
+          </header>
+          <div class="stack">
+            <section class="group">
+              <div class="gtitle">启动与退出</div>
+              <label class="row">
+                <span>开机自启</span>
+                <input type="checkbox" :checked="autoStart" :disabled="autostartBusy" @change="toggleAutoStart" />
+              </label>
+              <p class="hint">登录系统后自动启动并显示便签。</p>
+              <p v-if="autostartError" class="hint error">{{ autostartError }}</p>
+              <label class="row">
+                <span>关闭主控台时</span>
+                <select :value="closeBehavior" @change="(e) => setCloseBehavior((e.target as HTMLSelectElement).value)">
+                  <option value="hide">隐藏到系统托盘</option>
+                  <option value="quit">退出程序</option>
+                </select>
+              </label>
+              <p class="hint">点击主控台右上角「关闭」按钮时的行为（隐藏后可从托盘图标恢复）。</p>
+            </section>
 
-      <!-- 便签默认 -->
-      <div v-else-if="activeMenu === 'defaults'">
-        <h3>新建便签默认偏好</h3>
-        <label class="row">
-          <span>背景透明度</span>
-          <input
-            type="range"
-            min="15"
-            max="100"
-            :value="Math.round(settings.opacity * 100)"
-            @change="(e) => settings.set('default_sticker_opacity', String(Number((e.target as HTMLInputElement).value) / 100))"
-          />
-        </label>
-        <label class="row">
-          <span>背景颜色</span>
-          <input type="color" :value="settings.bgColor" @change="(e) => settings.set('default_sticker_bg_color', (e.target as HTMLInputElement).value)" />
-        </label>
-        <label class="row">
-          <span>正文字号</span>
-          <input
-            type="number"
-            min="9"
-            max="28"
-            :value="settings.bodyFontSize"
-            @change="(e) => settings.set('default_sticker_body_font_size', (e.target as HTMLInputElement).value)"
-          />
-        </label>
-        <label class="row">
-          <span>编辑模式字号</span>
-          <input
-            type="number"
-            min="10"
-            max="36"
-            :value="settings.get('edit_font_size', '14')"
-            @change="(e) => settings.set('edit_font_size', (e.target as HTMLInputElement).value)"
-          />
-        </label>
-        <label class="row">
-          <span>编辑模式字体</span>
-          <select
-            :value="settings.get('edit_font_family', 'Microsoft YaHei')"
-            @change="(e) => settings.set('edit_font_family', (e.target as HTMLSelectElement).value)"
-          >
-            <option
-              v-if="!FONT_OPTIONS.some((f) => f.value === settings.get('edit_font_family', 'Microsoft YaHei'))"
-              :value="settings.get('edit_font_family', 'Microsoft YaHei')"
-            >当前：{{ settings.get('edit_font_family', 'Microsoft YaHei') }}</option>
-            <option v-for="f in FONT_OPTIONS" :key="f.value" :value="f.value">{{ f.label }}</option>
-          </select>
-        </label>
-        <label class="row">
-          <span>编辑模式显示行号（及时预览 / Markdown）</span>
-          <input
-            type="checkbox"
-            :checked="settings.get('editor_line_numbers', '1') === '1'"
-            @change="(e) => settings.set('editor_line_numbers', (e.target as HTMLInputElement).checked ? '1' : '0')"
-          />
-        </label>
-        <label class="row">
-          <span>编辑模式默认形态</span>
-          <select :value="settings.get('editor_mode', 'markdown')" @change="(e) => settings.set('editor_mode', (e.target as HTMLSelectElement).value)">
-            <option value="markdown">Markdown（原生文本）</option>
-            <option value="live">及时预览（渲染即编辑）</option>
-          </select>
-        </label>
-      </div>
+            <section class="group">
+              <div class="gtitle">主控台</div>
+              <label class="row">
+                <span>背景透明度</span>
+                <input
+                  type="range"
+                  min="30"
+                  max="100"
+                  :value="Number(settings.get('console_bg_opacity', '94'))"
+                  @input="(e) => settings.set('console_bg_opacity', (e.target as HTMLInputElement).value)"
+                />
+                <span class="console-opacity-val">{{ Math.round(Number(settings.get('console_bg_opacity', '94'))) }}%</span>
+              </label>
+              <label class="row">
+                <span>交互模式自动收起（秒）</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="60"
+                  :value="settings.get('auto_collapse_secs', '5')"
+                  @change="(e) => settings.set('auto_collapse_secs', (e.target as HTMLInputElement).value)"
+                />
+              </label>
+              <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
+            </section>
 
-      <div v-else-if="activeMenu === 'todo'">
-        <h3>Todo 设置</h3>
-        <label class="row">
-          <span>Todo 窗口默认置顶</span>
-          <input
-            type="checkbox"
-            :checked="settings.get('default_todo_always_on_top', '1') === '1'"
-            @change="(e) => settings.set('default_todo_always_on_top', (e.target as HTMLInputElement).checked ? '1' : '0')"
-          />
-        </label>
-        <TodoPresetsManager kind="reminders" title="提醒时间预设" hint="用于 Todo 详情「提醒时间」行" />
-        <TodoPresetsManager kind="due" title="截至时间预设" hint="用于 Todo 详情「截至时间」行" />
-        <TodoPresetsManager kind="repeats" title="重复预设" hint="驱动每日自动重建与逾期改名" />
-      </div>
-
-      <!-- 工作空间 -->
-      <div v-else-if="activeMenu === 'workspace'">
-        <WorkspaceManager />
-      </div>
-
-      <!-- 关于 -->
-      <div v-else-if="activeMenu === 'about'">
-        <h3>关于</h3>
-
-        <h4 class="about-sec">基本信息</h4>
-        <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v{{ appVersion }}</span></p>
-
-        <h4 class="about-sec">更新检查</h4>
-        <div class="about-actions">
-          <!-- 主按钮：随更新状态机变形 -->
-          <button
-            v-if="upPhase === 'available'"
-            class="btn primary"
-            @click="startUpgrade"
-          >
-            <i class="ri-download-cloud-2-line"></i>升级到 v{{ upVersion }}
-          </button>
-          <button
-            v-else-if="upPhase === 'downloading'"
-            class="btn"
-            disabled
-          >
-            <i class="ri-loader-4-line ri-spin"></i>{{ upRetrying ? "切换镜像重试中…" : "下载更新中…" }}{{ upProgressPct !== null ? ` ${upProgressPct}%` : "" }}
-          </button>
-          <button
-            v-else-if="upPhase === 'installing'"
-            class="btn"
-            disabled
-          >
-            <i class="ri-loader-4-line ri-spin"></i>正在安装…
-          </button>
-          <button
-            v-else-if="upPhase === 'restarting'"
-            class="btn"
-            disabled
-          >
-            <i class="ri-restart-line"></i>即将重启…
-          </button>
-          <button
-            v-else
-            class="btn"
-            :disabled="checkingUpdate || upPhase === 'checking'"
-            @click="checkUpdate"
-          >
-            <i class="ri-refresh-line"></i>{{ checkingUpdate || upPhase === "checking" ? "检查中…" : "检查更新" }}
-          </button>
-          <!-- 失败时的手动兜底 -->
-          <button v-if="upPhase === 'failed'" class="btn" @click="openReleases">
-            <i class="ri-external-link-line"></i>打开发布页手动下载
-          </button>
-          <button class="btn" @click="openLink('https://github.com/Ljinzhou/oii_sticker/releases')">
-            <i class="ri-download-2-line"></i>查看仓库 / 下载
-          </button>
-        </div>
-        <p
-          v-if="upPhase === 'downloading' && updateResult === ''"
-          class="result"
-        >{{ upRetrying ? "网络不稳定，已自动切换到更快的镜像继续。" : "正在通过最快的镜像下载更新包…" }}</p>
-        <p v-if="updateResult" class="result" :class="{ error: updateError }">{{ updateResult }}</p>
-
-        <!-- 更新日志 + 整体进度条（方向 A：贴合现状） -->
-        <div class="update-panel">
-          <div class="up-bar"><i :class="{ busy: upBarWidth === null && upPhase === 'checking' }" :style="upBarWidth !== null ? { width: upBarWidth + '%' } : {}"></i></div>
-          <div class="up-meta"><span>{{ updateStage }}</span><span v-if="upBarWidth !== null">{{ upBarWidth }}%</span></div>
-          <div class="up-log" ref="upLogEl">
-            <p v-if="upLogs.length === 0" class="l-t0">等待操作：点击「检查更新」查看连接检查、镜像选择与下载日志。</p>
-            <div v-for="(l, i) in upLogs" :key="i" :class="'l-' + l.level">{{ l.text }}</div>
+            <section class="group">
+              <div class="gtitle">便签窗口</div>
+              <label class="row">
+                <span>便签隐藏任务栏窗口</span>
+                <input
+                  type="checkbox"
+                  :checked="settings.hideStickerFromTaskbar"
+                  @change="(e) => settings.set('default_sticker_skip_taskbar', (e.target as HTMLInputElement).checked ? '1' : '0')"
+                />
+              </label>
+              <p class="hint">关闭后便签窗口会出现在任务栏（默认开启）。</p>
+              <label class="row">
+                <span>编辑模式隐藏任务栏窗口</span>
+                <input
+                  type="checkbox"
+                  :checked="settings.editModeHideTaskbar"
+                  @change="(e) => settings.set('edit_mode_skip_taskbar', (e.target as HTMLInputElement).checked ? '1' : '0')"
+                />
+              </label>
+              <p class="hint">默认关闭：进入编辑模式时便签临时显示在任务栏并取消置顶，恢复展示模式后还原。</p>
+            </section>
           </div>
-        </div>
+        </template>
 
-        <h4 class="about-sec">开源许可</h4>
-        <p class="about-line">本软件遵循 GPL v3 许可分发。</p>
+        <!-- 便签默认 -->
+        <template v-else-if="activeMenu === 'defaults'">
+          <header class="pane-head">
+            <h3>便签样式</h3>
+            <p class="pane-sub">新建便签的默认外观与编辑模式</p>
+          </header>
+          <div class="stack">
+            <section class="group">
+              <div class="gtitle">外观</div>
+              <label class="row">
+                <span>背景透明度</span>
+                <input
+                  type="range"
+                  min="15"
+                  max="100"
+                  :value="Math.round(settings.opacity * 100)"
+                  @change="(e) => settings.set('default_sticker_opacity', String(Number((e.target as HTMLInputElement).value) / 100))"
+                />
+              </label>
+              <label class="row">
+                <span>背景颜色</span>
+                <input type="color" :value="settings.bgColor" @change="(e) => settings.set('default_sticker_bg_color', (e.target as HTMLInputElement).value)" />
+              </label>
+              <label class="row">
+                <span>正文字号</span>
+                <input
+                  type="number"
+                  min="9"
+                  max="28"
+                  :value="settings.bodyFontSize"
+                  @change="(e) => settings.set('default_sticker_body_font_size', (e.target as HTMLInputElement).value)"
+                />
+              </label>
+            </section>
 
-        <h4 class="about-sec">作者</h4>
-        <p class="about-line">李jinzhou（Ljinzhou）</p>
-        <p class="about-line">当前Tokens充足，身份为“天才程序员”！</p>
-        <p class="about-line"><button class="link-btn" @click="openLink('https://github.com/Ljinzhou')"><i class="ri-github-fill"></i>GitHub</button></p>
-        <p class="about-line">邮箱：<span class="copy-mail">771625807@qq.com</span></p>
+            <section class="group">
+              <div class="gtitle">编辑模式</div>
+              <label class="row">
+                <span>正文字号</span>
+                <input
+                  type="number"
+                  min="10"
+                  max="36"
+                  :value="settings.get('edit_font_size', '14')"
+                  @change="(e) => settings.set('edit_font_size', (e.target as HTMLInputElement).value)"
+                />
+              </label>
+              <label class="row">
+                <span>字体</span>
+                <select
+                  :value="settings.get('edit_font_family', 'Microsoft YaHei')"
+                  @change="(e) => settings.set('edit_font_family', (e.target as HTMLSelectElement).value)"
+                >
+                  <option
+                    v-if="!FONT_OPTIONS.some((f) => f.value === settings.get('edit_font_family', 'Microsoft YaHei'))"
+                    :value="settings.get('edit_font_family', 'Microsoft YaHei')"
+                  >当前：{{ settings.get('edit_font_family', 'Microsoft YaHei') }}</option>
+                  <option v-for="f in FONT_OPTIONS" :key="f.value" :value="f.value">{{ f.label }}</option>
+                </select>
+              </label>
+              <label class="row">
+                <span>显示行号</span>
+                <input
+                  type="checkbox"
+                  :checked="settings.get('editor_line_numbers', '1') === '1'"
+                  @change="(e) => settings.set('editor_line_numbers', (e.target as HTMLInputElement).checked ? '1' : '0')"
+                />
+              </label>
+              <p class="hint">及时预览 / Markdown 两种编辑模式共用该开关。</p>
+              <label class="row">
+                <span>默认编辑形态</span>
+                <select :value="settings.get('editor_mode', 'markdown')" @change="(e) => settings.set('editor_mode', (e.target as HTMLSelectElement).value)">
+                  <option value="markdown">Markdown（原生文本）</option>
+                  <option value="live">及时预览（渲染即编辑）</option>
+                </select>
+              </label>
+            </section>
+          </div>
+        </template>
 
-        <h4 class="about-sec">致谢</h4>
-        <p class="about-line">感谢DeepSeek的惊人智慧，贡献了本项目99.99%的代码</p>
-        <img class="about-credit" src="/thanks-deepseek.png" alt="感谢蓝色大肥鱼" />
+        <template v-else-if="activeMenu === 'todo'">
+          <header class="pane-head">
+            <h3>Todo 设置</h3>
+            <p class="pane-sub">任务窗口行为与预设</p>
+          </header>
+          <div class="stack">
+            <section class="group">
+              <div class="gtitle">窗口</div>
+              <label class="row">
+                <span>Todo 窗口默认置顶</span>
+                <input
+                  type="checkbox"
+                  :checked="settings.get('default_todo_always_on_top', '1') === '1'"
+                  @change="(e) => settings.set('default_todo_always_on_top', (e.target as HTMLInputElement).checked ? '1' : '0')"
+                />
+              </label>
+              <p class="hint">新建任务窗口是否默认保持在其他窗口之上。</p>
+            </section>
+
+            <section class="group">
+              <div class="gtitle">预设</div>
+              <TodoPresetsManager kind="reminders" title="提醒时间预设" hint="用于 Todo 详情「提醒时间」行" />
+              <TodoPresetsManager kind="due" title="截至时间预设" hint="用于 Todo 详情「截至时间」行" />
+              <TodoPresetsManager kind="repeats" title="重复预设" hint="驱动每日自动重建与逾期改名" />
+            </section>
+          </div>
+        </template>
+
+        <!-- 工作空间 -->
+        <template v-else-if="activeMenu === 'workspace'">
+          <header class="pane-head">
+            <h3>工作空间</h3>
+            <p class="pane-sub">数据目录、备份与恢复</p>
+          </header>
+          <div class="stack">
+            <section class="group workspace-group">
+              <WorkspaceManager />
+            </section>
+          </div>
+        </template>
+
+        <!-- 关于 -->
+        <template v-else-if="activeMenu === 'about'">
+          <header class="pane-head">
+            <h3>关于</h3>
+            <p class="pane-sub">版本信息与更新</p>
+          </header>
+          <div class="stack">
+            <section class="group">
+              <div class="gtitle">基本信息</div>
+              <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v{{ appVersion }}</span></p>
+            </section>
+
+            <section class="group">
+              <div class="gtitle">更新检查</div>
+              <div class="about-actions">
+                <!-- 主按钮：随更新状态机变形 -->
+                <button
+                  v-if="upPhase === 'available'"
+                  class="btn primary"
+                  @click="startUpgrade"
+                >
+                  <i class="ri-download-cloud-2-line"></i>升级到 v{{ upVersion }}
+                </button>
+                <button
+                  v-else-if="upPhase === 'downloading'"
+                  class="btn"
+                  disabled
+                >
+                  <i class="ri-loader-4-line ri-spin"></i>{{ upRetrying ? "切换镜像重试中…" : "下载更新中…" }}{{ upProgressPct !== null ? ` ${upProgressPct}%` : "" }}
+                </button>
+                <button
+                  v-else-if="upPhase === 'installing'"
+                  class="btn"
+                  disabled
+                >
+                  <i class="ri-loader-4-line ri-spin"></i>正在安装…
+                </button>
+                <button
+                  v-else-if="upPhase === 'restarting'"
+                  class="btn"
+                  disabled
+                >
+                  <i class="ri-restart-line"></i>即将重启…
+                </button>
+                <button
+                  v-else
+                  class="btn"
+                  :disabled="checkingUpdate || upPhase === 'checking'"
+                  @click="checkUpdate"
+                >
+                  <i class="ri-refresh-line"></i>{{ checkingUpdate || upPhase === "checking" ? "检查中…" : "检查更新" }}
+                </button>
+                <!-- 失败时的手动兜底 -->
+                <button v-if="upPhase === 'failed'" class="btn" @click="openReleases">
+                  <i class="ri-external-link-line"></i>打开发布页手动下载
+                </button>
+                <button class="btn" @click="openLink('https://github.com/Ljinzhou/oii_sticker/releases')">
+                  <i class="ri-download-2-line"></i>查看仓库 / 下载
+                </button>
+              </div>
+              <p
+                v-if="upPhase === 'downloading' && updateResult === ''"
+                class="result"
+              >{{ upRetrying ? "网络不稳定，已自动切换到更快的镜像继续。" : "正在通过最快的镜像下载更新包…" }}</p>
+              <p v-if="updateResult" class="result" :class="{ error: updateError }">{{ updateResult }}</p>
+
+              <!-- 更新日志 + 整体进度条（方向 A：贴合现状） -->
+              <div class="update-panel">
+                <div class="up-bar"><i :class="{ busy: upBarWidth === null && upPhase === 'checking' }" :style="upBarWidth !== null ? { width: upBarWidth + '%' } : {}"></i></div>
+                <div class="up-meta"><span>{{ updateStage }}</span><span v-if="upBarWidth !== null">{{ upBarWidth }}%</span></div>
+                <div class="up-log" ref="upLogEl">
+                  <p v-if="upLogs.length === 0" class="l-t0">等待操作：点击「检查更新」查看连接检查、镜像选择与下载日志。</p>
+                  <div v-for="(l, i) in upLogs" :key="i" :class="'l-' + l.level">{{ l.text }}</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="group">
+              <div class="gtitle">开源许可</div>
+              <p class="about-line">本软件遵循 GPL v3 许可分发。</p>
+            </section>
+
+            <section class="group">
+              <div class="gtitle">作者</div>
+              <p class="about-line">李jinzhou（Ljinzhou）</p>
+              <p class="about-line">当前Tokens充足，身份为“天才程序员”！</p>
+              <p class="about-line"><button class="link-btn" @click="openLink('https://github.com/Ljinzhou')"><i class="ri-github-fill"></i>GitHub</button></p>
+              <p class="about-line">邮箱：<span class="copy-mail">771625807@qq.com</span></p>
+            </section>
+
+            <section class="group">
+              <div class="gtitle">致谢</div>
+              <p class="about-line">感谢DeepSeek的惊人智慧，贡献了本项目99.99%的代码</p>
+              <img class="about-credit" src="/thanks-deepseek.png" alt="感谢蓝色大肥鱼" />
+            </section>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -474,12 +562,13 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* ── 页面骨架：左导航 + 右内容（内容限宽，最大化时不再拉满） ── */
 .settings-page {
   position: absolute;
   inset: 0;
   background: rgba(255, 255, 255, 0.97);
   display: grid;
-  grid-template-columns: 180px 1fr;
+  grid-template-columns: 196px 1fr;
   grid-template-rows: 1fr auto;
   z-index: 30;
 }
@@ -498,94 +587,246 @@ onMounted(async () => {
 
 .nav {
   grid-row: 1;
-  border-right: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 16px 10px;
+  border-right: 1px solid rgba(0, 0, 0, 0.07);
+  padding: 26px 10px 12px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: rgba(248, 249, 251, 0.9);
+  gap: 2px;
+  background: rgba(250, 248, 243, 0.92);
 }
 
 .page-title {
-  margin: 0 0 10px 8px;
-  font-size: 15px;
-  color: #333;
+  margin: 0 0 10px 10px;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  color: #9aa0a8;
+  font-weight: 600;
 }
 
 .nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
   border: none;
   background: none;
   text-align: left;
-  padding: 9px 12px;
+  padding: 8px 10px;
   border-radius: 8px;
   font-size: 13px;
-  color: #555;
+  color: #666c74;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.nav-item i {
+  font-size: 15px;
+  line-height: 1;
+  color: #9aa0a8;
 }
 
 .nav-item:hover {
-  background: rgba(0, 0, 0, 0.05);
+  background: rgba(0, 0, 0, 0.04);
 }
 
 .nav-item.active {
-  background: rgba(79, 124, 255, 0.12);
-  color: #4f7cff;
+  background: rgba(79, 124, 255, 0.10);
+  color: #2c4fb5;
   font-weight: 600;
+}
+
+.nav-item.active i {
+  color: #4f7cff;
+}
+
+/* 选中项左侧色条 */
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #4f7cff;
+}
+
+.side-foot {
+  margin-top: auto;
+  padding: 10px 10px 2px;
+  font-size: 11px;
+  color: #9aa0a8;
+  border-top: 1px dashed rgba(0, 0, 0, 0.07);
 }
 
 .content {
   grid-row: 1;
-  padding: 18px 22px;
   overflow-y: auto;
+  padding: 24px 28px 26px;
+}
+
+/* 关键：内容限宽，最大化窗口时右侧留白，不再整行拉满 */
+.pane {
+  max-width: 720px;
+}
+
+.pane-head {
+  margin-bottom: 14px;
+}
+
+.pane-sub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: #9aa0a8;
+}
+
+.stack {
+  display: grid;
+  gap: 14px;
+}
+
+/* 设置分组卡片 */
+.group {
+  border: 1px solid rgba(0, 0, 0, 0.09);
+  border-radius: 11px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.gtitle {
+  padding: 9px 14px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: #9aa0a8;
+  background: linear-gradient(#fbf7ec, rgba(251, 247, 236, 0.4));
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* 工作空间分类：整块面板塞进卡片里，去掉它自带的外边距 */
+.workspace-group {
+  padding: 12px 14px 14px;
 }
 
 h3 {
-  margin: 0 0 12px;
-  font-size: 14px;
-  color: #333;
+  margin: 0;
+  font-size: 16px;
+  color: #2f3338;
 }
 
 .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 0;
+  gap: 12px;
+  padding: 11px 14px 2px;
   font-size: 13px;
   color: #444;
-  max-width: 420px;
+}
+
+/* 行内 hint 紧贴上一行（同一设置项的说明） */
+.group > .hint {
+  padding: 0 14px 11px;
+  margin: 0;
+}
+
+.row + .hint {
+  padding-top: 2px;
+}
+
+.row:last-child,
+.group > .row:not(:has(+ .hint)) {
+  padding-bottom: 11px;
 }
 
 .row input[type="range"] {
-  width: 180px;
+  width: 168px;
   accent-color: #4f7cff;
 }
 
 .row select {
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 13px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  background: #fff;
+  color: #2f3338;
+  font-family: inherit;
 }
 
 .row input[type="number"] {
-  width: 64px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 6px;
-  padding: 4px 6px;
+  width: 72px;
+  text-align: center;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  font-family: inherit;
 }
 
 .row input[type="text"] {
   width: 180px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 13px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+}
+
+.row input[type="color"] {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* 开关：原生 checkbox 改造（保持元素与事件不变，纯样式） */
+.row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  margin: 0;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.16);
+  position: relative;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.row input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 160ms ease;
+}
+
+.row input[type="checkbox"]:checked {
+  background: #4f7cff;
+}
+
+.row input[type="checkbox"]:checked::after {
+  transform: translateX(18px);
+}
+
+.row input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .hint {
-  font-size: 12px;
-  color: #999;
+  font-size: 11.5px;
+  color: #9aa0a8;
   margin: 6px 0 0;
+  line-height: 1.6;
 }
 
 .hint.error {
@@ -616,18 +857,15 @@ h3 {
   font-size: 13px;
   color: #555;
   margin: 6px 0;
+  padding: 0 14px;
 }
 
-.about-sec {
-  margin: 16px 0 8px;
-  font-size: 13px;
-  color: #888;
-  font-weight: 600;
-  text-transform: none;
+.group > .about-line:first-of-type {
+  padding-top: 12px;
 }
 
-.about-sec:first-of-type {
-  margin-top: 4px;
+.group > .about-line:last-of-type {
+  padding-bottom: 12px;
 }
 
 .badge {
@@ -645,6 +883,7 @@ h3 {
   flex-wrap: wrap;
   gap: 8px;
   margin: 4px 0;
+  padding: 8px 14px 0;
 }
 
 .about-actions .btn:disabled {
@@ -679,9 +918,9 @@ h3 {
 }
 
 .about-credit {
-  margin-top: 10px;
+  margin: 0 14px 12px;
   max-width: 260px;
-  width: 100%;
+  width: calc(100% - 28px);
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
@@ -690,6 +929,7 @@ h3 {
   font-size: 12px;
   color: #2e7d32;
   margin: 6px 0;
+  padding: 0 14px;
 }
 
 .result.error {
@@ -702,11 +942,12 @@ h3 {
   text-align: right;
   font-size: 12px;
   color: #666;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 更新日志 + 进度条（方向 A：贴合现状） */
 .update-panel {
-  margin-top: 10px;
+  margin: 10px 14px 14px;
   padding: 10px 12px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -770,5 +1011,32 @@ h3 {
   justify-content: flex-end;
   padding: 10px 18px;
   border-top: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* ── 窄窗口降级：导航折到顶部，内容单列 ── */
+@media (max-width: 820px) {
+  .settings-page {
+    grid-template-columns: 1fr;
+  }
+  .nav {
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 24px 10px 8px;
+    border-right: none;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.07);
+    overflow-x: auto;
+  }
+  .page-title,
+  .side-foot {
+    display: none;
+  }
+  .nav-item.active::before {
+    display: none;
+  }
+  .content {
+    padding: 14px 16px 20px;
+  }
 }
 </style>

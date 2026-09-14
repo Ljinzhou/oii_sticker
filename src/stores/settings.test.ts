@@ -57,3 +57,22 @@ describe("settings store todoPresets", () => {
     expect(store.todoPresets.repeats[0].name).toBe("每天两次");
   });
 });
+
+describe("settings store 任务栏隐藏 getter", () => {
+  it("配置缺失时默认：隐藏便签任务栏=是，编辑模式隐藏=否", async () => {
+    const store = useSettingsStore();
+    await store.refresh(); // entries: {}
+    expect(store.hideStickerFromTaskbar).toBe(true);
+    expect(store.editModeHideTaskbar).toBe(false);
+  });
+
+  it("按配置值返回两个开关状态", async () => {
+    invokeMock.mockResolvedValue({
+      entries: { default_sticker_skip_taskbar: "0", edit_mode_skip_taskbar: "1" },
+    });
+    const store = useSettingsStore();
+    await store.refresh();
+    expect(store.hideStickerFromTaskbar).toBe(false);
+    expect(store.editModeHideTaskbar).toBe(true);
+  });
+});

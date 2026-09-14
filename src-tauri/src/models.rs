@@ -29,6 +29,10 @@ pub struct Sticker {
     pub is_completed: bool,
     /// 所属分组 id；NULL 表示未分组（v12；无内置默认分组）。
     pub group_id: Option<i64>,
+    /// 8 位短随机 id（v19）：只用于程序内部（窗口标识 / assets 目录 / 跨工作空间合并时避免撞号）。
+    pub uid: Option<String>,
+    /// 该便签 md 文件相对 `stickers/` 的路径（v19；NULL = 尚未落定，按「分组路径/标题.md」派生）。
+    pub file_name: Option<String>,
     /// 窗口模式字符串（"display"/"interact"/"edit"），落库持久化；
     /// 类型安全访问用 [`Sticker::mode`]。
     pub display_mode: String,
@@ -38,13 +42,17 @@ pub struct Sticker {
     pub updated_at: String,
 }
 
-/// 便签分组。
+/// 便签分组（类文件夹：支持无限层级与颜色）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StickerGroup {
     pub id: i64,
     pub name: String,
     pub sort_order: i64,
     pub created_at: String,
+    /// 父分组 id；NULL = 顶层分组（v19）。
+    pub parent_id: Option<i64>,
+    /// 分组颜色（#RRGGBB）；NULL = 无颜色（v19）。
+    pub color: Option<String>,
 }
 
 /// 便签窗口模式（对应 DB `display_mode` 列）。
@@ -204,6 +212,39 @@ pub struct TodoPatch {
     pub reminder_at: Option<String>,
     pub due_at: Option<String>,
     pub repeat_rule: Option<String>,
+}
+
+/// 跨便签 Todo 聚合查询过滤条件（全部可选；不传 = 列出全部含已完成）。
+/// 供主控台「任务总览」页与 AI 工具层共用（见 05-data-and-ipc.md）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TodoQueryFilter {
+    /// 精确匹配完成态（None = 全部）。
+    pub completed: Option<bool>,
+    /// 截止时间区间（UTC ISO 字符串，与 todo_blocks 存储格式一致）。
+    pub due_before: Option<String>,
+    pub due_after: Option<String>,
+    /// 提醒时间区间（UTC ISO 字符串）。
+    pub remind_before: Option<String>,
+    pub remind_after: Option<String>,
+    /// 标题关键字（子串匹配，不区分大小写）。
+    pub keyword: Option<String>,
+}
+
+/// 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题与所属 todo 块（JOIN stickers / todo_blocks）。
+///
+/// 一个便签可含多个 todo 块（第 0 层容器，父任务与子任务挂在块下），
+/// `owner_block_*` 供任务总览页按「便签 → 块 → 任务」三层区分展示；
+/// 命名带 `owner_` 前缀以避开 TodoBlock 自身的 `block_title`（任务自身的卡头标题）。
+/// 前端对应类型：`src/types.ts` 的 `TodoBlockWithSticker`（手工保持一致）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoBlockWithSticker {
+    #[serde(flatten)]
+    pub block: TodoBlock,
+    pub sticker_title: String,
+    /// 所属 todo 块 id（第 0 层容器）。
+    pub owner_block_id: String,
+    /// 所属 todo 块标题（块自身 `block_title`，空串 = 未命名块）。
+    pub owner_block_title: String,
 }
 
 /// `system_config` 表条目。

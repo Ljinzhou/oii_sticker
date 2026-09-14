@@ -13,6 +13,7 @@
 //  - 组词期间（view.composing）直接跳过外部同步——此时几乎必然是自己
 //    回写的 echo，真正的外部更新等组词结束后的下一次同步自然生效。
 import type { EditorView } from "@codemirror/view";
+import { Transaction } from "@codemirror/state";
 
 /** 用最小差异把外部文本同步进编辑器；内容相同或正在组词时跳过。 */
 export function applyExternalDoc(view: EditorView, doc: string): void {
@@ -39,5 +40,8 @@ export function applyExternalDoc(view: EditorView, doc: string): void {
 
   view.dispatch({
     changes: { from: start, to: endCurrent, insert: doc.slice(start, endNext) },
+    // 外部同步（别的窗口/数据层写进来的内容）不进撤销栈：
+    // 否则 Ctrl+Z 会先退回这些中间态，而不是用户自己的表格动作
+    annotations: Transaction.addToHistory.of(false),
   });
 }

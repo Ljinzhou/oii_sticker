@@ -179,6 +179,20 @@ impl AppState {
         Ok(())
     }
 
+    /// 释放数据库文件占用：把连接换成内存库（覆盖式恢复数据前必须调用——
+    /// Windows 上 index.db 仍被占用时无法替换数据文件）。恢复完成后用 `switch_db` 重开。
+    pub fn release_db(&self) -> Result<()> {
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("数据库连接锁中毒"))?;
+        let memory = Connection::open_in_memory()
+            .map_err(|e| anyhow::anyhow!("创建临时内存库失败: {e}"))?;
+        let _ = memory.execute_batch("PRAGMA foreign_keys = ON;");
+        *guard = memory;
+        Ok(())
+    }
+
     /// 重新加载 system_config 快照（配置变更后调用）。
     pub fn refresh_config(&self) -> Result<()> {
         let cfg = self.with_conn(crate::db::config_repo::load_all)?;

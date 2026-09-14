@@ -134,6 +134,18 @@ mod tests {
         assert!(ids("BT").contains(&"heading1"));
     }
 
+    /// 「表格」插入模板：2×2 空表格（表头也留空，连字符分隔行保底）。
+    #[test]
+    fn table_template_is_blank_2x2() {
+        let all = builtin_commands();
+        let table = all
+            .iter()
+            .find(|c| c.id == "table")
+            .expect("内置命令应包含 table");
+        let text = (table.insert)("").expect("表格命令应有插入模板");
+        assert_eq!(text, "|  |  |\n| --- | --- |\n|  |  |");
+    }
+
     /// 命令表 id 唯一且字段非空（接口完整性）。
     #[test]
     fn command_table_integrity() {

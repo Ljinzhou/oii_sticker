@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -512,11 +512,64 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
         migrate_v17_to_v18(conn)?;
     }
 
+    if current < 19 {
+        migrate_v18_to_v19(conn)?;
+    }
+
     // 升级完成后把 user_version 写到位。
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .context("更新 user_version 失败")?;
 
     Ok(SCHEMA_VERSION)
+}
+
+/// v18 → v19 迁移：分组支持层级与颜色；便签新增短随机 id 与文件名列。
+///
+/// - `sticker_groups.parent_id`：父分组（NULL = 顶层）——「分组即文件夹」，可无限嵌套；
+/// - `sticker_groups.color`：分组颜色（#RRGGBB；NULL = 无颜色）；
+/// - `stickers.uid`：8 位短随机 id（窗口标识 / assets 目录 / 合并工作空间时避免撞号），
+///   老数据在此一次性补齐（`hex(randomblob(4))` = 8 位小写字母+数字），并建唯一索引兜底；
+/// - `stickers.file_name`：md 文件相对 `stickers/` 的路径（NULL = 尚未落定，按标题派生）。
+fn migrate_v18_to_v19(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_groups: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sticker_groups')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_groups {
+            if !table_has_column(c, "sticker_groups", "parent_id")? {
+                c.execute_batch(
+                    "ALTER TABLE sticker_groups ADD COLUMN parent_id INTEGER REFERENCES sticker_groups(id) ON DELETE CASCADE;",
+                )
+                .context("迁移 v18→v19 新增 parent_id 列失败")?;
+            }
+            if !table_has_column(c, "sticker_groups", "color")? {
+                c.execute_batch("ALTER TABLE sticker_groups ADD COLUMN color TEXT;")
+                    .context("迁移 v18→v19 新增 color 列失败")?;
+            }
+        }
+        let has_stickers: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stickers')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_stickers {
+            if !table_has_column(c, "stickers", "uid")? {
+                c.execute_batch("ALTER TABLE stickers ADD COLUMN uid TEXT;")
+                    .context("迁移 v18→v19 新增 uid 列失败")?;
+                c.execute_batch("UPDATE stickers SET uid = lower(hex(randomblob(4))) WHERE uid IS NULL;")
+                    .context("迁移 v18→v19 为已有便签生成 uid 失败")?;
+                c.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_stickers_uid ON stickers(uid);")
+                    .context("迁移 v18→v19 建立 uid 唯一索引失败")?;
+            }
+            if !table_has_column(c, "stickers", "file_name")? {
+                c.execute_batch("ALTER TABLE stickers ADD COLUMN file_name TEXT;")
+                    .context("迁移 v18→v19 新增 file_name 列失败")?;
+            }
+        }
+        Ok(())
+    })
 }
 
 /// SQL DDL，由 `init_schema` 执行。独立成常量方便 plan / 文档工具复用。
