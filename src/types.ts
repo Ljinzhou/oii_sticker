@@ -122,6 +122,10 @@ export interface StickerGroup {
   name: string;
   sort_order: number;
   created_at: string;
+  /** 父分组 id；null = 顶层（分组即文件夹，可无限嵌套）。 */
+  parent_id?: number | null;
+  /** 分组颜色（#RRGGBB）；null = 无颜色。 */
+  color?: string | null;
 }
 
 export interface TodoBlock {
