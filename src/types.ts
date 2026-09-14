@@ -19,6 +19,10 @@ export interface Sticker {
   auto_scroll: boolean;
   is_completed: boolean;
   display_mode: string;
+  /** 8 位短随机 id（v19；仅程序内部使用：窗口标识 / assets 目录 / 合并工作空间去重）。 */
+  uid?: string | null;
+  /** 该便签 md 文件相对 stickers/ 的路径（v19；null = 按「分组路径/标题.md」派生）。 */
+  file_name?: string | null;
   /** 上次退出时窗口是否隐藏（true=隐藏，启动不显示）；由后端维护。 */
   window_hidden?: boolean;
   created_at: string;
