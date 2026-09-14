@@ -1,6 +1,8 @@
 <script setup lang="ts">
-// 分组树（= 文件夹树）：层级缩进 + 拖拽排序/拖入成为子分组 + 分组颜色 + 操作菜单。
+// 分组树（= 文件夹树）：层级缩进 + 拖拽排序/拖入成为子分组 + 分组背景色 + 操作菜单。
 // 自包含：直接读写 notes store，父组件只需传入数据与当前选中项并监听事件。
+// 注意：主控台「分区」视图当前使用 ConsoleView 内的内联实现（类名不同），
+// 本组件供需要独立树控件的场景使用；两处的分组颜色语义一致（颜色 = 分组头背景，图标固定蓝色）。
 import { computed, ref } from "vue";
 import { useNotesStore } from "../../stores/notes";
 import type { Sticker, StickerGroup } from "../../types";
@@ -143,6 +145,12 @@ async function pickColor(groupId: number, color: string) {
   }
 }
 
+/** 在资源管理器中打开该分组对应的文件夹。 */
+function openInExplorer(groupId: number) {
+  menuFor.value = null;
+  void notes.openGroupInExplorer(groupId).catch((e) => showError(e));
+}
+
 function requestDelete(group: StickerGroup) {
   menuFor.value = null;
   // 有子分组时后端会拒绝：这里先即时反馈，避免用户以为点了没反应
@@ -239,7 +247,12 @@ async function onDropToRoot(event: DragEvent) {
         'drop-after': dropTarget?.id === row.group.id && dropTarget.mode === 'after',
         'drop-inside': dropTarget?.id === row.group.id && dropTarget.mode === 'inside',
       }"
-      :style="{ paddingLeft: `${6 + row.depth * 18}px` }"
+      :style="{
+        paddingLeft: `${6 + row.depth * 18}px`,
+        background: row.group.color
+          ? `color-mix(in srgb, ${row.group.color} 15%, #ffffff)`
+          : undefined,
+      }"
       draggable="true"
       @dragstart="onDragStart(row.group, $event)"
       @dragover="onDragOver(row.group, $event)"
@@ -257,7 +270,7 @@ async function onDropToRoot(event: DragEvent) {
       >
         <i :class="collapsed.has(row.group.id) ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i>
       </span>
-      <span class="folder" :style="{ color: row.group.color ?? '#9aa0a6' }">
+      <span class="folder">
         <i :class="collapsed.has(row.group.id) ? 'ri-folder-3-line' : 'ri-folder-open-line'"></i>
       </span>
 
@@ -300,13 +313,16 @@ async function onDropToRoot(event: DragEvent) {
           <button @click="menuFor = null; colorFor = row.group.id">
             <i class="ri-palette-line"></i>修改样式
           </button>
+          <button @click="openInExplorer(row.group.id)">
+            <i class="ri-folder-open-line"></i>在资源管理器打开
+          </button>
           <div class="sep"></div>
           <button class="danger" @click="requestDelete(row.group)">
             <i class="ri-delete-bin-line"></i>删除分组
           </button>
         </div>
         <div v-if="colorFor === row.group.id" class="dropdown palette">
-          <div class="palette-tip">分组颜色</div>
+          <div class="palette-tip">分组背景色</div>
           <div class="palette-grid">
             <button
               v-for="(color, index) in PALETTE"
@@ -366,13 +382,13 @@ async function onDropToRoot(event: DragEvent) {
   border: 1px solid transparent;
   cursor: pointer;
   position: relative;
+  background: #fbfbfc;
 }
 .tree-row:hover {
-  background: rgba(0, 0, 0, 0.03);
+  filter: brightness(0.98);
 }
 .tree-row.active {
-  background: rgba(79, 124, 255, 0.10);
-  border-color: rgba(79, 124, 255, 0.22);
+  border-color: rgba(79, 124, 255, 0.35);
 }
 .tree-row.dragging {
   opacity: 0.45;
@@ -395,8 +411,8 @@ async function onDropToRoot(event: DragEvent) {
   bottom: -1px;
 }
 .tree-row.drop-inside {
-  background: rgba(79, 124, 255, 0.16);
   border-color: #4f7cff;
+  box-shadow: inset 0 0 0 1px #4f7cff;
 }
 .grip {
   color: #c2c6cd;
@@ -418,10 +434,12 @@ async function onDropToRoot(event: DragEvent) {
 .caret.hidden {
   visibility: hidden;
 }
+/* 文件夹图标：默认蓝色（分组颜色只作用于行背景） */
 .folder {
   font-size: 15px;
   display: grid;
   place-items: center;
+  color: #4f7cff;
 }
 .name {
   font-size: 13.5px;
