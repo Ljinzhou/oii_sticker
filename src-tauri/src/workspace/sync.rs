@@ -5,15 +5,22 @@
 //!
 //! - 新增 `7-想法.md` → 导入为便签（沿用文件名里的 id）；
 //! - 新增 `随手记.md`（没有 id 前缀）→ 导入后重命名文件为 `{新id}-随手记.md`；
-//! - 删除文件 → 删除对应便签（连带 assets/<id>/ 清理）；
 //! - 改内容 → 同步 DB 回退副本（**不回写文件**，文件始终是主存储）；
-//! - 改文件名里的标题 → 同步 DB title（**不重命名文件**，用户改名即意图）。
+//! - 改文件名里的标题 → 同步 DB title（**不重命名文件**，用户改名即意图）；
+//! - 删除文件 → 删除对应便签（连带 assets/<id>/ 清理），但**必须先"见过"这个文件**。
+//!
+//! 「见过才删」是这里最关键的安全约定：DB 里有便签而文件不存在，可能是
+//! ①用户刚删掉文件（要删便签），也可能是 ②旧版本数据/目录被整体搬走（绝不能删数据）。
+//! 二者无法从磁盘状态区分，因此引入进程内的 `seen` 集合：
+//! 只有本次运行中确实见过该便签的文件、随后文件消失，才判定为「用户删除」；
+//! 其余情况一律**用 DB 回退副本补齐 md 文件**（迁移/自愈），绝不删除数据。
 //!
 //! `sync_once` 是幂等的纯 DB+文件操作（不依赖 watcher），由后台线程在目录快照变化时调用，
-//! 因此切换工作空间、程序重启、漏事件都能自愈；watcher 只是为了"快"。
+//! 因此切换工作空间、程序重启、漏事件都能自愈。
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::layout::{self, Layout};
@@ -30,11 +37,16 @@ pub struct SyncReport {
     pub updated: Vec<i64>,
     /// 文件被外部删除而移除的便签 id。
     pub removed: Vec<i64>,
+    /// 缺文件、用 DB 回退副本补齐了 md 的便签 id（迁移 / 自愈）。
+    pub restored: Vec<i64>,
 }
 
 impl SyncReport {
     pub fn is_empty(&self) -> bool {
-        self.imported.is_empty() && self.updated.is_empty() && self.removed.is_empty()
+        self.imported.is_empty()
+            && self.updated.is_empty()
+            && self.removed.is_empty()
+            && self.restored.is_empty()
     }
 
     /// 所有受影响的便签 id（去重，供前端刷新）。
@@ -44,6 +56,7 @@ impl SyncReport {
             .iter()
             .chain(self.updated.iter())
             .chain(self.removed.iter())
+            .chain(self.restored.iter())
             .copied()
             .collect();
         ids.sort_unstable();
@@ -88,7 +101,9 @@ fn parse_sticker_file(file_name: &str) -> Option<(Option<i64>, String)> {
         return None;
     }
     match stem.split_once('-') {
-        Some((head, rest)) if !rest.trim().is_empty() && head.chars().all(|c| c.is_ascii_digit()) && !head.is_empty() => {
+        Some((head, rest))
+            if !head.is_empty() && !rest.trim().is_empty() && head.chars().all(|c| c.is_ascii_digit()) =>
+        {
             let id = head.parse::<i64>().ok()?;
             Some((Some(id), rest.trim().to_string()))
         }
@@ -97,7 +112,10 @@ fn parse_sticker_file(file_name: &str) -> Option<(Option<i64>, String)> {
 }
 
 /// 让 DB 与 `stickers/` 目录一致（幂等）。
-pub fn sync_once(conn: &Connection, db_path: &str) -> Result<SyncReport> {
+///
+/// `seen`：本次运行中"确认见过其文件"的便签 id 集合，由调用方（后台线程）跨轮维护；
+/// 切换工作空间时必须清空（id 空间不同）。它决定"文件消失"是删除便签还是补齐文件。
+pub fn sync_once(conn: &Connection, db_path: &str, seen: &mut HashSet<i64>) -> Result<SyncReport> {
     let root = commands::ws_root(db_path);
     let dir = Layout::at(&root).stickers_dir();
     let mut report = SyncReport::default();
@@ -140,6 +158,7 @@ pub fn sync_once(conn: &Connection, db_path: &str) -> Result<SyncReport> {
 
     // 3) 已有 id：内容 / 标题变化 → 回写 DB 副本（不碰文件）
     for (id, title, _file_name, path) in &by_id {
+        seen.insert(*id); // 确认见过它的文件：之后文件消失才算"用户删除"
         let Some(current) = existing.iter().find(|s| s.id == *id) else {
             // DB 里没有 → 导入（沿用文件名里的 id）
             let content = std::fs::read_to_string(path).unwrap_or_default();
@@ -178,17 +197,32 @@ pub fn sync_once(conn: &Connection, db_path: &str) -> Result<SyncReport> {
         let id = sticker_repo::insert(conn, &new)?;
         let renamed = layout::sticker_file_name(id, title);
         let _ = std::fs::rename(path, dir.join(&renamed));
+        seen.insert(id);
         tracing::info!("[sync] 导入外部文件 {file_name} → {renamed}（id={id}）");
         report.imported.push(id);
     }
 
-    // 5) DB 有、磁盘没有 → 便签被外部删除（含资产目录清理）
+    // 5) DB 有、磁盘没有：区分「用户删除」与「文件还没生成」
     for sticker in &existing {
         if seen_ids.contains(&sticker.id) {
             continue;
         }
-        commands::delete_sticker(conn, sticker.id, db_path)?;
-        report.removed.push(sticker.id);
+        if seen.contains(&sticker.id) {
+            // 本次运行见过它的文件，现在没了 → 用户手动删除 → 删便签（连带资产目录）
+            commands::delete_sticker(conn, sticker.id, db_path)?;
+            report.removed.push(sticker.id);
+            continue;
+        }
+        // 从没见过文件（旧数据迁移 / 目录被整体搬走）：用 DB 回退副本补齐 md，绝不删数据
+        let file_name = layout::sticker_file_name(sticker.id, &sticker.title);
+        match md_store::write(&root, &file_name, &sticker.content) {
+            Ok(()) => {
+                seen.insert(sticker.id);
+                tracing::info!("[sync] 便签 {} 缺 md，已按 DB 副本补齐 {file_name}", sticker.id);
+                report.restored.push(sticker.id);
+            }
+            Err(e) => tracing::warn!("[sync] 为便签 {} 补齐 md 失败：{e}", sticker.id),
+        }
     }
 
     Ok(report)
@@ -219,6 +253,8 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1200
 
 fn run_loop(app: tauri::AppHandle, state: crate::state::AppState) {
     let mut last: Option<(String, Snapshot)> = None;
+    // 本次运行见过的便签文件（决定"文件消失"是删除还是补齐）；切换工作空间时清空。
+    let mut seen: HashSet<i64> = HashSet::new();
     loop {
         let db_path = state.db_path();
         if db_path.is_empty() {
@@ -226,19 +262,24 @@ fn run_loop(app: tauri::AppHandle, state: crate::state::AppState) {
             continue;
         }
         let snap = snapshot(&db_path);
+        let switched = matches!(&last, Some((path, _)) if path != &db_path);
+        if switched {
+            seen.clear(); // 不同工作空间的 id 空间不同，不能沿用"见过"记录
+        }
         let changed = match &last {
             Some((path, prev)) => path != &db_path || prev != &snap,
             None => true,
         };
         if changed {
             last = Some((db_path.clone(), snap));
-            match state.with_conn(|conn| sync_once(conn, &db_path)) {
+            match state.with_conn(|conn| sync_once(conn, &db_path, &mut seen)) {
                 Ok(report) => {
                     if !report.is_empty() {
                         tracing::info!(
-                            "[同步] 外部改动：新增 {:?} / 更新 {:?} / 删除 {:?}",
+                            "[同步] 外部改动：新增 {:?} / 更新 {:?} / 补齐 {:?} / 删除 {:?}",
                             report.imported,
                             report.updated,
+                            report.restored,
                             report.removed
                         );
                         for id in report.touched() {
@@ -265,12 +306,13 @@ fn run_loop(app: tauri::AppHandle, state: crate::state::AppState) {
 }
 
 /// 立即同步一次（命令层用：切换工作空间后、手动刷新）。
-pub fn sync_now(state: &crate::state::AppState) -> Result<SyncReport> {
+/// `seen` 与后台线程共用同一份集合，语义才能保持一致。
+pub fn sync_now(state: &crate::state::AppState, seen: &mut HashSet<i64>) -> Result<SyncReport> {
     let db_path = state.db_path();
     if db_path.is_empty() {
         return Ok(SyncReport::default());
     }
-    state.with_conn(|conn| sync_once(conn, &db_path))
+    state.with_conn(|conn| sync_once(conn, &db_path, seen))
 }
 
 #[cfg(test)]
@@ -283,6 +325,7 @@ mod tests {
         db_path: String,
         conn: Connection,
         layout: Layout,
+        seen: HashSet<i64>,
     }
 
     impl Drop for Env {
@@ -299,7 +342,16 @@ mod tests {
         let db_path = layout.db_path().to_string_lossy().into_owned();
         let conn = open(&layout.db_path()).unwrap();
         crate::db::schema::run_migrations(&conn).unwrap();
-        Env { dir, db_path, conn, layout }
+        Env { dir, db_path, conn, layout, seen: HashSet::new() }
+    }
+
+    impl Env {
+        fn sync(&mut self) -> SyncReport {
+            let mut seen = std::mem::take(&mut self.seen);
+            let report = sync_once(&self.conn, &self.db_path, &mut seen).unwrap();
+            self.seen = seen;
+            report
+        }
     }
 
     fn write(layout: &Layout, name: &str, content: &str) {
@@ -308,23 +360,23 @@ mod tests {
 
     #[test]
     fn imports_file_with_id_from_name() {
-        let e = env("import-id");
+        let mut e = env("import-id");
         write(&e.layout, "7-外来想法.md", "# 外部写的");
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert_eq!(report.imported, vec![7]);
         let s = sticker_repo::get(&e.conn, 7).unwrap().expect("应导入 id=7");
         assert_eq!(s.title, "外来想法");
         assert_eq!(s.content, "# 外部写的");
         // 幂等：再同步一次无变化
-        let again = sync_once(&e.conn, &e.db_path).unwrap();
+        let again = e.sync();
         assert!(again.is_empty(), "第二次应无变更：{again:?}");
     }
 
     #[test]
     fn imports_file_without_id_and_renames_it() {
-        let e = env("import-plain");
+        let mut e = env("import-plain");
         write(&e.layout, "随手记.md", "临时内容");
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert_eq!(report.imported.len(), 1);
         let id = report.imported[0];
         let s = sticker_repo::get(&e.conn, id).unwrap().unwrap();
@@ -336,13 +388,13 @@ mod tests {
     }
 
     #[test]
-    fn external_content_edit_updates_db_copy_both_ways_consistent() {
-        let e = env("content");
+    fn external_content_edit_updates_db_copy_not_the_file() {
+        let mut e = env("content");
         write(&e.layout, "3-笔记.md", "旧内容");
-        sync_once(&e.conn, &e.db_path).unwrap();
+        e.sync();
         // 外部编辑（文件是主存储）
         write(&e.layout, "3-笔记.md", "外部改过的内容");
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert_eq!(report.updated, vec![3]);
         assert_eq!(sticker_repo::get(&e.conn, 3).unwrap().unwrap().content, "外部改过的内容");
         // 程序没有回写文件
@@ -354,16 +406,16 @@ mod tests {
 
     #[test]
     fn external_rename_updates_title_without_renaming_file() {
-        let e = env("rename");
+        let mut e = env("rename");
         write(&e.layout, "5-旧标题.md", "内容");
-        sync_once(&e.conn, &e.db_path).unwrap();
+        e.sync();
         // 用户在资源管理器里改名（同一 id）
         std::fs::rename(
             e.layout.stickers_dir().join("5-旧标题.md"),
             e.layout.stickers_dir().join("5-新标题.md"),
         )
         .unwrap();
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert_eq!(report.updated, vec![5]);
         assert_eq!(sticker_repo::get(&e.conn, 5).unwrap().unwrap().title, "新标题");
         // 文件保持用户给的名称
@@ -372,40 +424,66 @@ mod tests {
 
     #[test]
     fn deleted_file_removes_sticker_and_assets() {
-        let e = env("delete");
+        let mut e = env("delete");
         write(&e.layout, "9-待删.md", "内容");
         let assets = e.layout.assets_dir().join("9");
         std::fs::create_dir_all(&assets).unwrap();
         std::fs::write(assets.join("img.png"), b"png").unwrap();
-        sync_once(&e.conn, &e.db_path).unwrap();
+        e.sync(); // 先"见过"这个文件
         assert!(sticker_repo::get(&e.conn, 9).unwrap().is_some());
 
         std::fs::remove_file(e.layout.stickers_dir().join("9-待删.md")).unwrap();
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert_eq!(report.removed, vec![9]);
         assert!(sticker_repo::get(&e.conn, 9).unwrap().is_none(), "便签应被删除");
         assert!(!assets.exists(), "对应 assets/<id>/ 应一并清理");
     }
 
+    /// 关键安全语义：从没见过文件的便签（旧数据迁移 / 目录被整体搬走）不能被当成"用户删除"，
+    /// 而应按 DB 回退副本补齐 md 文件。
+    #[test]
+    fn unseen_missing_file_is_restored_instead_of_deleted() {
+        let mut e = env("restore-file");
+        let id = commands::create_sticker(
+            &e.conn,
+            &NewSticker { title: "旧数据".into(), content: "只在 DB 里".into(), ..Default::default() },
+            &e.db_path,
+        )
+        .unwrap();
+        // 模拟"文件从未被本进程见过"（例如文件被整体搬走、或旧版本只有 DB 内容）
+        std::fs::remove_file(e.layout.stickers_dir().join(format!("{id}-旧数据.md"))).unwrap();
+        e.seen.clear();
+
+        let report = e.sync();
+        assert_eq!(report.restored, vec![id], "应补齐文件而不是删除便签：{report:?}");
+        assert!(report.removed.is_empty());
+        assert!(sticker_repo::get(&e.conn, id).unwrap().is_some(), "便签必须保留");
+        let file = e.layout.stickers_dir().join(format!("{id}-旧数据.md"));
+        assert!(file.is_file(), "md 应被补齐");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "只在 DB 里");
+        // 补齐后再次同步：稳定无变化
+        assert!(e.sync().is_empty());
+    }
+
     /// 目录整个不可读（被移走/卸载）时绝不能把 DB 便签当作"被删了"。
     #[test]
     fn missing_dir_does_not_delete_anything() {
-        let e = env("missing-dir");
+        let mut e = env("missing-dir");
         write(&e.layout, "1-保留.md", "内容");
-        sync_once(&e.conn, &e.db_path).unwrap();
+        e.sync();
         std::fs::remove_dir_all(e.layout.stickers_dir()).unwrap();
 
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert!(report.is_empty(), "不应产生任何变更：{report:?}");
         assert!(sticker_repo::get(&e.conn, 1).unwrap().is_some(), "便签必须保留");
     }
 
     #[test]
     fn non_markdown_files_are_ignored() {
-        let e = env("other-files");
+        let mut e = env("other-files");
         std::fs::write(e.layout.stickers_dir().join("notes.txt"), b"ignore me").unwrap();
         std::fs::create_dir_all(e.layout.stickers_dir().join("sub")).unwrap();
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert!(report.is_empty());
         assert!(sticker_repo::list_all(&e.conn).unwrap().is_empty());
         assert!(e.layout.stickers_dir().join("notes.txt").is_file(), "非 md 文件不动");
@@ -414,16 +492,15 @@ mod tests {
     /// 程序自身写文件（内部保存）不应被同步误判成外部改动。
     #[test]
     fn internal_save_is_not_reported_as_change() {
-        let e = env("internal");
-        let id = commands::create_sticker(
+        let mut e = env("internal");
+        commands::create_sticker(
             &e.conn,
             &NewSticker { title: "内部".into(), content: "正文".into(), ..Default::default() },
             &e.db_path,
         )
         .unwrap();
-        let report = sync_once(&e.conn, &e.db_path).unwrap();
+        let report = e.sync();
         assert!(report.is_empty(), "自己写的文件不该产生同步变更：{report:?}");
-        let _ = id;
     }
 
     #[test]
@@ -443,8 +520,9 @@ mod tests {
             imported: vec![3, 1],
             updated: vec![1],
             removed: vec![9],
+            restored: vec![5],
         };
-        assert_eq!(report.touched(), vec![1, 3, 9]);
+        assert_eq!(report.touched(), vec![1, 3, 5, 9]);
         assert!(!report.is_empty());
         assert!(SyncReport::default().is_empty());
     }
