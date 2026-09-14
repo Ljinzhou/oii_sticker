@@ -104,6 +104,13 @@ pub const AUTOSTART_ARG: &str = "--autostart";
 /// 创建后立即应用置顶（Builder 不提供置顶选项，须显式 set_always_on_top）。
 fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Result<WebviewWindow> {
     let label = format!("sticker-{}", args.id);
+    // 是否隐藏任务栏由系统设置「默认隐藏（default_sticker_skip_taskbar）」决定，
+    // 编辑模式的隐藏/置顶切换由 apply_window_state_cmd 运行时处理。
+    let default_hide = app
+        .state::<AppState>()
+        .with_conn(commands::get_config)
+        .map(|cfg| cfg.get_or("default_sticker_skip_taskbar", "1") == "1")
+        .unwrap_or(true);
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(&args.title)
         .inner_size(args.w as f64, args.h as f64)
@@ -111,7 +118,7 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
         .position(args.x as f64, args.y as f64)
         .transparent(true)
         .decorations(false)
-        .skip_taskbar(true)
+        .skip_taskbar(default_hide)
         .maximizable(false) // 禁用最大化（双击标题栏不触发）
         .resizable(true)
         .build()?;
@@ -310,12 +317,58 @@ fn group_create_cmd(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: String,
+    parent_id: Option<i64>,
 ) -> Result<models::StickerGroup, String> {
     let g = state
-        .with_conn(|c| commands::create_group(c, &name))
+        .with_conn(|c| commands::create_group(c, &name, parent_id))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(g)
+}
+
+/// 设置分组颜色（None / 空串 = 清除颜色）。
+#[tauri::command]
+fn group_set_color_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    color: Option<String>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::set_group_color(c, id, color.as_deref()))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+/// 同级分组排序（拖拽调整顺序；ids 为该父级下的目标顺序）。
+#[tauri::command]
+fn group_reorder_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    parent_id: Option<i64>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::reorder_groups(c, parent_id, &ids))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+/// 移动分组到新父级（None = 顶层）；拒绝放入自身或自己的子树。
+#[tauri::command]
+fn group_move_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    parent_id: Option<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::move_group(c, id, parent_id))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -359,6 +412,72 @@ fn move_sticker_group_cmd(
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(())
+}
+
+// ── 在资源管理器中打开 ──
+
+/// 打开系统文件管理器；`select` 为 true 时选中该文件而不是打开其所在目录。
+#[cfg(windows)]
+fn reveal_in_explorer(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = std::process::Command::new("explorer");
+    if select {
+        // /select,<path> 为单个参数（无空格），用完整路径可避免引号歧义
+        cmd.arg(format!("/select,{}", path.display()));
+    } else {
+        cmd.arg(path);
+    }
+    // explorer.exe 命中已打开窗口时常返回非 0 退出码，故只启动、不等待
+    cmd.creation_flags(CREATE_NO_WINDOW).spawn()?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn reveal_in_explorer(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    let target = if select { path.parent().unwrap_or(path) } else { path };
+    std::process::Command::new("xdg-open").arg(target).spawn()?;
+    Ok(())
+}
+
+/// 在资源管理器中打开该分组的文件夹（`id = None` → `stickers/` 根目录）；返回被打开的路径。
+#[tauri::command]
+fn open_group_in_explorer_cmd(state: State<'_, AppState>, id: Option<i64>) -> Result<String, String> {
+    let dir = state
+        .with_conn_path(|c, db| {
+            let base = crate::workspace::layout::Layout::at(&commands::ws_root(db)).stickers_dir();
+            let dir = match id {
+                Some(gid) => base.join(commands::group_rel_dir(c, gid)?),
+                None => base,
+            };
+            std::fs::create_dir_all(&dir)?;
+            Ok(dir)
+        })
+        .map_err(|e| e.to_string())?;
+    reveal_in_explorer(&dir, false).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 在资源管理器中定位该便签的 md 文件（选中文件）；返回文件路径。
+#[tauri::command]
+fn open_sticker_in_explorer_cmd(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    let file = state
+        .with_conn_path(|c, db| {
+            let s = crate::db::sticker_repo::get(c, id)?
+                .ok_or_else(|| anyhow::anyhow!("便签不存在（id={id}）"))?;
+            let base = crate::workspace::layout::Layout::at(&commands::ws_root(db)).stickers_dir();
+            let rel = match s.file_name.as_deref().map(str::trim) {
+                Some(f) if !f.is_empty() => std::path::PathBuf::from(f),
+                // 文件层迁移前的命名规则：{id}-{标题}.md
+                _ => std::path::PathBuf::from(crate::workspace::layout::sticker_file_name(
+                    s.id, &s.title,
+                )),
+            };
+            Ok(base.join(rel))
+        })
+        .map_err(|e| e.to_string())?;
+    reveal_in_explorer(&file, true).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    Ok(file.to_string_lossy().to_string())
 }
 
 /// 抓取网页 <title>，供及时预览「粘贴链接自动转 [title](url)」使用。
@@ -573,6 +692,17 @@ fn list_todo_for_sticker_cmd(
         events::emit_push_update(&app, sticker_id);
     }
     Ok(blocks)
+}
+
+/// 跨便签 Todo 聚合查询（主控台「任务总览」页）：默认全量，可按过滤条件筛选。
+#[tauri::command]
+fn list_all_todos_cmd(
+    state: State<'_, AppState>,
+    filter: Option<models::TodoQueryFilter>,
+) -> Result<Vec<models::TodoBlockWithSticker>, String> {
+    state
+        .with_conn(|c| commands::list_all_todos(c, &filter.unwrap_or_default()))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -852,6 +982,7 @@ fn apply_window_state_cmd(
     app: tauri::AppHandle,
     id: i64,
     is_display: bool,
+    is_edit: bool,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     state.set_display_window(id, is_display);
@@ -881,7 +1012,30 @@ fn apply_window_state_cmd(
             win.set_ignore_cursor_events(false)
                 .map_err(|e| format!("取消穿透失败: {e}"))?;
         }
-        tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display}");
+        // 任务栏隐藏 × 置顶策略：编辑模式（is_edit）按「编辑隐藏」开关决定隐藏、
+        // 且恒取消置顶；非编辑模式恢复「默认隐藏」开关与便签自身的置顶值。
+        let default_hide = state
+            .with_conn(commands::get_config)
+            .map(|cfg| cfg.get_or("default_sticker_skip_taskbar", "1") == "1")
+            .unwrap_or(true);
+        let edit_hide = state
+            .with_conn(commands::get_config)
+            .map(|cfg| cfg.get_or("edit_mode_skip_taskbar", "0") == "1")
+            .unwrap_or(false);
+        let restore_top = state
+            .with_conn_path(|c, db| commands::get_sticker(c, id, db))
+            .ok()
+            .flatten()
+            .map(|s| s.always_on_top)
+            .unwrap_or(false);
+        let policy = platform::window_style::sticker_window_policy(
+            default_hide,
+            edit_hide,
+            is_edit,
+            restore_top,
+        );
+        platform::window_style::apply_sticker_style(&win, policy.skip_taskbar, policy.always_on_top);
+        tracing::debug!("[cmd] apply_window_state id={id} is_display={is_display} is_edit={is_edit} policy={policy:?}");
     }
     Ok(())
 }
@@ -1382,6 +1536,9 @@ pub fn run() {
             // 到点发系统通知 + 广播事件（窗口全关也能触发，主进程存活即可）。
             reminder::spawn(handle.clone(), state.clone());
 
+            // 工作空间文件同步：用户在目录里手动增删改便签 md 时保持 DB 与界面一致。
+            workspace::sync::spawn(handle.clone(), state.clone());
+
             // 启动一致性：为正文中缺少标记的孤儿 Todo 块补写标记（旧版本遗留），
             // 并通知所属便签窗口刷新正文。
             if let Ok(retagged) = state.with_conn(commands::retag_orphan_todos) {
@@ -1459,7 +1616,12 @@ pub fn run() {
             group_create_cmd,
             group_rename_cmd,
             group_delete_cmd,
+            group_set_color_cmd,
+            group_reorder_cmd,
+            group_move_cmd,
             move_sticker_group_cmd,
+            open_group_in_explorer_cmd,
+            open_sticker_in_explorer_cmd,
             fetch_page_title_cmd,
             get_config_cmd,
             set_config_cmd,
@@ -1469,6 +1631,7 @@ pub fn run() {
             toggle_todo_cmd,
             get_todo_block_cmd,
             list_todo_for_sticker_cmd,
+            list_all_todos_cmd,
             create_todo_block_cmd,
             update_todo_block_cmd,
             ack_todo_alert_cmd,
@@ -1500,7 +1663,9 @@ pub fn run() {
             workspace_default_path_cmd,
             workspace_backup_cmd,
             workspace_transfer_cmd,
-            workspace_bootstrap_cmd
+            workspace_bootstrap_cmd,
+            workspace::restore::workspace_inspect_backup_cmd,
+            workspace::restore::workspace_restore_cmd
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

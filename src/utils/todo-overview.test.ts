@@ -1,0 +1,153 @@
+import { describe, expect, it } from "vitest";
+import type { TodoBlockWithSticker } from "../types";
+import { buildGroups, countStats, filterBlocks } from "./todo-overview";
+
+function block(part: Partial<TodoBlockWithSticker>): TodoBlockWithSticker {
+  return {
+    id: "b0",
+    sticker_id: 1,
+    title: "",
+    block_title: "",
+    description: null,
+    is_completed: false,
+    parent_id: null,
+    reminder_at: null,
+    due_at: null,
+    repeat_rule: null,
+    created_at: "2026-09-01T00:00:00.000Z",
+    updated_at: "2026-09-01T00:00:00.000Z",
+    sticker_title: "便签",
+    owner_block_id: "blk-1",
+    owner_block_title: "",
+    ...part,
+  };
+}
+
+const NOW_MS = Date.now();
+function isoFromNow(offsetMs: number): string {
+  return new Date(NOW_MS + offsetMs).toISOString();
+}
+
+describe("buildGroups", () => {
+  it("按「便签 → 块 → 任务」三层分组，并保持输入顺序", () => {
+    const blocks = [
+      block({ id: "b1", sticker_id: 2, sticker_title: "学习" }),
+      block({ id: "b2", sticker_id: 1, sticker_title: "工作", owner_block_id: "blkA" }),
+      block({ id: "b3", sticker_id: 1, sticker_title: "工作", owner_block_id: "blkA" }),
+    ];
+    const groups = buildGroups(blocks);
+    expect(groups.map((g) => g.stickerId)).toEqual([2, 1]);
+    const work = groups.find((g) => g.stickerId === 1)!;
+    expect(work.blocks).toHaveLength(1);
+    expect(work.blocks[0]!.blockId).toBe("blkA");
+    expect(work.blocks[0]!.items.map((i) => i.id)).toEqual(["b2", "b3"]);
+    expect(work.itemCount).toBe(2);
+  });
+
+  it("同一便签的多个 todo 块各自成组，块标题随块携带", () => {
+    const blocks = [
+      block({ id: "t1", sticker_id: 1, owner_block_id: "blkPlan", owner_block_title: "本周计划" }),
+      block({ id: "t2", sticker_id: 1, owner_block_id: "blkPlan", owner_block_title: "本周计划", parent_id: "t1" }),
+      block({ id: "t3", sticker_id: 1, owner_block_id: "blkReview", owner_block_title: "评审清单" }),
+    ];
+    const groups = buildGroups(blocks);
+    expect(groups).toHaveLength(1);
+    const [g] = groups;
+    expect(g!.blocks.map((b) => b.blockId)).toEqual(["blkPlan", "blkReview"]);
+    expect(g!.blocks.map((b) => b.blockTitle)).toEqual(["本周计划", "评审清单"]);
+    expect(g!.blocks[0]!.items.map((i) => i.id)).toEqual(["t1", "t2"]);
+    expect(g!.blocks[1]!.items.map((i) => i.id)).toEqual(["t3"]);
+    expect(g!.itemCount).toBe(3);
+  });
+
+  it("未命名块（块标题为空串）也能成组，标题留空由 UI 兜底", () => {
+    const blocks = [block({ id: "t1", sticker_id: 1, owner_block_id: "blkX", owner_block_title: "" })];
+    const [g] = buildGroups(blocks);
+    expect(g!.blocks[0]!.blockTitle).toBe("");
+  });
+
+  it("按便签列表顺序重排分组，未出现的便签排最后", () => {
+    const blocks = [
+      block({ id: "b1", sticker_id: 4, sticker_title: "D" }),
+      block({ id: "b2", sticker_id: 1, sticker_title: "A" }),
+      block({ id: "b3", sticker_id: 2, sticker_title: "B" }),
+    ];
+    const groups = buildGroups(blocks, [2, 1]);
+    expect(groups.map((g) => g.stickerId)).toEqual([2, 1, 4]);
+  });
+});
+
+describe("countStats", () => {
+  it("统计全部/待办/提醒中/逾期/已完成，提醒与逾期重叠按逾期计", () => {
+    const blocks: TodoBlockWithSticker[] = [
+      block({ id: "done", is_completed: true }),
+      block({ id: "pending" }),
+      block({ id: "reminded", reminded_at: isoFromNow(0) }),
+      block({ id: "overdue", due_at: isoFromNow(-24 * 3600_000), reminded_at: isoFromNow(0) }),
+    ];
+    expect(countStats(blocks)).toEqual({ total: 4, pending: 1, reminded: 1, overdue: 1, done: 1 });
+  });
+
+  it("空数组全零", () => {
+    expect(countStats([])).toEqual({ total: 0, pending: 0, reminded: 0, overdue: 0, done: 0 });
+  });
+});
+
+describe("filterBlocks", () => {
+  const todayDue = isoFromNow(6 * 3600_000); // 今天稍晚（未过期，仍属今天）
+  const tomorrowDue = isoFromNow(24 * 3600_000);
+  const pastDue = isoFromNow(-48 * 3600_000);
+  const blocks: TodoBlockWithSticker[] = [
+    block({ id: "today", title: "提交周报", due_at: todayDue }),
+    block({ id: "tomorrow", title: "买牛奶", due_at: tomorrowDue }),
+    block({ id: "past", title: "评审 PR", due_at: pastDue, reminded_at: pastDue }),
+    block({ id: "done", title: "电费缴费", is_completed: true }),
+  ];
+
+  it("today：今天内截止或今天提醒", () => {
+    const ids = filterBlocks(blocks, { today: true }).map((b) => b.id);
+    expect(ids).toEqual(["today"]);
+  });
+
+  it("week：未来 7 天（含今天）", () => {
+    const ids = filterBlocks(blocks, { week: true }).map((b) => b.id);
+    expect(ids).toEqual(["today", "tomorrow"]);
+  });
+
+  it("alert：提醒已触发或已逾期", () => {
+    const ids = filterBlocks(blocks, { alert: true }).map((b) => b.id);
+    expect(ids).toEqual(["past"]);
+  });
+
+  it("done 精确匹配完成态", () => {
+    expect(filterBlocks(blocks, { done: true }).map((b) => b.id)).toEqual(["done"]);
+    expect(filterBlocks(blocks, { done: false }).map((b) => b.id)).toEqual(["today", "tomorrow", "past"]);
+  });
+
+  it("keyword 命中标题或便签标题（不区分大小写）", () => {
+    const hits = filterBlocks(
+      [
+        block({ id: "a", title: "Review PR", sticker_title: "Work" }),
+        block({ id: "b", title: "写周报", sticker_title: "工作" }),
+      ],
+      { keyword: "review" },
+    );
+    expect(hits.map((h) => h.id)).toEqual(["a"]);
+  });
+
+  it("keyword 也能命中所属块标题（便于按块检索）", () => {
+    const hits = filterBlocks(
+      [
+        block({ id: "a", title: "写文档", owner_block_title: "本周计划" }),
+        block({ id: "b", title: "写文档", owner_block_title: "评审清单" }),
+      ],
+      { keyword: "本周计划" },
+    );
+    expect(hits.map((h) => h.id)).toEqual(["a"]);
+  });
+
+  it("条件组合为 AND", () => {
+    const ids = filterBlocks(blocks, { done: false, week: true }).map((b) => b.id);
+    expect(ids).toEqual(["today", "tomorrow"]);
+  });
+});

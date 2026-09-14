@@ -52,8 +52,19 @@ import {
   buildTabTransaction,
   buildTableBackwardTransaction,
   buildTableForwardTransaction,
+  buildTableRangeTransaction,
   buildWrapTransaction,
 } from "./liveTransforms";
+import { TableToolbar, type TableToolbarAnchor } from "./tableToolbar";
+import { resolveTableAround, tableToolbarState } from "./liveTableEdits";
+import {
+  activeTableCellRange,
+  clearActiveTableCell,
+  endTableEditing,
+  getActiveTableCell,
+  restoreTableCellSelection,
+  tableBlockIndexOf,
+} from "./liveWidgets";
 import { mathInstancePromise } from "../../../utils/markdown";
 import { invoke } from "../../../composables/useTauri";
 import type { TodoBlock } from "../../../types";
@@ -250,6 +261,8 @@ let lineNumberCompartment: Compartment | null = null;
 
 /** 创建 CM6 编辑器实例。 */
 export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): EditorView {
+  // 表格工具条实例（视图创建后赋值；updateListener 通过它同步显隐）
+  let toolbar: TableToolbar | null = null;
   fontSizeCompartment = new Compartment();
   fontFamilyCompartment = new Compartment();
   lineNumberCompartment = new Compartment();
@@ -313,7 +326,7 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
         { key: "Mod-i", run: (view) => runFormat(view, "*", "*", "input.format.italic") },
         { key: "Mod-Shift-x", run: (view) => runFormat(view, "~~", "~~", "input.format.strike") },
         indentWithTab,
-        { key: "Mod-s", run: () => { opts.onSave(); return true; } },
+        { key: "Mod-s", run: () => { endTableEditing(); opts.onSave(); return true; } },
       ])),
       EditorView.lineWrapping,
       liveTodoBlocksField.init(() => opts.todoBlocks ?? []),
@@ -328,6 +341,9 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
           opts.onDocChange(doc);
         }
         if (u.docChanged || u.selectionSet) reportSlash(u.view, (query, from, to, anchor) => opts.onSlash?.(query, from, to, anchor), () => opts.onSlashClose?.());
+        if (toolbar && (u.docChanged || u.selectionSet || u.viewportChanged || u.geometryChanged)) {
+          syncTableToolbar(u.view, toolbar);
+        }
         void handlePastedLinks(u, opts);
       }),
       fontSizeCompartment.of(fontSizeTheme(opts.fontSize)),
@@ -336,6 +352,63 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     ],
   });
   const view = new EditorView({ state, parent });
+  // 表格工具条挂在编辑器根元素内（.cm-editor 是定位上下文），
+  // 位置取光标所在表格首行的坐标 → 浮在表格上方。
+  toolbar = new TableToolbar((action) => {
+    const bar = toolbar;
+    if (!bar || bar.tablePos < 0) return;
+    // 动作目标 = 当前单元格选区（widget 内聚焦 / 拖拽选中的格）；无选区时由工具条位置解析
+    const active = getActiveTableCell();
+    const range = activeTableCellRange();
+    const index = active ? tableBlockIndexOf(view, active.host) : -1;
+    // 单元格可能正在输入：先把未提交内容落盘，再执行表格级动作
+    endTableEditing();
+    const built = buildTableRangeTransaction(view.state.doc.toString(), bar.tablePos, range, action);
+    if (!built) return; // 无实际变化（例如对齐未变）时不打断撤销栈
+    view.dispatch(built.spec);
+    // 动作后 widget DOM 会重建：焦点与单元格选区落回同一位置（连续操作不丢目标）
+    if (index >= 0) restoreTableCellSelection(view, index, built.range, !!active?.multi);
+    else view.focus();
+  });
+  view.dom.append(toolbar.dom);
+  syncTableToolbar(view, toolbar);
+  // 单元格编辑：工具条按表格 DOM 位置显示（不改编辑器选区，避免抢走单元格焦点）。
+  // 鼠标/键盘操作后统一按「单元格选区 → 编辑器光标」的顺序刷新工具条。
+  const syncFromSelection = () => {
+    window.setTimeout(() => {
+      if (toolbar && view.dom.isConnected) syncTableToolbar(view, toolbar);
+    }, 0);
+  };
+  view.dom.addEventListener("mouseup", syncFromSelection);
+  view.dom.addEventListener("keyup", syncFromSelection);
+  view.dom.addEventListener("mousedown", (event) => {
+    // 点击表格外的位置 → 取消单元格选区（工具条随之隐藏）；工具条自身点击不重置目标
+    const target = event.target as HTMLElement | null;
+    if (target?.closest?.(".live-table-block") || target?.closest?.(".tbl-bar")) return;
+    clearActiveTableCell();
+  });
+  view.dom.addEventListener("focusin", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!toolbar || !target?.closest?.(".live-table-block")) return;
+    syncTableToolbar(view, toolbar);
+  });
+  view.dom.addEventListener("focusout", () => {
+    window.setTimeout(() => {
+      if (!toolbar || !view.dom.isConnected) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest?.(".live-table-block")) return; // 焦点仍在表格单元格里
+      syncTableToolbar(view, toolbar);
+    }, 0);
+  });
+  // 滚动时跟随（rAF 合并高频事件）；视图已销毁则跳过
+  let scrollFrame = 0;
+  view.scrollDOM.addEventListener("scroll", () => {
+    if (scrollFrame) cancelAnimationFrame(scrollFrame);
+    scrollFrame = requestAnimationFrame(() => {
+      scrollFrame = 0;
+      if (toolbar && view.dom.isConnected) syncTableToolbar(view, toolbar);
+    });
+  }, { passive: true });
   view.dom.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
     // 折叠/子任务/已完成折叠箭头优先于「点卡片开编辑窗」：
@@ -379,6 +452,11 @@ export function createLiveView(parent: HTMLElement, opts: LiveViewOptions): Edit
     }
   });
   return view;
+}
+
+/** 提交正在编辑的表格单元格（保存 / 切换模式前调用，避免未落盘的单元格输入丢失）。 */
+export function flushTableEditing(): void {
+  endTableEditing();
 }
 
 /** 外部内容更新 → 同步进编辑器（最小差异替换，保留光标；组词期间跳过）。 */
@@ -454,4 +532,73 @@ function deleteBlockLineBeforeCursor(view: EditorView): boolean {
     userEvent: "delete.backward",
   });
   return true;
+}
+
+/** 工具条上浮偏移：工具条高 34px + 间距 4px。 */
+const TABLE_TOOLBAR_OFFSET = 38;
+
+/** 表格首行行首 +1：表格级动作的稳定定位点（表格源码被 widget 折叠，编辑器光标不可靠）。 */
+function tableAnchorPos(text: string, position: number): number | null {
+  const ctx = resolveTableAround(text, position);
+  if (!ctx) return null;
+  const lines = text.split("\n");
+  const start = lines.slice(0, ctx.startLine).reduce((sum, line) => sum + line.length + 1, 0);
+  return Math.min(start + 1, text.length);
+}
+
+/** widget 根元素 → 文档内偏移（DOM 反查，避免使用陈旧偏移）。 */
+function tablePosOfElement(view: EditorView, host: HTMLElement): number | null {
+  try {
+    const pos = view.posAtDOM(host);
+    return pos < 0 ? null : Math.min(pos + 1, view.state.doc.length);
+  } catch {
+    return null;
+  }
+}
+
+/** 表格首行在编辑器坐标系中的位置（coordsAtPos 在无布局环境可能失败 → 返回 null）。 */
+function tableToolbarAnchor(view: EditorView, position: number): TableToolbarAnchor | null {
+  try {
+    const line = view.state.doc.lineAt(Math.max(0, Math.min(position, view.state.doc.length)));
+    const coords = view.coordsAtPos(line.from);
+    const rect = view.dom.getBoundingClientRect();
+    if (!coords || !rect) return null;
+    return {
+      left: coords.left - rect.left,
+      top: coords.top - rect.top - TABLE_TOOLBAR_OFFSET,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** 工具条锚点：按表格 DOM 定位（单元格选区来自 widget 时用）。 */
+function tableAnchorFromElement(view: EditorView, host: HTMLElement): TableToolbarAnchor | null {
+  const table = host.querySelector("table");
+  if (!table) return null;
+  const editorRect = view.dom.getBoundingClientRect();
+  const tableRect = table.getBoundingClientRect();
+  if (!editorRect || !tableRect) return null;
+  return {
+    left: tableRect.left - editorRect.left,
+    top: tableRect.top - editorRect.top - TABLE_TOOLBAR_OFFSET,
+  };
+}
+
+/** 刷新表格工具条：单元格选区（widget 内选中/聚焦的格）优先，其次编辑器光标所在表格；
+ *  两者都不在表格内 → 隐藏。按钮状态与动作目标都来自「同一个选区」。 */
+function syncTableToolbar(view: EditorView, toolbar: TableToolbar): void {
+  if (!view.dom.isConnected) return;
+  const text = view.state.doc.toString();
+  const host = getActiveTableCell()?.host ?? null;
+  const pos = host
+    ? tablePosOfElement(view, host)
+    : tableAnchorPos(text, view.state.selection.main.head);
+  const state = pos === null ? null : tableToolbarState(text, pos, activeTableCellRange());
+  const anchor = state === null
+    ? null
+    : host
+      ? tableAnchorFromElement(view, host)
+      : tableToolbarAnchor(view, pos as number);
+  toolbar.update(state, anchor, pos ?? undefined);
 }

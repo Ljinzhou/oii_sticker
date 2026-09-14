@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createLiveView, setLiveDoc, setLiveFontFamily, setLiveFontSize, setLiveLineNumbers } from "./LiveEditorView";
 import { mathInstancePromise } from "../../../utils/markdown";
-import { MathBlockWidget } from "./liveWidgets";
+import { MathBlockWidget, TableBlockWidget } from "./liveWidgets";
 
 // CM6 在 jsdom 中需要 ResizeObserver / rAF / DOMRect polyfill
 class ResizeObserverMock {
@@ -514,6 +514,378 @@ describe("LiveEditorView（CM6 内核）", () => {
     setComposing(false);
     setLiveDoc(view, "biao'ti");
     expect(view.state.doc.toString()).toBe("biao'ti");
+    view.destroy();
+  });
+
+  it("表格始终渲染为 HTML 表格：光标进入表格也不再回退源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 光标在表格之后的正文 → 整表渲染（含表头与对齐）
+    view.dispatch({ selection: { anchor: source.length } });
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    expect(host.querySelector(".live-table-block th")?.textContent).toBe("名称");
+    expect(host.querySelector<HTMLElement>(".live-table-block th:nth-child(2)")?.style.textAlign).toBe("right");
+    // 光标进入表格：仍然渲染（不回退成 | --- | 源码）
+    view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    expect(host.textContent).not.toContain("| --- |");
+    view.destroy();
+  });
+
+  it("表格 widget 自己处理内部事件（否则编辑器接管点击、单元格无法聚焦）", () => {
+    const widget = new TableBlockWidget("| 名称 |\n| --- |\n| 苹果 |");
+    // 编辑器必须忽略 widget 内的鼠标事件，否则 mousedown 被接管 → 点不进单元格
+    expect(widget.ignoreEvent(new MouseEvent("mousedown"))).toBe(true);
+    expect(widget.ignoreEvent(new Event("input"))).toBe(true);
+    // widget 根必须保持不可编辑：单元格上的 contenteditable 才会成为独立编辑宿主
+    expect((widget as unknown as { editable: boolean }).editable).toBe(false);
+  });
+
+  it("单元格可直接编辑（Typora 式）：聚焦后回车把内容写回源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]');
+    expect(cell).not.toBeNull();
+    // 单元格自身是编辑宿主：可编辑 + 可聚焦
+    expect(cell!.getAttribute("contenteditable")).toBe("true");
+    expect(cell!.getAttribute("tabindex")).toBe("0");
+    // widget 根必须不可编辑，单元格才会成为独立编辑宿主（焦点才落得进单元格）
+    expect(host.querySelector(".live-table-block")?.getAttribute("contenteditable")).not.toBe("true");
+
+    cell!.dispatchEvent(new FocusEvent("focus"));
+    cell!.textContent = "香蕉";
+    // 编辑期间源码不动（写回会让编辑器重建 DOM、丢掉插入点）
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
+
+    // 回车落盘
+    cell!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 香蕉 | 2 |");
+    expect(host.querySelector(".live-table-block table")).not.toBeNull();
+    view.destroy();
+  });
+
+  it("单元格失焦时自动落盘", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="1"]')!;
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.textContent = "9";
+    cell.dispatchEvent(new FocusEvent("blur"));
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 9 |");
+    view.destroy();
+  });
+
+  it("单元格内按 Esc 放弃本次修改", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.textContent = "不该保存";
+    cell.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
+    view.destroy();
+  });
+
+  it("拖拽表头手柄调整列宽：写回分隔行（持久化）", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const handle = host.querySelector<HTMLElement>('.live-table-block th[data-col="0"] .tbl-col-resize');
+    expect(handle).not.toBeNull();
+    handle!.dispatchEvent(new MouseEvent("mousedown", { clientX: 100, bubbles: true }));
+    // jsdom 无布局：perChar 退化为 startWidth*8/startWidth = 8px/字符 → 48px = +6 字符
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 148 }));
+    document.dispatchEvent(new MouseEvent("mouseup"));
+    expect(view.state.doc.toString().split("\n")[1]).toBe("| --------- | ---: |");
+    // 内容行不受影响
+    expect(view.state.doc.toString().split("\n")[2]).toBe("| 苹果 | 2 |");
+    view.destroy();
+  });
+  it("表格工具条：光标进入表格浮现，离开后隐藏，点击按钮改写源码", () => {
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 2 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+
+    const barEl = () => host.querySelector<HTMLElement>(".tbl-bar");
+    const barVisible = () => {
+      const el = barEl();
+      return !!el && !el.hidden;
+    };
+
+    // 光标在表格外：工具条隐藏
+    view.dispatch({ selection: { anchor: source.length } });
+    expect(barVisible()).toBe(false);
+
+    // 光标进入表格：浮现 17 个操作按钮（3 格式 + 4 对齐 + 5 行 + 5 列）
+    view.dispatch({ selection: { anchor: source.indexOf("苹果") } });
+    expect(barVisible()).toBe(true);
+    const bar = barEl()!;
+    expect(bar!.querySelectorAll(".tbl-btn")).toHaveLength(17);
+
+    // 第一数据行不可上移（表头固定）、首列不可左移；当前列（默认对齐）的「默认」按钮为激活态
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="col-move-left"]')!.disabled).toBe(true);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-up"]')!.disabled).toBe(true);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="row-down"]')!.disabled).toBe(false);
+    expect(bar!.querySelector<HTMLButtonElement>('[data-act="align-default"]')!.classList.contains("is-on")).toBe(true);
+
+    // 点击「居中」：分隔行第一列改写为 :---:（其余列不动）
+    bar!.querySelector<HTMLButtonElement>('[data-act="align-center"]')!.click();
+    expect(view.state.doc.toString().split("\n")[1]).toBe("| :---: | ---: |");
+
+    // 点击「删除列」：两列变一列
+    const afterAlign = host.querySelector(".tbl-bar")!;
+    afterAlign.querySelector<HTMLButtonElement>('[data-act="col-delete"]')!.click();
+    expect(view.state.doc.toString().split("\n")[0]).toBe("| 数量 |");
+    // 只剩一列：删除按钮禁用
+    expect(
+      host.querySelector<HTMLButtonElement>('.tbl-bar [data-act="col-delete"]')!.disabled,
+    ).toBe(true);
+
+    // 光标离开表格：工具条隐藏
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    expect(barVisible()).toBe(false);
+    view.destroy();
+  });
+
+  it("拖拽跨格选中单元格（选单元格而非选文字）：区域高亮 + Ctrl+C 复制 Markdown 表格", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const first = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    const second = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    // 按住从 1,1 拖到 2,2：整块 2×2 单元格被选中
+    first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    second.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    first.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+
+    const selected = () =>
+      Array.from(
+        host.querySelectorAll<HTMLElement>(".live-table-block td.is-cell-selected, .live-table-block th.is-cell-selected"),
+      ).map((cell) => `${cell.dataset.row}:${cell.dataset.col}`);
+    expect(selected()).toEqual(["1:0", "1:1", "2:0", "2:1"]);
+
+    // Ctrl+C：复制选区为 Markdown 表格源码（区域首行作表头 + 分隔行）
+    const copied = new Map<string, string>();
+    const copyEvent = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copyEvent, "clipboardData", {
+      value: { setData: (type: string, value: string) => copied.set(type, value) },
+    });
+    first.dispatchEvent(copyEvent);
+    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(copied.get("text/plain")).toBe("| 苹果 | 2 |\n| --- | --- |\n| 香蕉 | 1 |");
+
+    // 区域选择下按 Ctrl+B：选中的四个单元格一起加粗（不是只加粗光标所在格）
+    first.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString().split("\n").slice(2, 4)).toEqual([
+      "| **苹果** | **2** |",
+      "| **香蕉** | **1** |",
+    ]);
+
+    // 动作后焦点与区域选择落回同一位置；Esc 退出区域选择
+    await tick();
+    expect(host.querySelectorAll(".live-table-block .is-cell-selected")).toHaveLength(4);
+    const restored = host.querySelector<HTMLElement>('.live-table-block td[data-row="1"][data-col="0"]')!;
+    restored.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(host.querySelectorAll(".live-table-block .is-cell-selected")).toHaveLength(0);
+    view.destroy();
+  });
+
+  it("工具条动作按「选中的单元格」生效：插入行落在该行上下、移动按钮可用", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    // 点选第 3 行（香蕉）第 2 列
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await tick(); // 工具条按单元格选区刷新（mouseup 后异步同步）
+
+    const bar = () => host.querySelector<HTMLElement>(".tbl-bar")!;
+    const button = (act: string) => bar().querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+    expect(bar().hidden).toBe(false);
+    // 选中的是数据行：上移可用、左移可用；末行不可下移、末列不可右移
+    expect(button("row-up").disabled).toBe(false);
+    expect(button("col-move-left").disabled).toBe(false);
+    expect(button("row-down").disabled).toBe(true);
+    expect(button("col-move-right").disabled).toBe(true);
+
+    // 「在上方插入行」：新行插在选中行之上（不再固定插到第一行）
+    button("row-above").click();
+    expect(view.state.doc.toString().split("\n")).toEqual([
+      "| 名称 | 数量 |",
+      "| --- | --- |",
+      "| 苹果 | 2 |",
+      "|  |  |",
+      "| 香蕉 | 1 |",
+      "",
+      "正文",
+    ]);
+
+    // 新行成为选区（焦点落在新行）→ 继续用工具条左移该列
+    await tick();
+    expect(host.querySelector(".live-table-block td.is-editing")?.getAttribute("data-row")).toBe("2");
+    button("col-move-left").click();
+    expect(view.state.doc.toString().split("\n")[0]).toBe("| 数量 | 名称 |");
+    view.destroy();
+  });
+
+  it("末格按 Tab（Typora 行为）：追加一整行并把焦点落到新行首格", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    const editing = () => host.querySelector<HTMLElement>(".live-table-block td.is-editing");
+    const last = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    last.dispatchEvent(new FocusEvent("focus"));
+    last.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+
+    // 末格 Tab：完整追加一行空单元格（源码级，可撤销）
+    expect(view.state.doc.toString().split("\n")).toEqual([
+      "| 名称 | 数量 |",
+      "| --- | --- |",
+      "| 苹果 | 2 |",
+      "| 香蕉 | 1 |",
+      "|  |  |",
+      "",
+      "正文",
+    ]);
+
+    // 焦点落到新行首格，可以继续 Tab 前进
+    await tick();
+    expect(editing()?.getAttribute("data-row")).toBe("3");
+    expect(editing()?.getAttribute("data-col")).toBe("0");
+    const before = view.state.doc.toString();
+    editing()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    expect(view.state.doc.toString()).toBe(before); // 非末格 Tab 只移动焦点
+    expect(editing()?.getAttribute("data-col")).toBe("1");
+    view.destroy();
+  });
+
+  it("单元格里 Ctrl+Z 撤销表格动作（插行/移动），Ctrl+Shift+Z 重做", async () => {
+    const tick = () => new Promise((resolve) => window.setTimeout(resolve, 0));
+    const host = mountHost();
+    const source = "| 名称 | 数量 |\n| --- | --- |\n| 苹果 | 2 |\n| 香蕉 | 1 |\n\n正文";
+    const view = createLiveView(host, {
+      doc: source,
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    view.dispatch({ selection: { anchor: source.length } });
+
+    // 点选第 3 行第 2 列 → 工具条「在上方插入行」
+    const cell = host.querySelector<HTMLElement>('.live-table-block td[data-row="2"][data-col="1"]')!;
+    cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+    cell.dispatchEvent(new FocusEvent("focus"));
+    cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await tick();
+    host.querySelector<HTMLElement>('.tbl-bar [data-act="row-above"]')!.click();
+    const inserted = view.state.doc.toString();
+    expect(inserted.split("\n")[3]).toBe("|  |  |");
+
+    // Ctrl+Z：插行被撤销（焦点仍在表格单元格里，撤销键由 widget 转给编辑器历史）
+    await tick();
+    const undoCell = host.querySelector<HTMLElement>(".live-table-block td.is-editing")
+      ?? host.querySelector<HTMLElement>(".live-table-block td")!;
+    undoCell.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe(source);
+
+    // Ctrl+Shift+Z：重做（真实浏览器里 Shift+z 的 event.key 是大写 "Z"）
+    await tick();
+    const redoCell = host.querySelector<HTMLElement>(".live-table-block td.is-editing")
+      ?? host.querySelector<HTMLElement>(".live-table-block td")!;
+    redoCell.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Z", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe(inserted);
+    view.destroy();
+  });
+
+  it("外部同步不进撤销栈：Ctrl+Z 只撤销自己的编辑", () => {
+    const host = mountHost();
+    const view = createLiveView(host, {
+      doc: "初始内容",
+      fontSize: 14,
+      onDocChange: () => {},
+      onSave: () => {},
+    });
+    // 外部（另一个窗口 / 数据层）写进来的内容
+    setLiveDoc(view, "外部写入的内容");
+    expect(view.state.doc.toString()).toBe("外部写入的内容");
+    // 自己的编辑 → 撤销：应回到外部内容，而不是被外部同步顶掉的「初始内容」
+    view.dispatch({ changes: { from: 0, to: 0, insert: "用户-" } });
+    host.querySelector<HTMLElement>(".cm-content")!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    expect(view.state.doc.toString()).toBe("外部写入的内容");
     view.destroy();
   });
 });

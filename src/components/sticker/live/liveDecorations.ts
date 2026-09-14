@@ -21,6 +21,7 @@ import {
   CodeBlockWidget,
   DoneBlockWidget,
   renderFragment,
+  TableBlockWidget,
   TaskCheckboxWidget,
   TodoBlockWidget,
 } from "./liveWidgets";
@@ -39,7 +40,7 @@ interface InlineRange {
 export interface BlockRange {
   from: number;
   to: number;
-  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line" | "code-block" | "math-block" | "todo-block" | "done-block";
+  kind: "heading-mark" | "heading-line" | "listmark" | "quote" | "quote-line" | "hr" | "compound-line" | "code-block" | "math-block" | "todo-block" | "done-block" | "table-block";
   level?: number; // heading 级别 / 复合编号嵌套深度
   ordinal?: string; // 有序列表显示编号（如 "1."、"1.1."）；无序为 "•"
   source?: string;
@@ -76,6 +77,12 @@ export function collectInlineRanges(view: EditorView): InlineRange[] {
         // 行内代码：是渲染目标，同时内部不参与 math 扫描
         codeRanges.push([from, to]);
         ranges.push({ from, to, kind: "render" });
+        return false;
+      }
+      if (name === "Table") {
+        // 表格：整体交给 table-block 渲染，单元格内部不做行内渲染
+        // （否则「单元格装饰 + 表格块装饰」会在同一行互相覆盖）
+        codeRanges.push([from, to]);
         return false;
       }
       const kind =
@@ -196,6 +203,13 @@ function collectBlockRangesFromState(state: EditorState): BlockRange[] {
       const name = node.type.name;
       const from = node.from;
       const to = node.to;
+      if (name === "Table") {
+        // GFM 表格：整表作为一个块级范围（单元格内容不单独渲染）。
+        // 记入 codeRanges：表格内不再参与 math/受控标签的行扫描。
+        codeRanges.push([from, to]);
+        ranges.push({ from, to, kind: "table-block", source: doc.sliceString(from, to) });
+        return false;
+      }
       if (name === "FencedCode") {
         codeRanges.push([from, to]);
         const source = doc.sliceString(from, to);
@@ -380,6 +394,8 @@ function blockDecoration(
   uiKey = "",
 ): Decoration {
   switch (r.kind) {
+    case "table-block":
+      return Decoration.replace({ block: true, widget: new TableBlockWidget(r.source ?? "") });
     case "code-block": {
       const source = r.source ?? "";
       const firstNewline = source.search(/\r?\n/);
@@ -483,9 +499,10 @@ export function buildLiveBlockDecorations(state: EditorState): DecorationSet {
   const todoBlocks = state.field(liveTodoBlocksField, false) ?? [];
   const { ui, uiKey } = state.field(liveUiStateField, false) ?? { ui: DEFAULT_BLOCK_UI, uiKey: "" };
   const decorations = collectBlockRangesFromState(state)
-    .filter((range) => range.kind === "code-block" || range.kind === "math-block" || range.kind === "todo-block" || range.kind === "done-block")
-    // todo/done 块不受选区影响：永远显示卡片；代码/公式块保留「光标所在行显示源码」
-    .filter((range) => (range.kind === "todo-block" || range.kind === "done-block") || !selectionTouchesRange(state, range.from, range.to))
+    .filter((range) => range.kind === "code-block" || range.kind === "math-block" || range.kind === "table-block" || range.kind === "todo-block" || range.kind === "done-block")
+    // todo/done/表格块不受选区影响：永远渲染（表格单元格可直接编辑）；
+    // 代码/公式块保留「光标所在行显示源码」
+    .filter((range) => (range.kind === "todo-block" || range.kind === "done-block" || range.kind === "table-block") || !selectionTouchesRange(state, range.from, range.to))
     .map((range) => blockDecoration(range, todoBlocks, ui, uiKey).range(range.from, range.to));
   return Decoration.set(decorations, true);
 }
@@ -561,7 +578,7 @@ export function buildLiveDecorations(view: EditorView): RangeSet<Decoration> {
     ranges.push({ from: r.from, to: r.to, deco: inlineDecoration(view, r), isMark: false, isBlock: false });
   }
   for (const r of collectBlockRanges(view)) {
-    if (r.kind === "code-block" || r.kind === "math-block" || r.kind === "todo-block" || r.kind === "done-block") {
+    if (r.kind === "code-block" || r.kind === "math-block" || r.kind === "table-block" || r.kind === "todo-block" || r.kind === "done-block") {
       // 影响垂直布局的 block 均由 liveBlockDecorationsField 直接提供。
       continue;
     }

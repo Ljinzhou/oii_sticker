@@ -12,6 +12,7 @@ import {
   setLiveLineNumbers,
   setLiveTodoBlocksInView,
   setLiveUiStateInView,
+  flushTableEditing,
 } from "./live/LiveEditorView";
 import type { TodoBlock } from "../../types";
 import type { SlashAnchor } from "../slash/types";
@@ -79,6 +80,8 @@ function scheduleEmit(doc: string) {
 function flush() {
   if (emitTimer) window.clearTimeout(emitTimer);
   emitTimer = undefined;
+  // 单元格内容在离开单元格时才落盘：保存前必须先提交
+  flushTableEditing();
   if (view) {
     const doc = view.state.doc.toString();
     lastEmitted = doc;
@@ -423,6 +426,183 @@ defineExpose({ flush, isDirty });
 .live-host :deep(.tb-done) { color: #999; text-decoration: line-through; }
 .live-host :deep(.done-block-card) { cursor: pointer; }
 .live-host :deep(.todo-task-checkbox) { accent-color: #4f7cff; }
+
+/* ── 渲染态表格（与展示模式 MarkdownView 同一视觉） ── */
+.live-host :deep(.live-table-block) {
+  padding: 8px 0;
+}
+.live-host :deep(.live-table-block table) {
+  border-collapse: collapse;
+  margin: 0;
+}
+.live-host :deep(.live-table-block th),
+.live-host :deep(.live-table-block td) {
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  padding: 4px 10px;
+  font-size: 0.95em;
+  line-height: 1.5;
+}
+.live-host :deep(.live-table-block th) {
+  background: rgba(0, 0, 0, 0.03);
+  font-weight: 600;
+}
+
+/* 表格单元格：渲染态直接编辑 */
+.live-host :deep(.live-table-block td),
+.live-host :deep(.live-table-block th) {
+  position: relative;
+  cursor: text;
+  outline: none;
+}
+.live-host :deep(.live-table-block td:focus),
+.live-host :deep(.live-table-block th:focus) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.35);
+}
+/* 焦点在表格单元格内时：编辑器绘制的光标/选区/当前行按「编辑器光标」绘制，
+   会停在表格外误导用户（实测：光标画在第 20 行），必须隐藏。
+   用 :has() 直接依据焦点状态判断——EditorView 会改写编辑器根的 class，
+   由 JS 维护标记会被它冲掉。 */
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-cursorLayer),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-cursorLayer),
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-selectionLayer),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-selectionLayer) {
+  display: none !important;
+}
+.live-host :deep(.cm-editor:has(.live-table-block td:focus) .cm-activeLine),
+.live-host :deep(.cm-editor:has(.live-table-block th:focus) .cm-activeLine) {
+  background: transparent !important;
+}
+/* 单元格直接编辑（Typora 式）：单元格自身是编辑宿主，聚焦时给蓝色描边 */
+.live-host :deep(.live-table-block td:focus),
+.live-host :deep(.live-table-block th:focus) {
+  outline: none;
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.45);
+}
+
+/* 正在编辑的单元格：焦点宿主始终是编辑器正文，用选区高亮指示编辑目标 */
+.live-host :deep(.live-table-block td.is-editing),
+.live-host :deep(.live-table-block th.is-editing) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.4);
+}
+/* 单元格区域选择（拖拽 / Shift+点击）：「选单元格」整体高亮，可批量格式化 / 复制 / 删行列 */
+.live-host :deep(.live-table-block td.is-cell-selected),
+.live-host :deep(.live-table-block th.is-cell-selected) {
+  background: rgba(79, 124, 255, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(79, 124, 255, 0.3);
+}
+.live-host :deep(.live-table-block td.is-cell-selected.is-editing),
+.live-host :deep(.live-table-block th.is-cell-selected.is-editing) {
+  box-shadow: inset 0 0 0 2px rgba(79, 124, 255, 0.55);
+}
+/* 列宽拖拽手柄（表头单元格右边界） */
+.live-host :deep(.tbl-col-resize) {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  z-index: 2;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+}
+.live-host :deep(.live-table-block th:hover .tbl-col-resize) {
+  background: rgba(0, 0, 0, 0.12);
+}
+.live-host :deep(.tbl-col-resize:hover) {
+  background: rgba(79, 124, 255, 0.35);
+}
+
+/* ── 表格浮动工具条（光标位于表格内时浮现） ── */
+.live-host :deep(.tbl-bar) {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 4px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 6px 18px rgba(23, 26, 33, 0.13), 0 1px 2px rgba(23, 26, 33, 0.07);
+  backdrop-filter: blur(7px);
+  animation: tbl-bar-in 130ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.live-host :deep(.tbl-bar[hidden]) {
+  display: none;
+}
+@keyframes tbl-bar-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+.live-host :deep(.tbl-sep) {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgba(0, 0, 0, 0.06);
+}
+.live-host :deep(.tbl-btn) {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: rgba(46, 50, 56, 0.62);
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease;
+}
+.live-host :deep(.tbl-btn:hover) {
+  background: rgba(0, 0, 0, 0.055);
+  color: #2e3238;
+}
+.live-host :deep(.tbl-btn.is-on) {
+  background: rgba(79, 124, 255, 0.12);
+  color: #3b63d6;
+}
+.live-host :deep(.tbl-btn.is-on:hover) {
+  background: rgba(79, 124, 255, 0.18);
+}
+.live-host :deep(.tbl-btn.is-danger:hover) {
+  background: rgba(180, 35, 24, 0.1);
+  color: #b42318;
+}
+.live-host :deep(.tbl-btn:disabled) {
+  color: rgba(0, 0, 0, 0.2);
+  background: none;
+  cursor: default;
+}
+.live-host :deep(.tbl-btn svg) {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+/* 工具条 tooltip（比 title 更可控，随工具条浮起） */
+.live-host :deep(.tbl-btn::before) {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  padding: 3px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #fff;
+  background: rgba(46, 50, 56, 0.94);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 90ms ease, transform 90ms ease;
+}
+.live-host :deep(.tbl-btn:hover::before) {
+  opacity: 1;
+  transform: translateX(-50%);
+}
 
 /* 复合编号行缩进（按嵌套深度，模拟 Obsidian 层级） */
 .live-host :deep(.cm-live-n1) {

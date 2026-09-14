@@ -5,6 +5,11 @@ import {
   handleTabAtCursor,
 } from "../../../utils/edit-actions";
 import { moveTableCell } from "./liveTables";
+import {
+  applyTableRangeAction,
+  type TableCellRange,
+  type TableToolbarAction,
+} from "./liveTableEdits";
 
 /** Build one minimal CodeMirror change for a pure text transformation. */
 function toTransaction(
@@ -111,6 +116,22 @@ export function buildTableForwardTransaction(text: string, selection: SelectionR
 
 export function buildTableBackwardTransaction(text: string, selection: SelectionRange): TransactionSpec | null {
   return buildTableNavigation(text, selection, -1);
+}
+
+/** 表格工具窗动作 → 最小 CodeMirror 事务 + 编辑后应保持的选区。
+ *  position 为表格内任意偏移（由工具条按表格 DOM 定位提供，而非编辑器光标）；
+ *  range 为当前选中的单元格区域（多选时按区域批量操作）。 */
+export function buildTableRangeTransaction(
+  text: string,
+  position: number,
+  range: TableCellRange | null,
+  action: TableToolbarAction,
+): { spec: TransactionSpec; range: TableCellRange } | null {
+  const result = applyTableRangeAction(text, position, range, action);
+  if (!result) return null;
+  const spec = toTransaction(text, result.text, result.cursor, "input.table");
+  if (!spec) return null; // 无实际变化（例如对齐未变）时不打断撤销栈
+  return { spec, range: result.range };
 }
 
 export function buildWrapTransaction(

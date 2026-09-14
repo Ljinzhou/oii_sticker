@@ -5,9 +5,11 @@ import { useNotesStore } from "../../stores/notes";
 import { useSettingsStore } from "../../stores/settings";
 import { invoke, listen } from "../../composables/useTauri";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import type { NewSticker, Sticker } from "../../types";
+import type { NewSticker, Sticker, StickerGroup } from "../../types";
 import SettingsPanel from "./SettingsPanel.vue";
 import StickerCard from "./StickerCard.vue";
+import StickerPreview from "./StickerPreview.vue";
+import TodoOverviewView from "./TodoOverviewView.vue";
 
 const notes = useNotesStore();
 const settings = useSettingsStore();
@@ -91,11 +93,42 @@ function closeWindow() {
   invoke("main_close_cmd");
 }
 
+// —— 窗口最大化 / 还原（按 tauri 窗口状态）；测试环境无该 API 时静默降级 ——
+const isMaximized = ref(false);
+async function toggleMaximizeWindow() {
+  try {
+    const win = getCurrentWindow();
+    await win.toggleMaximize();
+    isMaximized.value = await win.isMaximized();
+  } catch (e) {
+    console.warn("[ui] 最大化窗口失败：", e);
+  }
+}
+async function refreshMaximized() {
+  try {
+    isMaximized.value = await getCurrentWindow().isMaximized();
+  } catch {
+    /* 测试环境 / 无权限：忽略 */
+  }
+}
+
 // —— 视图模式（持久化 system_config；启动时先默认分区，待 settings 回读后恢复） ——
 const viewMode = ref<"section" | "flat">("section");
 function setViewMode(m: "section" | "flat") {
   viewMode.value = m;
   void settings.set("console_group_view", m);
+}
+
+// —— 页面切换（便签 / 任务总览，持久化 system_config.console_page） ——
+const consolePage = ref<"stickers" | "todos">("stickers");
+function setConsolePage(page: "stickers" | "todos") {
+  consolePage.value = page;
+  void settings.set("console_page", page);
+}
+/** 「打开便签」：唤起便签窗口（隐藏中时重建显示）。 */
+async function openSticker(stickerId: number) {
+  await invoke("wake_sticker_cmd", { id: stickerId });
+  showGroupToast("已打开便签窗口");
 }
 
 type Section = {
@@ -104,29 +137,49 @@ type Section = {
   isDefault: boolean;
   groupId: number | null;
   stickers: Sticker[];
+  /** 树形缩进层级（0 = 顶层） */
+  depth: number;
+  /** 分组颜色（未分组为 null） */
+  color: string | null;
+  /** 含子分组的便签数 */
+  total: number;
 };
+
+/** 分组树（深度优先）；「未分组」仅在存在未分组便签时排在最前。 */
 const groupSections = computed<Section[]>(() => {
-  const byId = new Map<number, Sticker[]>(notes.groups.map((g) => [g.id, []]));
-  const ungrouped: Sticker[] = [];
-  for (const s of notes.stickers) {
-    if (s.group_id != null && byId.has(s.group_id)) byId.get(s.group_id)!.push(s);
-    else ungrouped.push(s);
-  }
-  // 无内置默认分组：所有分组均为用户建的真实分组（可重命名/删除/新建便签）。
-  // 「未分组」仅为未归属分组的便签提供展示位，仅在存在未分组便签时渲染。
+  const ungrouped = notes.stickers.filter((s) => s.group_id == null);
   const sections: Section[] = [];
   if (ungrouped.length > 0) {
-    sections.push({ key: "default", name: "未分组", isDefault: true, groupId: null, stickers: ungrouped });
+    sections.push({
+      key: "default",
+      name: "未分组",
+      isDefault: true,
+      groupId: null,
+      stickers: ungrouped,
+      depth: 0,
+      color: null,
+      total: ungrouped.length,
+    });
   }
-  sections.push(
-    ...notes.groups.map((g) => ({
-      key: String(g.id),
-      name: g.name,
-      isDefault: false,
-      groupId: g.id,
-      stickers: byId.get(g.id) ?? [],
-    })),
-  );
+  const walk = (parentId: number | null, depth: number) => {
+    for (const g of notes.childrenOf(parentId)) {
+      const ids = notes.groupAndDescendants(g.id);
+      const all = notes.stickers.filter((s) => s.group_id != null && ids.has(s.group_id));
+      sections.push({
+        key: String(g.id),
+        name: g.name,
+        isDefault: false,
+        groupId: g.id,
+        // 分组块内展示「本级」便签；子分组各有自己的块（树形视图）
+        stickers: notes.stickers.filter((s) => s.group_id === g.id),
+        depth,
+        color: g.color ?? null,
+        total: all.length,
+      });
+      walk(g.id, depth + 1);
+    }
+  };
+  walk(null, 0);
   return sections;
 });
 
@@ -136,12 +189,46 @@ function toggleCollapse(key: string) {
   collapsed.value[key] = !collapsed.value[key];
 }
 
-// 平铺筛选
+// 平铺筛选（分行渲染见 flatRows；选中某分组时只保留该行）
 const filter = ref<"all" | "default" | number>("all");
-const flatList = computed(() => {
-  if (filter.value === "all") return notes.stickers;
-  if (filter.value === "default") return notes.stickers.filter((s) => s.group_id == null);
-  return notes.stickers.filter((s) => s.group_id === filter.value);
+
+/** 平铺视图按文件夹分行：每个顶层分组一行（行内含其子文件夹的便签），未分组单独一行。 */
+interface FlatRow {
+  key: string;
+  name: string;
+  path: string;
+  color: string | null;
+  isDefault: boolean;
+  stickers: Sticker[];
+}
+const flatRows = computed<FlatRow[]>(() => {
+  const rows: FlatRow[] = [];
+  const pushGroup = (g: StickerGroup) => {
+    const ids = notes.groupAndDescendants(g.id);
+    const list = notes.stickers.filter((s) => s.group_id != null && ids.has(s.group_id));
+    if (filter.value !== "all" && filter.value !== g.id) return;
+    rows.push({
+      key: String(g.id),
+      name: g.name,
+      path: `stickers/${notes.groupPath(g.id)}`,
+      color: g.color ?? null,
+      isDefault: false,
+      stickers: list,
+    });
+  };
+  const ungrouped = notes.stickers.filter((s) => s.group_id == null);
+  if (ungrouped.length > 0 && (filter.value === "all" || filter.value === "default")) {
+    rows.push({
+      key: "default",
+      name: "未分组",
+      path: "stickers/（根目录）",
+      color: null,
+      isDefault: true,
+      stickers: ungrouped,
+    });
+  }
+  for (const g of notes.topLevelGroups()) pushGroup(g);
+  return rows;
 });
 
 // 分组操作
@@ -150,10 +237,34 @@ const newGroupName = ref("");
 async function onCreateGroup() {
   const name = newGroupName.value.trim();
   if (!name) return;
-  await notes.createGroup(name);
-  await notes.refresh(); // createGroup 不回读，手动刷新使新分组立即可见
+  await notes.createGroup(name, null);
   newGroupName.value = "";
   creatingGroup.value = false;
+}
+/** 在某个分组下新建子分组（菜单入口）。 */
+const creatingChildUnder = ref<number | null>(null);
+const newChildName = ref("");
+function startCreateChildGroup(groupId: number) {
+  groupMenuFor.value = null;
+  creatingChildUnder.value = groupId;
+  newChildName.value = "";
+}
+async function onCreateChildGroup() {
+  const parentId = creatingChildUnder.value;
+  const name = newChildName.value.trim();
+  if (parentId == null || !name) {
+    creatingChildUnder.value = null;
+    return;
+  }
+  try {
+    await notes.createGroup(name, parentId);
+    collapsed.value[String(parentId)] = false; // 展开父级，新子分组立即可见
+  } catch (e) {
+    showGroupToast(String(e));
+  } finally {
+    creatingChildUnder.value = null;
+    newChildName.value = "";
+  }
 }
 const renamingGroup = ref<number | null>(null);
 const groupNameDraft = ref("");
@@ -172,10 +283,37 @@ async function commitRenameGroup() {
   renamingGroup.value = null;
 }
 
+// 分组颜色（「修改样式」）
+const colorFor = ref<number | null>(null);
+const PALETTE = [
+  "#4f7cff", "#2e9e5b", "#f08c1e", "#d33",
+  "#8b5cf6", "#0ea5e9", "#eab308", "#ec4899",
+  "#14b8a6", "#6b7280", "#b45309", "",
+];
+async function setGroupColor(groupId: number, color: string) {
+  colorFor.value = null;
+  try {
+    await notes.setGroupColor(groupId, color === "" ? null : color);
+  } catch (e) {
+    showGroupToast(String(e));
+  }
+}
+
 // 删除分组三选确认框
 const deletingGroup = ref<{ id: number; name: string; count: number } | null>(null);
 const deleteChoice = ref<"to-default" | "with-stickers">("to-default");
 const confirmingWithStickers = ref(false);
+function requestDeleteGroup(g: { id: number; name: string; count: number }) {
+  groupMenuFor.value = null;
+  // 有子分组时后端会拒绝：先即时反馈，避免用户以为点了没反应
+  if (notes.childrenOf(g.id).length > 0) {
+    showGroupToast(`「${g.name}」下还有子分组，请先移动或删除它们`);
+    return;
+  }
+  deletingGroup.value = g;
+  deleteChoice.value = "to-default";
+  confirmingWithStickers.value = false;
+}
 async function onDeleteGroupConfirmed() {
   if (!deletingGroup.value) return;
   const { id } = deletingGroup.value;
@@ -194,6 +332,113 @@ async function onDeleteGroupConfirmed() {
 // 组菜单（标题条 ⋯）
 const groupMenuFor = ref<string | null>(null);
 
+// —— 分组拖拽排序（上/下插入到同级；拖到分组上成为子分组） ——
+const dragGroupId = ref<number | null>(null);
+const dropHint = ref<{ key: string; mode: "before" | "after" | "inside" } | null>(null);
+
+function onGroupDragStart(sec: Section, event: DragEvent) {
+  if (sec.isDefault || sec.groupId == null) return;
+  dragGroupId.value = sec.groupId;
+  groupMenuFor.value = null;
+  event.dataTransfer?.setData("text/plain", String(sec.groupId));
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+function onGroupDragOver(sec: Section, event: DragEvent) {
+  if (dragGroupId.value === null || sec.groupId === dragGroupId.value) return;
+  event.preventDefault();
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const ratio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
+  const mode = ratio < 0.27 ? "before" : ratio > 0.73 ? "after" : "inside";
+  dropHint.value = { key: sec.key, mode };
+}
+
+function onGroupDragEnd() {
+  dragGroupId.value = null;
+  dropHint.value = null;
+}
+
+async function onGroupDrop(sec: Section, event: DragEvent) {
+  event.preventDefault();
+  const id = dragGroupId.value;
+  const hint = dropHint.value;
+  dragGroupId.value = null;
+  dropHint.value = null;
+  if (id === null || hint === null || hint.key !== sec.key || sec.groupId === id) return;
+  try {
+    if (hint.mode === "inside" && sec.groupId != null) {
+      await notes.moveGroup(id, sec.groupId);
+      collapsed.value[String(sec.groupId)] = false;
+      return;
+    }
+    const parentId = notes.groups.find((g) => g.id === id)?.parent_id ?? null;
+    await notes.moveGroup(id, parentId);
+    const siblings = notes
+      .childrenOf(parentId)
+      .map((g) => g.id)
+      .filter((sid) => sid !== id);
+    const index = sec.groupId != null ? siblings.indexOf(sec.groupId) : siblings.length - 1;
+    const at = hint.mode === "before" ? index : index + 1;
+    siblings.splice(at < 0 ? siblings.length : at, 0, id);
+    await notes.reorderGroups(parentId, siblings);
+  } catch (e) {
+    showGroupToast(String(e));
+  }
+}
+
+// —— 右侧预览：悬停卡片看内容；点击分组看该文件夹概览 ——
+const previewSticker = ref<Sticker | null>(null);
+const selectedGroupKey = ref<string | null>(null);
+const selectedGroup = computed(() => {
+  const key = selectedGroupKey.value;
+  if (key === null || key === "default") return null;
+  return notes.groups.find((g) => String(g.id) === key) ?? null;
+});
+const selectedGroupStickers = computed(() => {
+  const g = selectedGroup.value;
+  if (g) {
+    const ids = notes.groupAndDescendants(g.id);
+    return notes.stickers.filter((s) => s.group_id != null && ids.has(s.group_id));
+  }
+  if (selectedGroupKey.value === "default") return notes.stickers.filter((s) => s.group_id == null);
+  return [];
+});
+
+// —— 预览区宽度（可拖拽；拖到最右收起） ——
+const paneWidth = ref(340);
+const previewCollapsed = ref(false);
+const splitEl = ref<HTMLElement | null>(null);
+let draggingGutter = false;
+
+function onGutterDown(event: MouseEvent) {
+  draggingGutter = true;
+  event.preventDefault();
+  document.addEventListener("mousemove", onGutterMove);
+  document.addEventListener("mouseup", onGutterUp);
+}
+function onGutterMove(event: MouseEvent) {
+  if (!draggingGutter || !splitEl.value) return;
+  const rect = splitEl.value.getBoundingClientRect();
+  const next = rect.right - event.clientX;
+  if (next < 120) {
+    // 拖到最右：收起预览（右缘留出「展开预览」手柄）
+    previewCollapsed.value = true;
+    paneWidth.value = 340;
+    return;
+  }
+  previewCollapsed.value = false;
+  paneWidth.value = Math.max(220, Math.min(next, rect.width - 200));
+}
+function onGutterUp() {
+  draggingGutter = false;
+  document.removeEventListener("mousemove", onGutterMove);
+  document.removeEventListener("mouseup", onGutterUp);
+}
+function expandPreview() {
+  previewCollapsed.value = false;
+  paneWidth.value = 340;
+}
+
 // 简易 toast（复用 WorkspaceManager 模式）
 const groupToast = ref<string | null>(null);
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -203,12 +448,20 @@ function showGroupToast(text: string) {
   toastTimer = setTimeout(() => (groupToast.value = null), 3000);
 }
 
+/** 选择分组（点击分组头）：折叠切换 + 右侧显示该文件夹概览。 */
+function selectGroup(sec: Section) {
+  selectedGroupKey.value = sec.key;
+  toggleCollapse(sec.key);
+}
+
 onMounted(async () => {
   notes.refresh();
   await settings.refresh(); // 配置回读完成后，再恢复持久化的视图模式
   viewMode.value =
     settings.get("console_group_view", "section") === "flat" ? "flat" : "section";
+  consolePage.value = settings.get("console_page", "stickers") === "todos" ? "todos" : "stickers";
   refreshOpenIds();
+  refreshMaximized();
   // 后端推送 → 刷新列表 + 窗口打开状态（隐藏/显示按钮实时同步）
   unlisteners.push(
     await listen("sticky://push-update", () => {
@@ -224,6 +477,8 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlisteners.forEach((u) => u());
   if (toastTimer) clearTimeout(toastTimer);
+  document.removeEventListener("mousemove", onGutterMove);
+  document.removeEventListener("mouseup", onGutterUp);
 });
 </script>
 
@@ -231,17 +486,36 @@ onBeforeUnmount(() => {
   <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region>
       <h1>oii_sticker 主控台</h1>
+      <div class="view-switch page-switch" role="tablist">
+        <button :class="{ on: consolePage === 'stickers' }" @click="setConsolePage('stickers')">
+          <i class="ri-sticky-note-line"></i>便签
+        </button>
+        <button :class="{ on: consolePage === 'todos' }" @click="setConsolePage('todos')">
+          <i class="ri-todo-line"></i>任务总览
+        </button>
+      </div>
       <div class="actions">
         <button class="btn primary" @click="createSticker"><i class="ri-add-line"></i>新建便签</button>
         <button class="btn" @click="showSettings = true"><i class="ri-settings-3-line"></i>系统设置</button>
         <span class="win-ctl">
           <button class="btn ctl" title="最小化" @click="minimizeWindow"><i class="ri-subtract-line"></i></button>
+          <button
+            class="btn ctl"
+            :title="isMaximized ? '向下还原' : '最大化'"
+            @click="toggleMaximizeWindow"
+          >
+            <i :class="isMaximized ? 'ri-file-copy-2-line' : 'ri-checkbox-blank-line'"></i>
+          </button>
           <button class="btn ctl close" title="关闭" @click="closeWindow"><i class="ri-close-line"></i></button>
         </span>
       </div>
     </header>
 
-    <section class="list">
+    <!-- 任务总览页 -->
+    <TodoOverviewView v-if="consolePage === 'todos'" class="todo-page" @open-sticker="openSticker" />
+
+    <!-- 便签页 -->
+    <section v-else class="list">
       <!-- 视图切换 + 新建分组 -->
       <div class="list-toolbar">
         <div class="view-switch" role="tablist">
@@ -265,68 +539,158 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- 分区视图 -->
-      <template v-if="viewMode === 'section'">
-        <div v-for="sec in groupSections" :key="sec.key" class="group-block">
-          <header class="group-head" @click="toggleCollapse(sec.key)">
-            <span class="caret"><i :class="collapsed[sec.key] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
-            <input
-              v-if="renamingGroup != null && renamingGroup === sec.groupId"
-              v-model="groupNameDraft"
-              class="group-rename"
-              @click.stop
-              @keydown.enter="commitRenameGroup"
-              @keydown.esc="renamingGroup = null"
-              @blur="commitRenameGroup"
-            />
-            <span v-else class="group-name">{{ sec.name }}</span>
-            <span class="group-count">{{ sec.stickers.length }}</span>
-            <button
-              v-if="!sec.isDefault"
-              class="btn small group-menu-btn"
-              title="分组操作"
-              @click.stop="groupMenuFor = groupMenuFor === sec.key ? null : sec.key"
+      <!-- 分区视图：左（文件夹树 + 便签）/ 中（分隔线）/ 右（预览） -->
+      <div v-if="viewMode === 'section'" ref="splitEl" class="section-split" :class="{ collapsed: previewCollapsed }">
+        <div class="section-main">
+          <div v-for="sec in groupSections" :key="sec.key" class="group-block">
+            <header
+              class="group-head"
+              :class="{
+                'group-sub': sec.depth > 0,
+                dragging: dragGroupId === sec.groupId,
+                'drop-before': dropHint?.key === sec.key && dropHint.mode === 'before',
+                'drop-after': dropHint?.key === sec.key && dropHint.mode === 'after',
+                'drop-inside': dropHint?.key === sec.key && dropHint.mode === 'inside',
+              }"
+              :style="{
+                marginLeft: `${sec.depth * 16}px`,
+                background: sec.color ? `color-mix(in srgb, ${sec.color} 15%, #ffffff)` : undefined,
+              }"
+              :draggable="!sec.isDefault"
+              @click="selectGroup(sec)"
+              @dragstart="onGroupDragStart(sec, $event)"
+              @dragover="onGroupDragOver(sec, $event)"
+              @dragend="onGroupDragEnd"
+              @drop="onGroupDrop(sec, $event)"
             >
-              <i class="ri-more-2-fill"></i>
-            </button>
-            <div v-if="!sec.isDefault && groupMenuFor === sec.key" class="dropdown" @click.stop>
-              <button @click="createStickerInGroup(sec.groupId); groupMenuFor = null">
-                <i class="ri-add-line"></i>新建便签
-              </button>
-              <button @click="startRenameGroup({ id: sec.groupId!, name: sec.name }); groupMenuFor = null">
-                重命名
-              </button>
+              <span v-if="!sec.isDefault" class="grip" title="拖动调整顺序，拖到分组中间成为子分组" @click.stop>
+                <i class="ri-draggable"></i>
+              </span>
+              <span class="caret"><i :class="collapsed[sec.key] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
+              <span class="folder">
+                <i :class="collapsed[sec.key] ? 'ri-folder-3-line' : 'ri-folder-open-line'"></i>
+              </span>
+              <input
+                v-if="renamingGroup != null && renamingGroup === sec.groupId"
+                v-model="groupNameDraft"
+                class="group-rename"
+                @click.stop
+                @keydown.enter="commitRenameGroup"
+                @keydown.esc="renamingGroup = null"
+                @blur="commitRenameGroup"
+              />
+              <span v-else class="group-name">{{ sec.name }}</span>
+              <span v-if="sec.color" class="group-swatch" :style="{ background: sec.color }"></span>
+              <span class="group-count">{{ sec.total }}</span>
               <button
-                class="danger-item"
-                @click="
-                  deletingGroup = { id: sec.groupId!, name: sec.name, count: sec.stickers.length };
-                  deleteChoice = 'to-default';
-                  confirmingWithStickers = false;
-                  groupMenuFor = null;
-                "
+                v-if="!sec.isDefault"
+                class="btn small group-menu-btn"
+                title="分组操作"
+                @click.stop="groupMenuFor = groupMenuFor === sec.key ? null : sec.key"
               >
-                删除分组
+                <i class="ri-more-2-fill"></i>
               </button>
+              <div v-if="!sec.isDefault && groupMenuFor === sec.key" class="dropdown" @click.stop>
+                <button @click="createStickerInGroup(sec.groupId); groupMenuFor = null">
+                  <i class="ri-add-line"></i>新建便签
+                </button>
+                <button @click="startCreateChildGroup(sec.groupId!)">
+                  <i class="ri-folder-add-line"></i>新建子分组
+                </button>
+                <button @click="startRenameGroup({ id: sec.groupId!, name: sec.name }); groupMenuFor = null">
+                  <i class="ri-edit-line"></i>重命名
+                </button>
+                <button @click="groupMenuFor = null; colorFor = sec.groupId">
+                  <i class="ri-palette-line"></i>修改样式
+                </button>
+                <button @click="groupMenuFor = null; notes.openGroupInExplorer(sec.groupId!)">
+                  <i class="ri-folder-open-line"></i>在资源管理器打开
+                </button>
+                <div class="dropdown-sep"></div>
+                <button
+                  class="danger-item"
+                  @click="requestDeleteGroup({ id: sec.groupId!, name: sec.name, count: sec.total })"
+                >
+                  <i class="ri-delete-bin-line"></i>删除分组
+                </button>
+              </div>
+              <!-- 「修改样式」调色板 -->
+              <div v-if="!sec.isDefault && colorFor === sec.groupId" class="dropdown palette" @click.stop>
+                <div class="palette-tip">分组背景色</div>
+                <div class="palette-grid">
+                  <button
+                    v-for="(color, index) in PALETTE"
+                    :key="index"
+                    class="pal"
+                    :class="{ none: color === '' }"
+                    :style="color ? { background: color } : {}"
+                    :title="color || '无颜色'"
+                    @click="setGroupColor(sec.groupId!, color)"
+                  ></button>
+                </div>
+              </div>
+            </header>
+
+            <!-- 子分组内联新建 -->
+            <div
+              v-if="creatingChildUnder === sec.groupId"
+              class="child-create"
+              :style="{ marginLeft: `${(sec.depth + 1) * 16 + 12}px` }"
+            >
+              <input
+                v-model="newChildName"
+                class="group-create-input"
+                placeholder="子分组名称"
+                autofocus
+                @keydown.enter="onCreateChildGroup"
+                @keydown.esc="creatingChildUnder = null"
+              />
+              <button class="btn small primary" @click="onCreateChildGroup">确定</button>
+              <button class="btn small" @click="creatingChildUnder = null">取消</button>
             </div>
-          </header>
-          <div v-show="!collapsed[sec.key]" class="cards">
-            <p v-if="sec.stickers.length === 0" class="group-empty">
-              {{ sec.isDefault ? "未分组暂无便签" : "此分组暂无便签" }}
-            </p>
-            <StickerCard
-              v-for="s in sec.stickers"
-              :key="s.id"
-              :sticker="s"
-              :is-open="isOpen(s.id)"
-              @toggle="toggleSticker"
-              @remove="confirming = $event"
-              @reset-window="resetStickerWindow"
-            />
+
+            <div v-show="!collapsed[sec.key]" class="cards">
+              <p v-if="sec.stickers.length === 0" class="group-empty">
+                {{ sec.isDefault ? "未分组暂无便签" : "此分组暂无便签" }}
+              </p>
+              <div
+                v-for="s in sec.stickers"
+                :key="s.id"
+                class="card-cell"
+                @mouseenter="previewSticker = s"
+              >
+                <StickerCard
+                  :sticker="s"
+                  :is-open="isOpen(s.id)"
+                  @toggle="toggleSticker"
+                  @remove="confirming = $event"
+                  @reset-window="resetStickerWindow"
+                />
+              </div>
+            </div>
           </div>
         </div>
-      </template>
 
-      <!-- 平铺视图 -->
+        <!-- 分隔线：拖动调整预览宽度；拖到最右收起预览 -->
+        <div class="gutter" title="拖动调整预览宽度 / 拖到最右收起" @mousedown="onGutterDown"></div>
+
+        <div class="section-preview" :style="{ width: `${paneWidth}px` }">
+          <StickerPreview
+            :sticker="previewSticker"
+            :group="selectedGroup"
+            :group-selected="selectedGroupKey !== null"
+            :group-stickers="selectedGroupStickers"
+            @edit="toggleSticker"
+            @remove="confirming = $event"
+          />
+        </div>
+
+        <button v-if="previewCollapsed" class="preview-stub" title="展开预览" @click="expandPreview">
+          <i class="ri-arrow-left-s-line"></i>展开预览
+        </button>
+      </div>
+
+      <!-- 平铺视图：按文件夹分行 -->
       <template v-else>
         <div class="filter-chips">
           <button :class="{ on: filter === 'all' }" @click="filter = 'all'">
@@ -338,23 +702,39 @@ onBeforeUnmount(() => {
             :class="{ on: filter === (sec.isDefault ? 'default' : sec.groupId) }"
             @click="filter = sec.isDefault ? 'default' : sec.groupId!"
           >
-            {{ sec.name }} {{ sec.stickers.length }}
+            {{ sec.name }} {{ sec.total }}
           </button>
         </div>
-        <div class="cards">
-          <p v-if="flatList.length === 0" class="empty">
-            {{ filter === "all" ? '暂无便签，点击"新建便签"开始' : "没有符合条件的便签" }}
-          </p>
-          <StickerCard
-            v-for="s in flatList"
-            :key="s.id"
-            :sticker="s"
-            :is-open="isOpen(s.id)"
-            @toggle="toggleSticker"
-            @remove="confirming = $event"
-            @reset-window="resetStickerWindow"
-          />
+        <div v-for="row in flatRows" :key="row.key" class="flat-row" :style="{ borderLeftColor: row.color ?? '#c9ccd3' }">
+          <div class="flat-head">
+            <span class="folder">
+              <i class="ri-folder-open-line"></i>
+            </span>
+            <span class="flat-name">{{ row.name }}</span>
+            <span class="group-count">{{ row.stickers.length }}</span>
+            <span class="flat-path">{{ row.path }}</span>
+          </div>
+          <div class="cards">
+            <p v-if="row.stickers.length === 0" class="group-empty">该文件夹暂无便签</p>
+            <div
+              v-for="s in row.stickers"
+              :key="s.id"
+              class="card-cell"
+              @mouseenter="previewSticker = s"
+            >
+              <StickerCard
+                :sticker="s"
+                :is-open="isOpen(s.id)"
+                @toggle="toggleSticker"
+                @remove="confirming = $event"
+                @reset-window="resetStickerWindow"
+              />
+            </div>
+          </div>
         </div>
+        <p v-if="flatRows.length === 0" class="empty">
+          {{ filter === "all" ? '暂无便签，点击"新建便签"开始' : "没有符合条件的便签" }}
+        </p>
       </template>
     </section>
 
@@ -506,6 +886,9 @@ onBeforeUnmount(() => {
   flex: 1;
   padding: 14px 18px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .list-toolbar {
@@ -523,6 +906,23 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
+}
+
+/* 页面切换页签（便签 / 任务总览） */
+.page-switch {
+  margin-left: 12px;
+  margin-right: auto;
+}
+.page-switch button .ri {
+  margin-right: 3px;
+  vertical-align: -1px;
+}
+
+/* 任务总览页容器 */
+.todo-page {
+  flex: 1;
+  padding: 12px 18px;
+  overflow-y: auto;
 }
 
 .view-switch button {
@@ -567,7 +967,73 @@ onBeforeUnmount(() => {
   border-color: #4f7cff;
 }
 
-/* —— 分区视图 —— */
+/* —— 分区视图：左列（文件夹树+便签）/ 分隔线 / 右列预览 —— */
+.section-split {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.section-main {
+  flex: 1;
+  min-width: 200px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.section-split.collapsed .gutter,
+.section-split.collapsed .section-preview {
+  display: none;
+}
+
+.gutter {
+  flex: none;
+  width: 8px;
+  cursor: col-resize;
+  position: relative;
+  background: linear-gradient(to right, transparent 0 3px, rgba(0, 0, 0, 0.07) 3px 5px, transparent 5px);
+}
+
+.gutter:hover {
+  background: linear-gradient(to right, transparent 0 2px, #4f7cff 2px 6px, transparent 6px);
+}
+
+.section-preview {
+  flex: none;
+  min-width: 0;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  background: rgba(255, 255, 255, 0.6);
+  display: flex;
+}
+
+/* 收起后的「展开预览」手柄（贴在右缘） */
+.preview-stub {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  writing-mode: vertical-rl;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: #fff;
+  color: #666;
+  font-size: 11.5px;
+  padding: 10px 4px;
+  cursor: pointer;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.06);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.preview-stub:hover {
+  color: #4f7cff;
+}
+
+/* —— 分区视图（分组块） —— */
 .group-block {
   margin-bottom: 10px;
 }
@@ -583,10 +1049,83 @@ onBeforeUnmount(() => {
   cursor: pointer;
   user-select: none;
   transition: background 0.15s;
+  border: 1px solid transparent;
 }
 
 .group-head:hover {
   background: #f5efe0;
+}
+
+/* 树形子分组：左侧引导色条 */
+.group-head.group-sub {
+  background: #fdfbf4;
+  border-left: 2px solid rgba(79, 124, 255, 0.28);
+}
+
+.group-head.dragging {
+  opacity: 0.45;
+}
+
+/* 拖拽放置指示：上下蓝线 / 中间高亮（成为子分组） */
+.group-head.drop-before::before,
+.group-head.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 2px;
+  background: #4f7cff;
+}
+
+.group-head.drop-before::before {
+  top: -1px;
+}
+
+.group-head.drop-after::after {
+  bottom: -1px;
+}
+
+.group-head.drop-inside {
+  background: rgba(79, 124, 255, 0.14);
+  border-color: #4f7cff;
+}
+
+.grip {
+  flex: none;
+  color: #c9bfa6;
+  font-size: 13px;
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.group-head:hover .grip {
+  opacity: 1;
+}
+
+/* 文件夹图标：默认蓝色（分组颜色只作用于分组头背景） */
+.folder {
+  flex: none;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+  color: #4f7cff;
+}
+
+.group-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.child-create {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
 }
 
 .caret {
@@ -647,7 +1186,7 @@ onBeforeUnmount(() => {
   z-index: 30;
   display: flex;
   flex-direction: column;
-  min-width: 120px;
+  min-width: 140px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 8px;
@@ -676,6 +1215,9 @@ onBeforeUnmount(() => {
   color: #333;
   border-radius: 6px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .dropdown button:hover {
@@ -688,6 +1230,54 @@ onBeforeUnmount(() => {
 
 .dropdown button.danger-item:hover {
   background: #ffe3e3;
+}
+
+.dropdown-sep {
+  height: 1px;
+  background: rgba(0, 0, 0, 0.07);
+  margin: 4px 6px;
+}
+
+/* 「修改样式」调色板 */
+.dropdown.palette {
+  min-width: 0;
+  padding: 8px;
+}
+
+.palette-tip {
+  font-size: 11px;
+  color: #9aa0a8;
+  margin-bottom: 6px;
+}
+
+.palette-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 22px);
+  gap: 5px;
+}
+
+.pal {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+  padding: 0;
+}
+
+.pal.none {
+  background: #fff;
+  position: relative;
+}
+
+.pal.none::after {
+  content: "∅";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #bbb;
+  font-size: 11px;
 }
 
 .group-empty {
@@ -703,6 +1293,10 @@ onBeforeUnmount(() => {
   margin-top: 8px;
 }
 
+.card-cell {
+  display: block;
+}
+
 .empty {
   color: #999;
   font-size: 14px;
@@ -710,7 +1304,7 @@ onBeforeUnmount(() => {
   margin-top: 48px;
 }
 
-/* —— 平铺视图 —— */
+/* —— 平铺视图：按文件夹分行 —— */
 .filter-chips {
   display: flex;
   flex-wrap: wrap;
@@ -737,6 +1331,34 @@ onBeforeUnmount(() => {
   background: #4f7cff;
   border-color: #4f7cff;
   color: #fff;
+}
+
+.flat-row {
+  border-left: 3px solid #c9ccd3;
+  padding-left: 12px;
+  margin-bottom: 16px;
+}
+
+.flat-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.flat-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #444;
+}
+
+.flat-path {
+  font-size: 11px;
+  color: #b9b2a2;
+  margin-left: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 弹窗 */

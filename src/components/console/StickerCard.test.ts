@@ -83,14 +83,15 @@ describe("StickerCard 更多菜单", () => {
 
     await openMenu(wrapper);
     expect(wrapper.find(".card-dropdown").exists()).toBe(true);
-    // 直接子按钮：重命名 / 转移分组 / 移出分组 / 重置窗口大小与位置 / 删除便签
+    // 直接子按钮：重命名 / 转移分组 / 移出分组 / 重置窗口大小与位置 / 在资源管理器打开 / 删除便签
     const items = wrapper.findAll(".card-dropdown > button").map((b) => b.text());
-    expect(items).toHaveLength(5);
+    expect(items).toHaveLength(6);
     expect(items[0]).toContain("重命名");
     expect(items[1]).toContain("转移分组");
     expect(items[2]).toBe("移出分组");
     expect(items[3]).toBe("重置窗口大小与位置");
-    expect(items[4]).toContain("删除便签");
+    expect(items[4]).toContain("在资源管理器打开");
+    expect(items[5]).toContain("删除便签");
 
     // 再点 ⋯ 关闭（toggle 自身开合）
     await openMenu(wrapper);

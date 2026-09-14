@@ -19,6 +19,10 @@ export interface Sticker {
   auto_scroll: boolean;
   is_completed: boolean;
   display_mode: string;
+  /** 8 位短随机 id（v19；仅程序内部使用：窗口标识 / assets 目录 / 合并工作空间去重）。 */
+  uid?: string | null;
+  /** 该便签 md 文件相对 stickers/ 的路径（v19；null = 按「分组路径/标题.md」派生）。 */
+  file_name?: string | null;
   /** 上次退出时窗口是否隐藏（true=隐藏，启动不显示）；由后端维护。 */
   window_hidden?: boolean;
   created_at: string;
@@ -88,11 +92,44 @@ export interface WorkspaceEntry {
   created_at: string;
 }
 
+/** 备份文件信息（`workspace_inspect_backup_cmd` 返回值）。 */
+export interface BackupInfo {
+  format: number;
+  has_manifest: boolean;
+  name: string;
+  workspace_id: string;
+  created_at: string;
+  /** 备份时刻（Unix 毫秒；旧版备份回退为 zip 文件的修改时间）。 */
+  backup_at_ms: number;
+  app_version: string;
+  schema_version: number;
+  entries: number;
+  bytes: number;
+  zip_bytes: number;
+}
+
+/** 恢复结果（`workspace_restore_cmd` 返回值）。 */
+export interface RestoreOutcome {
+  mode: string;
+  name: string;
+  root: string;
+  entries: number;
+  workspace: WorkspaceEntry | null;
+  /** 覆盖模式的事前完整备份（可据此回退整个恢复）。 */
+  rollback_zip: string | null;
+  /** 覆盖模式旧数据的存放目录（未删除，确认无误后可手动清理）。 */
+  rollback_dir: string | null;
+}
+
 export interface StickerGroup {
   id: number;
   name: string;
   sort_order: number;
   created_at: string;
+  /** 父分组 id；null = 顶层（分组即文件夹，可无限嵌套）。 */
+  parent_id?: number | null;
+  /** 分组颜色（#RRGGBB）；null = 无颜色。 */
+  color?: string | null;
 }
 
 export interface TodoBlock {
@@ -130,6 +167,30 @@ export interface TodoPatch {
   due_at?: string;
   repeat_rule?: string;
 }
+
+/** 跨便签 Todo 聚合查询过滤条件（与 Rust `TodoQueryFilter` 对应，全部可选）。 */
+export interface TodoQueryFilter {
+  completed?: boolean;
+  due_before?: string;
+  due_after?: string;
+  remind_before?: string;
+  remind_after?: string;
+  keyword?: string;
+}
+
+/** 跨便签聚合返回项：TodoBlock 全字段 + 所属便签标题与所属 todo 块。
+ *
+ * 一个便签可含多个 todo 块（第 0 层容器），`owner_block_*` 供任务总览页
+ * 按「便签 → 块 → 任务」三层区分展示；命名带 `owner_` 前缀以避开
+ * TodoBlock 自身的 `block_title`（任务自身的卡头标题）。
+ */
+export type TodoBlockWithSticker = TodoBlock & {
+  sticker_title: string;
+  /** 所属 todo 块 id（第 0 层容器）。 */
+  owner_block_id: string;
+  /** 所属 todo 块标题（空串 = 未命名块）。 */
+  owner_block_title: string;
+};
 
 export interface SlashItem {
   id: string;

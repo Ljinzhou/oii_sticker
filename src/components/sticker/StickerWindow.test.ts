@@ -107,6 +107,37 @@ describe("StickerWindow", () => {
     expect(wrapper.find('.ov-btn[title="收起回展示模式"]').exists()).toBe(false);
   });
 
+  it("编辑模式加载时 apply_window_state_cmd 携带 isEdit=true", async () => {
+    await mountSticker("edit");
+    expect(mocks.invokeMock).toHaveBeenCalledWith("apply_window_state_cmd", {
+      id: 7,
+      isDisplay: false,
+      isEdit: true,
+    });
+  });
+
+  it("交互模式进入编辑时 apply_window_state_cmd 携带 isEdit=true", async () => {
+    const wrapper = await mountSticker("interact");
+    mocks.invokeMock.mockClear();
+    await wrapper.find('.ov-btn[title="编辑（E 或双击内容）"]').trigger("click");
+    await flushPromises();
+    expect(mocks.invokeMock).toHaveBeenCalledWith("apply_window_state_cmd", {
+      id: 7,
+      isDisplay: false,
+      isEdit: true,
+    });
+  });
+
+  it("保存退出编辑后 apply_window_state_cmd 携带 isEdit=false（恢复）", async () => {
+    const wrapper = await mountSticker("edit");
+    mocks.invokeMock.mockClear();
+    // shallowMount 下 StickerEditor 为 stub：直接触发其 saved 事件（等价保存成功）
+    await wrapper.findComponent({ name: "StickerEditor" }).vm.$emit("saved");
+    await flushPromises();
+    const calls = mocks.invokeMock.mock.calls.filter((c) => c[0] === "apply_window_state_cmd");
+    expect(calls[calls.length - 1][1]).toEqual({ id: 7, isDisplay: false, isEdit: false });
+  });
+
   it("自动滚动使用便签 effective speed，按帧推进并在卸载时取消 RAF", async () => {
     const frames: FrameRequestCallback[] = [];
     const cancelFrame = vi.fn();

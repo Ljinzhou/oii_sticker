@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use crate::db::{config_repo, prefs_repo, sticker_repo, todo_block_repo, todo_repo};
 use crate::db::sticker_repo::NewSticker;
 use crate::editing;
-use crate::models::{EffectivePrefs, Sticker, StickerPrefs, SystemConfig, TodoBlock, TodoPatch};
+use crate::models::{EffectivePrefs, Sticker, StickerPrefs, SystemConfig, TodoBlock, TodoBlockWithSticker, TodoPatch, TodoQueryFilter};
 use crate::workspace::{layout, md_store};
 
 // ── 便签 CRUD ──
@@ -173,12 +173,62 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<crate::models::StickerGroup>
     crate::db::group_repo::list(conn)
 }
 
-pub fn create_group(conn: &Connection, name: &str) -> Result<crate::models::StickerGroup> {
-    crate::db::group_repo::create(conn, name)
+/// 新建分组；`parent_id` 为 None 表示顶层（分组即文件夹，可无限嵌套）。
+pub fn create_group(
+    conn: &Connection,
+    name: &str,
+    parent_id: Option<i64>,
+) -> Result<crate::models::StickerGroup> {
+    crate::db::group_repo::create(conn, name, parent_id)
 }
 
 pub fn rename_group(conn: &Connection, id: i64, name: &str) -> Result<()> {
     crate::db::group_repo::rename(conn, id, name)
+}
+
+/// 设置分组颜色（None = 清除颜色）。
+pub fn set_group_color(conn: &Connection, id: i64, color: Option<&str>) -> Result<()> {
+    crate::db::group_repo::set_color(conn, id, color)
+}
+
+/// 同级重排（拖动调整顺序）；`ids` 为该父级下的目标顺序，其它层级自动忽略。
+pub fn reorder_groups(conn: &Connection, parent_id: Option<i64>, ids: &[i64]) -> Result<()> {
+    crate::db::group_repo::reorder(conn, parent_id, ids)
+}
+
+/// 移动分组到新父级（None = 顶层）；拒绝放入自身或自己的子树。
+pub fn move_group(conn: &Connection, id: i64, parent_id: Option<i64>) -> Result<()> {
+    crate::db::group_repo::move_to_parent(conn, id, parent_id)
+}
+
+/// 分组在 `stickers/` 下的相对目录（逐级拼接分组名并做文件名清洗）；
+/// 分组不存在时返回空路径（即视为 stickers 根）。
+pub fn group_rel_dir(conn: &Connection, id: i64) -> Result<std::path::PathBuf> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = Some(id);
+    let mut guard = 0usize;
+    while let Some(gid) = cur {
+        guard += 1;
+        if guard > 512 {
+            bail!("分组层级过深（疑似存在环）");
+        }
+        let row: Option<(String, Option<i64>)> = conn
+            .query_row(
+                "SELECT name, parent_id FROM sticker_groups WHERE id = ?1",
+                [gid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        match row {
+            Some((name, parent)) => {
+                parts.push(layout::sanitize_file_name(&name));
+                cur = parent;
+            }
+            None => break,
+        }
+    }
+    parts.reverse();
+    Ok(parts.iter().collect())
 }
 
 /// 删除分组。mode="with-stickers" 时连带删除组内便签（含 md 与 assets 文件清理），
@@ -297,6 +347,12 @@ pub fn list_todo_blocks(conn: &Connection, sticker_id: i64) -> Result<(Vec<TodoB
     // 返回是否补写了标记（调用方据此通知便签窗口刷新正文）。
     let retagged = !todo_block_repo::retag_orphans_for_sticker(conn, sticker_id)?.is_empty();
     Ok((todo_block_repo::list_by_sticker(conn, sticker_id)?, retagged))
+}
+
+/// 跨便签 Todo 聚合查询（主控台「任务总览」页与 AI 工具层共用）。
+/// 只读聚合，不触发孤儿补写（无正文关联的写入副作用）。
+pub fn list_all_todos(conn: &Connection, filter: &TodoQueryFilter) -> Result<Vec<TodoBlockWithSticker>> {
+    todo_block_repo::list_all_todos(conn, filter)
 }
 
 pub fn get_todo_block(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
@@ -573,7 +629,7 @@ mod tests {
     fn delete_group_with_stickers_cleans_md_and_assets() {
         let conn = test_conn();
         let (root, db_path) = tmp_ws("group-del");
-        let g = crate::db::group_repo::create(&conn, "待删组").unwrap();
+        let g = crate::db::group_repo::create(&conn, "待删组", None).unwrap();
         let id = create_sticker(
             &conn,
             &sticker_repo::NewSticker {
@@ -603,7 +659,7 @@ mod tests {
         assert!(crate::db::group_repo::get(&conn, g.id).unwrap().is_none());
 
         // to-default：返回 0，便签保留回默认组
-        let g2 = crate::db::group_repo::create(&conn, "保留组").unwrap();
+        let g2 = crate::db::group_repo::create(&conn, "保留组", None).unwrap();
         let s2 = create_sticker(
             &conn,
             &sticker_repo::NewSticker { title: "留用".into(), content: "Y".into(), ..Default::default() },
