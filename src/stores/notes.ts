@@ -76,6 +76,16 @@ export const useNotesStore = defineStore("notes", {
       await this.refresh();
     },
 
+    // ── 文件系统（在资源管理器中查看） ──
+    /** 在资源管理器中定位该便签的 md 文件（选中文件）；返回文件完整路径。 */
+    async openStickerInExplorer(id: number): Promise<string> {
+      return await invoke<string>("open_sticker_in_explorer_cmd", { id });
+    },
+    /** 在资源管理器中打开分组文件夹（`null` = stickers 根目录）；返回被打开的目录。 */
+    async openGroupInExplorer(id: number | null): Promise<string> {
+      return await invoke<string>("open_group_in_explorer_cmd", { id });
+    },
+
     // ── 分组树工具（纯函数；树状 UI 与平铺分行共用） ──
     /** 某父级下的直接子分组（同级按 sort_order, id 排序）。 */
     childrenOf(parentId: number | null): StickerGroup[] {

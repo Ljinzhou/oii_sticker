@@ -153,6 +153,9 @@ onBeforeUnmount(() => {
           </div>
           <button :disabled="props.sticker.group_id == null" @click="moveOut">移出分组</button>
           <button @click="requestResetWindow">重置窗口大小与位置</button>
+          <button @click="closeMenu(); notes.openStickerInExplorer(props.sticker.id)">
+            在资源管理器打开
+          </button>
           <hr class="menu-sep" />
           <button class="danger-item" @click="requestRemove">删除便签</button>
         </div>
