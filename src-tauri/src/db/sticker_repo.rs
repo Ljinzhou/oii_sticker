@@ -9,16 +9,40 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::Sticker;
 
-/// 新建一条便签，返回自增 id。
+const COLS: &str = "id, parent_id, title, content, heading_level,
+                pos_x, pos_y, width, height, opacity, bg_color,
+                always_on_top, auto_scroll, is_completed,
+                group_id, display_mode, created_at, updated_at,
+                window_hidden, uid, file_name";
+
+/// 8 位短随机 id（小写字母+数字的十六进制形态，仅程序内部使用）。
+///
+/// 用途：窗口标识 / `assets/<uid>/` 目录 / 跨工作空间合并时避免撞号。
+/// 生成方式：纳秒时间戳与计数器混合打散后取 32 位——不引入 rand 依赖，
+/// 同进程内计数递增保证同毫秒不重复；数据库侧另有 UNIQUE 索引兜底。
+pub fn new_uid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mixed = nanos
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    format!("{:08x}", (mixed ^ (mixed >> 32)) as u32)
+}
+
+/// 新建一条便签，返回自增 id（同时生成 8 位随机 uid）。
 pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
     let bg = s.bg_color.as_deref();
     conn.execute(
         "INSERT INTO stickers
            (parent_id, group_id, title, content, heading_level,
             pos_x, pos_y, width, height, opacity, bg_color,
-            always_on_top, auto_scroll, is_completed, display_mode)
+            always_on_top, auto_scroll, is_completed, display_mode, uid)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 ?11, ?12, ?13, 0, 'display')",
+                 ?11, ?12, ?13, 0, 'display', ?14)",
         params![
             s.parent_id,
             s.group_id,
@@ -33,6 +57,7 @@ pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
             bg,
             s.always_on_top as i32,
             s.auto_scroll as i32,
+            new_uid(),
         ],
     )
     .context("插入便签失败")?;
@@ -41,28 +66,14 @@ pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
 
 /// 按 id 读取一条便签。
 pub fn get(conn: &Connection, id: i64) -> Result<Option<Sticker>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, parent_id, title, content, heading_level,
-                pos_x, pos_y, width, height, opacity, bg_color,
-                always_on_top, auto_scroll, is_completed,
-                group_id, display_mode, created_at, updated_at,
-                window_hidden
-           FROM stickers WHERE id = ?1",
-    )?;
+    let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM stickers WHERE id = ?1"))?;
     let s = stmt.query_row(params![id], row_to_sticker).optional()?;
     Ok(s)
 }
 
 /// 列出全部便签。
 pub fn list_all(conn: &Connection) -> Result<Vec<Sticker>> {
-    let mut stmt = conn.prepare_cached(
-        "SELECT id, parent_id, title, content, heading_level,
-                pos_x, pos_y, width, height, opacity, bg_color,
-                always_on_top, auto_scroll, is_completed,
-                group_id, display_mode, created_at, updated_at,
-                window_hidden
-           FROM stickers ORDER BY id",
-    )?;
+    let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM stickers ORDER BY id"))?;
     let rows = stmt
         .query_map([], row_to_sticker)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -85,6 +96,7 @@ pub fn update(conn: &Connection, id: i64, patch: &StickerPatch) -> Result<()> {
             auto_scroll  = COALESCE(?11, auto_scroll),
             is_completed = COALESCE(?12, is_completed),
             display_mode = COALESCE(?13, display_mode),
+            file_name    = COALESCE(?14, file_name),
             updated_at   = datetime('now')
          WHERE id = ?1",
         params![
@@ -101,6 +113,7 @@ pub fn update(conn: &Connection, id: i64, patch: &StickerPatch) -> Result<()> {
             patch.auto_scroll.map(|b| b as i32),
             patch.is_completed.map(|b| b as i32),
             patch.display_mode,
+            patch.file_name,
         ],
     )
     .context("更新便签失败")?;
@@ -161,6 +174,8 @@ fn row_to_sticker(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sticker> {
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
         window_hidden: row.get(18)?,
+        uid: row.get(19)?,
+        file_name: row.get(20)?,
     })
 }
 
@@ -200,6 +215,8 @@ pub struct StickerPatch {
     pub auto_scroll: Option<bool>,
     pub is_completed: Option<bool>,
     pub display_mode: Option<String>,
+    /// 该便签 md 文件相对 `stickers/` 的路径（分组迁移 / 重命名时写回）。
+    pub file_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -227,6 +244,21 @@ mod tests {
         assert_eq!(s.heading_level, 0);
         assert_eq!(s.parent_id, None);
         assert_eq!(s.bg_color.as_deref(), Some("#FFEEAA"));
+    }
+
+    /// uid：8 位十六进制（小写字母+数字），连续生成不重复。
+    #[test]
+    fn new_uid_is_eight_hex_chars_and_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let uid = new_uid();
+            assert_eq!(uid.len(), 8, "长度应为 8：{uid}");
+            assert!(
+                uid.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+                "仅小写字母+数字：{uid}"
+            );
+            assert!(seen.insert(uid.clone()), "不得重复：{uid}");
+        }
     }
 
     fn test_conn() -> Connection {
@@ -263,6 +295,20 @@ mod tests {
         assert!(s.always_on_top);
         assert_eq!(s.mode(), crate::models::StickerMode::Display);
         assert!(!s.window_hidden, "新便签默认显示");
+        assert_eq!(s.uid.as_deref().map(str::len), Some(8), "新便签应有 8 位随机 uid");
+        assert_eq!(s.file_name, None, "文件名由文件层决定");
+
+        // file_name 可由迁移/重命名写回
+        update(
+            &conn,
+            id,
+            &StickerPatch { file_name: Some("学习/英语/测试.md".into()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(
+            get(&conn, id).unwrap().unwrap().file_name.as_deref(),
+            Some("学习/英语/测试.md")
+        );
 
         // 窗口状态：隐藏标记 + 几何记录
         update_window_hidden(&conn, id, true).unwrap();

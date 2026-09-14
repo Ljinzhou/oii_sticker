@@ -317,12 +317,58 @@ fn group_create_cmd(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     name: String,
+    parent_id: Option<i64>,
 ) -> Result<models::StickerGroup, String> {
     let g = state
-        .with_conn(|c| commands::create_group(c, &name))
+        .with_conn(|c| commands::create_group(c, &name, parent_id))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(g)
+}
+
+/// 设置分组颜色（None / 空串 = 清除颜色）。
+#[tauri::command]
+fn group_set_color_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    color: Option<String>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::set_group_color(c, id, color.as_deref()))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+/// 同级分组排序（拖拽调整顺序；ids 为该父级下的目标顺序）。
+#[tauri::command]
+fn group_reorder_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    parent_id: Option<i64>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::reorder_groups(c, parent_id, &ids))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
+/// 移动分组到新父级（None = 顶层）；拒绝放入自身或自己的子树。
+#[tauri::command]
+fn group_move_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: i64,
+    parent_id: Option<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::move_group(c, id, parent_id))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1504,6 +1550,9 @@ pub fn run() {
             group_create_cmd,
             group_rename_cmd,
             group_delete_cmd,
+            group_set_color_cmd,
+            group_reorder_cmd,
+            group_move_cmd,
             move_sticker_group_cmd,
             fetch_page_title_cmd,
             get_config_cmd,
