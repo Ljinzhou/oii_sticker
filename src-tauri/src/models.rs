@@ -29,6 +29,10 @@ pub struct Sticker {
     pub is_completed: bool,
     /// 所属分组 id；NULL 表示未分组（v12；无内置默认分组）。
     pub group_id: Option<i64>,
+    /// 8 位短随机 id（v19）：只用于程序内部（窗口标识 / assets 目录 / 跨工作空间合并时避免撞号）。
+    pub uid: Option<String>,
+    /// 该便签 md 文件相对 `stickers/` 的路径（v19；NULL = 尚未落定，按「分组路径/标题.md」派生）。
+    pub file_name: Option<String>,
     /// 窗口模式字符串（"display"/"interact"/"edit"），落库持久化；
     /// 类型安全访问用 [`Sticker::mode`]。
     pub display_mode: String,
@@ -38,13 +42,17 @@ pub struct Sticker {
     pub updated_at: String,
 }
 
-/// 便签分组。
+/// 便签分组（类文件夹：支持无限层级与颜色）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StickerGroup {
     pub id: i64,
     pub name: String,
     pub sort_order: i64,
     pub created_at: String,
+    /// 父分组 id；NULL = 顶层分组（v19）。
+    pub parent_id: Option<i64>,
+    /// 分组颜色（#RRGGBB）；NULL = 无颜色（v19）。
+    pub color: Option<String>,
 }
 
 /// 便签窗口模式（对应 DB `display_mode` 列）。

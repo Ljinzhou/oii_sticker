@@ -173,12 +173,32 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<crate::models::StickerGroup>
     crate::db::group_repo::list(conn)
 }
 
-pub fn create_group(conn: &Connection, name: &str) -> Result<crate::models::StickerGroup> {
-    crate::db::group_repo::create(conn, name)
+/// 新建分组；`parent_id` 为 None 表示顶层（分组即文件夹，可无限嵌套）。
+pub fn create_group(
+    conn: &Connection,
+    name: &str,
+    parent_id: Option<i64>,
+) -> Result<crate::models::StickerGroup> {
+    crate::db::group_repo::create(conn, name, parent_id)
 }
 
 pub fn rename_group(conn: &Connection, id: i64, name: &str) -> Result<()> {
     crate::db::group_repo::rename(conn, id, name)
+}
+
+/// 设置分组颜色（None = 清除颜色）。
+pub fn set_group_color(conn: &Connection, id: i64, color: Option<&str>) -> Result<()> {
+    crate::db::group_repo::set_color(conn, id, color)
+}
+
+/// 同级重排（拖动调整顺序）；`ids` 为该父级下的目标顺序，其它层级自动忽略。
+pub fn reorder_groups(conn: &Connection, parent_id: Option<i64>, ids: &[i64]) -> Result<()> {
+    crate::db::group_repo::reorder(conn, parent_id, ids)
+}
+
+/// 移动分组到新父级（None = 顶层）；拒绝放入自身或自己的子树。
+pub fn move_group(conn: &Connection, id: i64, parent_id: Option<i64>) -> Result<()> {
+    crate::db::group_repo::move_to_parent(conn, id, parent_id)
 }
 
 /// 删除分组。mode="with-stickers" 时连带删除组内便签（含 md 与 assets 文件清理），
@@ -579,7 +599,7 @@ mod tests {
     fn delete_group_with_stickers_cleans_md_and_assets() {
         let conn = test_conn();
         let (root, db_path) = tmp_ws("group-del");
-        let g = crate::db::group_repo::create(&conn, "待删组").unwrap();
+        let g = crate::db::group_repo::create(&conn, "待删组", None).unwrap();
         let id = create_sticker(
             &conn,
             &sticker_repo::NewSticker {
@@ -609,7 +629,7 @@ mod tests {
         assert!(crate::db::group_repo::get(&conn, g.id).unwrap().is_none());
 
         // to-default：返回 0，便签保留回默认组
-        let g2 = crate::db::group_repo::create(&conn, "保留组").unwrap();
+        let g2 = crate::db::group_repo::create(&conn, "保留组", None).unwrap();
         let s2 = create_sticker(
             &conn,
             &sticker_repo::NewSticker { title: "留用".into(), content: "Y".into(), ..Default::default() },

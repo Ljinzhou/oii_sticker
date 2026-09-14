@@ -146,7 +146,15 @@ CREATE TABLE sticker_groups (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
     sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- 分组即文件夹：parent_id 表达层级（NULL = 顶层）；color 为界面颜色（NULL = 无颜色）
+    parent_id  INTEGER REFERENCES sticker_groups(id) ON DELETE CASCADE,
+    color      TEXT
 );
 
 ALTER TABLE stickers ADD COLUMN group_id INTEGER REFERENCES sticker_groups(id) ON DELETE SET NULL;
+-- v19：8 位短随机 id（窗口标识 / assets 目录 / 合并工作空间时避免撞号）
+ALTER TABLE stickers ADD COLUMN uid TEXT;
+-- v19：md 文件相对 stickers/ 的路径（NULL = 尚未落定，按「分组路径/标题.md」派生）
+ALTER TABLE stickers ADD COLUMN file_name TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stickers_uid ON stickers(uid);
