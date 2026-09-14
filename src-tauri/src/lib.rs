@@ -1424,6 +1424,9 @@ pub fn run() {
             // 到点发系统通知 + 广播事件（窗口全关也能触发，主进程存活即可）。
             reminder::spawn(handle.clone(), state.clone());
 
+            // 工作空间文件同步：用户在目录里手动增删改便签 md 时保持 DB 与界面一致。
+            workspace::sync::spawn(handle.clone(), state.clone());
+
             // 启动一致性：为正文中缺少标记的孤儿 Todo 块补写标记（旧版本遗留），
             // 并通知所属便签窗口刷新正文。
             if let Ok(retagged) = state.with_conn(commands::retag_orphan_todos) {
