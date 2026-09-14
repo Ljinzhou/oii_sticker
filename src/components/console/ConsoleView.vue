@@ -552,7 +552,10 @@ onBeforeUnmount(() => {
                 'drop-after': dropHint?.key === sec.key && dropHint.mode === 'after',
                 'drop-inside': dropHint?.key === sec.key && dropHint.mode === 'inside',
               }"
-              :style="{ marginLeft: `${sec.depth * 16}px` }"
+              :style="{
+                marginLeft: `${sec.depth * 16}px`,
+                background: sec.color ? `color-mix(in srgb, ${sec.color} 15%, #ffffff)` : undefined,
+              }"
               :draggable="!sec.isDefault"
               @click="selectGroup(sec)"
               @dragstart="onGroupDragStart(sec, $event)"
@@ -564,7 +567,7 @@ onBeforeUnmount(() => {
                 <i class="ri-draggable"></i>
               </span>
               <span class="caret"><i :class="collapsed[sec.key] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
-              <span class="folder" :style="{ color: sec.color ?? '#c3b795' }">
+              <span class="folder">
                 <i :class="collapsed[sec.key] ? 'ri-folder-3-line' : 'ri-folder-open-line'"></i>
               </span>
               <input
@@ -600,6 +603,9 @@ onBeforeUnmount(() => {
                 <button @click="groupMenuFor = null; colorFor = sec.groupId">
                   <i class="ri-palette-line"></i>修改样式
                 </button>
+                <button @click="groupMenuFor = null; notes.openGroupInExplorer(sec.groupId!)">
+                  <i class="ri-folder-open-line"></i>在资源管理器打开
+                </button>
                 <div class="dropdown-sep"></div>
                 <button
                   class="danger-item"
@@ -610,7 +616,7 @@ onBeforeUnmount(() => {
               </div>
               <!-- 「修改样式」调色板 -->
               <div v-if="!sec.isDefault && colorFor === sec.groupId" class="dropdown palette" @click.stop>
-                <div class="palette-tip">分组颜色</div>
+                <div class="palette-tip">分组背景色</div>
                 <div class="palette-grid">
                   <button
                     v-for="(color, index) in PALETTE"
@@ -701,7 +707,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-for="row in flatRows" :key="row.key" class="flat-row" :style="{ borderLeftColor: row.color ?? '#c9ccd3' }">
           <div class="flat-head">
-            <span class="folder" :style="{ color: row.color ?? '#9aa0a6' }">
+            <span class="folder">
               <i class="ri-folder-open-line"></i>
             </span>
             <span class="flat-name">{{ row.name }}</span>
@@ -1098,11 +1104,13 @@ onBeforeUnmount(() => {
   opacity: 1;
 }
 
+/* 文件夹图标：默认蓝色（分组颜色只作用于分组头背景） */
 .folder {
   flex: none;
   font-size: 15px;
   display: grid;
   place-items: center;
+  color: #4f7cff;
 }
 
 .group-swatch {

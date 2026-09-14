@@ -414,6 +414,72 @@ fn move_sticker_group_cmd(
     Ok(())
 }
 
+// ── 在资源管理器中打开 ──
+
+/// 打开系统文件管理器；`select` 为 true 时选中该文件而不是打开其所在目录。
+#[cfg(windows)]
+fn reveal_in_explorer(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = std::process::Command::new("explorer");
+    if select {
+        // /select,<path> 为单个参数（无空格），用完整路径可避免引号歧义
+        cmd.arg(format!("/select,{}", path.display()));
+    } else {
+        cmd.arg(path);
+    }
+    // explorer.exe 命中已打开窗口时常返回非 0 退出码，故只启动、不等待
+    cmd.creation_flags(CREATE_NO_WINDOW).spawn()?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn reveal_in_explorer(path: &std::path::Path, select: bool) -> std::io::Result<()> {
+    let target = if select { path.parent().unwrap_or(path) } else { path };
+    std::process::Command::new("xdg-open").arg(target).spawn()?;
+    Ok(())
+}
+
+/// 在资源管理器中打开该分组的文件夹（`id = None` → `stickers/` 根目录）；返回被打开的路径。
+#[tauri::command]
+fn open_group_in_explorer_cmd(state: State<'_, AppState>, id: Option<i64>) -> Result<String, String> {
+    let dir = state
+        .with_conn_path(|c, db| {
+            let base = crate::workspace::layout::Layout::at(&commands::ws_root(db)).stickers_dir();
+            let dir = match id {
+                Some(gid) => base.join(commands::group_rel_dir(c, gid)?),
+                None => base,
+            };
+            std::fs::create_dir_all(&dir)?;
+            Ok(dir)
+        })
+        .map_err(|e| e.to_string())?;
+    reveal_in_explorer(&dir, false).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// 在资源管理器中定位该便签的 md 文件（选中文件）；返回文件路径。
+#[tauri::command]
+fn open_sticker_in_explorer_cmd(state: State<'_, AppState>, id: i64) -> Result<String, String> {
+    let file = state
+        .with_conn_path(|c, db| {
+            let s = crate::db::sticker_repo::get(c, id)?
+                .ok_or_else(|| anyhow::anyhow!("便签不存在（id={id}）"))?;
+            let base = crate::workspace::layout::Layout::at(&commands::ws_root(db)).stickers_dir();
+            let rel = match s.file_name.as_deref().map(str::trim) {
+                Some(f) if !f.is_empty() => std::path::PathBuf::from(f),
+                // 文件层迁移前的命名规则：{id}-{标题}.md
+                _ => std::path::PathBuf::from(crate::workspace::layout::sticker_file_name(
+                    s.id, &s.title,
+                )),
+            };
+            Ok(base.join(rel))
+        })
+        .map_err(|e| e.to_string())?;
+    reveal_in_explorer(&file, true).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    Ok(file.to_string_lossy().to_string())
+}
+
 /// 抓取网页 <title>，供及时预览「粘贴链接自动转 [title](url)」使用。
 /// 非 http(s) 链接 / 请求失败 / 无 <title> 时返回 None（前端保持 `[](url)` 占位）。
 #[tauri::command]
@@ -1554,6 +1620,8 @@ pub fn run() {
             group_reorder_cmd,
             group_move_cmd,
             move_sticker_group_cmd,
+            open_group_in_explorer_cmd,
+            open_sticker_in_explorer_cmd,
             fetch_page_title_cmd,
             get_config_cmd,
             set_config_cmd,

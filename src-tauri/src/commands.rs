@@ -201,6 +201,36 @@ pub fn move_group(conn: &Connection, id: i64, parent_id: Option<i64>) -> Result<
     crate::db::group_repo::move_to_parent(conn, id, parent_id)
 }
 
+/// 分组在 `stickers/` 下的相对目录（逐级拼接分组名并做文件名清洗）；
+/// 分组不存在时返回空路径（即视为 stickers 根）。
+pub fn group_rel_dir(conn: &Connection, id: i64) -> Result<std::path::PathBuf> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = Some(id);
+    let mut guard = 0usize;
+    while let Some(gid) = cur {
+        guard += 1;
+        if guard > 512 {
+            bail!("分组层级过深（疑似存在环）");
+        }
+        let row: Option<(String, Option<i64>)> = conn
+            .query_row(
+                "SELECT name, parent_id FROM sticker_groups WHERE id = ?1",
+                [gid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        match row {
+            Some((name, parent)) => {
+                parts.push(layout::sanitize_file_name(&name));
+                cur = parent;
+            }
+            None => break,
+        }
+    }
+    parts.reverse();
+    Ok(parts.iter().collect())
+}
+
 /// 删除分组。mode="with-stickers" 时连带删除组内便签（含 md 与 assets 文件清理），
 /// 返回被删除的便签数量；mode="to-default" 时便签自动回默认组，返回 0。
 ///
