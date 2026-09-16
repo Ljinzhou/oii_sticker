@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from "vue";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { useNotesStore } from "../../stores/notes";
 import { useSettingsStore } from "../../stores/settings";
 import { invoke, listen } from "../../composables/useTauri";
@@ -109,6 +109,44 @@ async function refreshMaximized() {
     isMaximized.value = await getCurrentWindow().isMaximized();
   } catch {
     /* 测试环境 / 无权限：忽略 */
+  }
+}
+
+// —— 拖动标题栏到屏幕最顶部 → 最大化 ——
+// 主控台是无边框窗口（decorations: false），Windows 不会给它 Aero Snap，
+// 所以自己补：拖拽开始后监听窗口移动，一旦贴到当前显示器顶部就最大化。
+let dragStartedAt = 0;
+let monitorTopY: number | null | undefined; // undefined = 本次拖拽尚未读取
+function markDragStart(e: MouseEvent) {
+  // 标题栏上的按钮 / 输入框不触发
+  if ((e.target as HTMLElement | null)?.closest("button, input, select, a")) return;
+  dragStartedAt = Date.now();
+  monitorTopY = undefined; // 每次拖拽重新读取显示器位置（支持多屏切换）
+}
+async function readMonitorTopY(): Promise<number | null> {
+  if (monitorTopY === undefined) {
+    try {
+      const mon = await currentMonitor();
+      monitorTopY = mon ? mon.position.y : null;
+    } catch {
+      monitorTopY = null;
+    }
+  }
+  return monitorTopY ?? null;
+}
+async function handleWindowMoved(y: number) {
+  // 只响应「刚刚开始拖拽」的移动，避免重置窗口位置等程序化移动误触发
+  if (dragStartedAt === 0 || Date.now() - dragStartedAt > 2000) return;
+  if (isMaximized.value) return;
+  const top = await readMonitorTopY();
+  if (top === null || y > top + 1) return;
+  dragStartedAt = 0;
+  try {
+    const win = getCurrentWindow();
+    await win.maximize();
+    isMaximized.value = await win.isMaximized();
+  } catch (e) {
+    console.warn("[ui] 最大化窗口失败：", e);
   }
 }
 
@@ -473,6 +511,17 @@ onMounted(async () => {
   consolePage.value = settings.get("console_page", "stickers") === "todos" ? "todos" : "stickers";
   refreshOpenIds();
   refreshMaximized();
+  // 拖动标题栏到屏幕最顶部 → 最大化（无边框窗口没有系统 Aero Snap）
+  try {
+    const win = getCurrentWindow();
+    unlisteners.push(
+      await win.onMoved(({ payload }) => {
+        void handleWindowMoved(payload.y);
+      }),
+    );
+  } catch {
+    /* 测试环境无该 API：忽略 */
+  }
   // 后端推送 → 刷新列表 + 窗口打开状态（隐藏/显示按钮实时同步）
   unlisteners.push(
     await listen("sticky://push-update", () => {
@@ -495,7 +544,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
-    <header class="console-header" data-tauri-drag-region>
+    <header class="console-header" data-tauri-drag-region @mousedown="markDragStart">
       <h1>oii_sticker 主控台</h1>
       <div class="view-switch page-switch" role="tablist">
         <button :class="{ on: consolePage === 'stickers' }" @click="setConsolePage('stickers')">

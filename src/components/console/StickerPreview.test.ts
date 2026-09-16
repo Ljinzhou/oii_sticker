@@ -33,24 +33,22 @@ function mkSticker(over: Partial<Sticker> = {}): Sticker {
 beforeEach(() => setActivePinia(createPinia()));
 
 describe("StickerPreview 结构", () => {
-  it("统计在上、分割线、分割线以下只有正文预览", () => {
+  it("统计在上、分割线、分割线以下只有正文预览（无路径行 / 结构统计）", () => {
     const wrapper = mount(StickerPreview, { props: { sticker: mkSticker() } });
     const html = wrapper.html();
     const iMetrics = html.indexOf('class="metrics"');
-    const iMeta = html.indexOf('class="meta-line"');
     const iBody = html.indexOf('class="pv-body"');
     expect(iMetrics).toBeGreaterThanOrEqual(0);
-    expect(iMeta).toBeGreaterThan(iMetrics); // 结构统计在统计卡之后
-    expect(iBody).toBeGreaterThan(iMeta); // 分割线（pv-body 上边框）在最后
+    expect(iBody).toBeGreaterThan(iMetrics); // 统计卡之后才是正文（pv-body 上边框即分割线）
 
     const body = wrapper.find(".pv-body");
     expect(body.find(".md-body").exists()).toBe(true);
     expect(body.text()).not.toContain("结构统计");
     expect(body.find(".kv").exists()).toBe(false); // 旧的结构统计列表已移除
 
-    const meta = wrapper.find(".meta-line");
-    expect(meta.text()).toContain("标题");
-    expect(meta.text()).toContain("8f3a91c2");
+    // 路径行与结构统计小字已按需求移除
+    expect(wrapper.find(".pv-path").exists()).toBe(false);
+    expect(wrapper.find(".meta-line").exists()).toBe(false);
   });
 
   it("正文渲染结果落在分割线以下", () => {

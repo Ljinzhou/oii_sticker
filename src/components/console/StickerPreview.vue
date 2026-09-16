@@ -3,7 +3,6 @@
 // 统计全部来自正文（纯函数），不需要额外后端命令。
 import { computed } from "vue";
 import { renderMarkdown } from "../../utils/markdown";
-import { useNotesStore } from "../../stores/notes";
 import type { Sticker, StickerGroup } from "../../types";
 
 const props = defineProps<{
@@ -20,8 +19,6 @@ const emit = defineEmits<{
   edit: [sticker: Sticker];
   remove: [sticker: Sticker];
 }>();
-
-const notes = useNotesStore();
 
 /** 正文统计（纯函数）。 */
 const stats = computed(() => {
@@ -43,14 +40,6 @@ const stats = computed(() => {
 
 const rendered = computed(() => (props.sticker ? renderMarkdown(props.sticker.content) : ""));
 
-/** 便签所在路径：分组路径 + 标题.md（与磁盘布局一致）。 */
-const stickerPath = computed(() => {
-  if (!props.sticker) return "";
-  const groupPath = props.sticker.group_id != null ? notes.groupPath(props.sticker.group_id) : "";
-  const name = (props.sticker.title || "未命名").trim() || "未命名";
-  return groupPath ? `stickers/${groupPath}/${name}.md` : `stickers/${name}.md`;
-});
-
 /** 分组概览：任务汇总 + 最近更新。 */
 const groupSummary = computed(() => {
   const list = props.groupStickers ?? [];
@@ -66,8 +55,6 @@ const groupSummary = computed(() => {
   return { total: list.length, todo, done, recent };
 });
 
-const groupPath = computed(() => (props.group ? notes.groupPath(props.group.id) : ""));
-
 function formatSize(chars: number): string {
   if (chars < 1024) return `${chars} B`;
   return `${(chars / 1024).toFixed(1)} KB`;
@@ -81,9 +68,6 @@ function formatSize(chars: number): string {
       <header class="pv-head">
         <div class="pv-title-wrap">
           <h4 class="pv-title">{{ sticker.title || "（无标题）" }}</h4>
-          <p class="pv-path">
-            <i class="ri-file-text-line"></i>{{ stickerPath }}
-          </p>
         </div>
         <div class="pv-actions">
           <button class="btn small" @click="emit('edit', sticker)">
@@ -122,13 +106,6 @@ function formatSize(chars: number): string {
         </div>
       </div>
 
-      <!-- 统计信息最后一行：结构统计压成灰色小字 -->
-      <p class="meta-line">
-        标题 <b>{{ stats.headings }}</b> · 表格 <b>{{ stats.tables }}</b> · 代码块
-        <b>{{ stats.codes }}</b> · 链接 <b>{{ stats.links }}</b> / 图片
-        <b>{{ stats.images }}</b> · ID <code>{{ sticker.uid || "—" }}</code>
-      </p>
-
       <!-- 分割线以下：全部是正文预览内容 -->
       <div class="pv-body">
         <div class="md-body" v-html="rendered"></div>
@@ -146,9 +123,6 @@ function formatSize(chars: number): string {
             ></i>
             {{ group ? group.name : "未分组" }}
           </h4>
-          <p class="pv-path">
-            <i class="ri-folder-3-line"></i>{{ group ? `stickers/${groupPath}` : "stickers/（根目录）" }}
-          </p>
         </div>
       </header>
       <div class="metrics">
@@ -195,7 +169,7 @@ function formatSize(chars: number): string {
 }
 .pv-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -210,15 +184,6 @@ function formatSize(chars: number): string {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-.pv-path {
-  margin: 3px 0 0;
-  font-size: 11.5px;
-  color: #9aa0a8;
-  overflow-wrap: anywhere;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 .pv-actions {
   display: flex;
@@ -258,23 +223,6 @@ function formatSize(chars: number): string {
 }
 .metric.ok .v {
   color: #2e9e5b;
-}
-/* 结构统计压成的一行灰色小字（位于统计卡下方、分割线上方） */
-.meta-line {
-  font-size: 11.5px;
-  color: #9aa0a8;
-  line-height: 1.8;
-  margin: 0 0 10px;
-}
-.meta-line b {
-  color: #666c74;
-  font-weight: 600;
-}
-.meta-line code {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 4px;
-  padding: 0 4px;
-  color: #666c74;
 }
 .pv-body {
   border-top: 1px solid rgba(0, 0, 0, 0.07);

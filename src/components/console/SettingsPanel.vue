@@ -1010,47 +1010,27 @@ h3 {
   background: rgba(255, 255, 255, 0.9);
 }
 
-/* ── 窄窗口降级：导航折到顶部一行，内容单列 ──
-   注意 .nav / .content / .foot 都显式写了 grid-row，
-   必须同步改写行与列，否则自动放置会把它们塞进两个隐式列里，
-   导航被压成一条窄列、中文逐字换行（800×600 默认窗口即可复现）。 */
+/* ── 窄窗口降级：导航仍在左侧，只收窄宽度；内容随窗口自适应 ──
+   注意 .nav / .content 都显式写了 grid-row，这里只改列宽、不动行，
+   否则自动放置会把它们塞进两个隐式列（导航被压成竖排窄列，800×600 默认窗口即可复现）。 */
 @media (max-width: 820px) {
   .settings-page {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr auto;
+    grid-template-columns: 152px 1fr;
   }
   .nav {
-    grid-row: 1;
-    grid-column: 1;
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-    padding: 24px 10px 8px;
-    border-right: none;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-    overflow-x: auto;
-    overflow-y: hidden;
+    padding: 26px 8px 12px;
   }
-  /* 导航项不参与压缩：文字不换行，放不下时整条横向滚动 */
+  /* 导航项不参与压缩：文字始终单行 */
   .nav-item {
     flex: none;
     white-space: nowrap;
-  }
-  .page-title,
-  .side-foot {
-    display: none;
+    padding: 8px 10px;
   }
   .nav-item.active::before {
-    display: none;
+    left: -8px;
   }
   .content {
-    grid-row: 2;
-    grid-column: 1;
-    padding: 14px 16px 20px;
-  }
-  .foot {
-    grid-row: 3;
-    grid-column: 1;
+    padding: 18px 16px 22px;
   }
   .pane {
     max-width: 100%;
