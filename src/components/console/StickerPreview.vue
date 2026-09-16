@@ -122,17 +122,16 @@ function formatSize(chars: number): string {
         </div>
       </div>
 
+      <!-- 统计信息最后一行：结构统计压成灰色小字 -->
+      <p class="meta-line">
+        标题 <b>{{ stats.headings }}</b> · 表格 <b>{{ stats.tables }}</b> · 代码块
+        <b>{{ stats.codes }}</b> · 链接 <b>{{ stats.links }}</b> / 图片
+        <b>{{ stats.images }}</b> · ID <code>{{ sticker.uid || "—" }}</code>
+      </p>
+
+      <!-- 分割线以下：全部是正文预览内容 -->
       <div class="pv-body">
-        <div class="sect-title">正文预览</div>
         <div class="md-body" v-html="rendered"></div>
-        <div class="sect-title">结构统计</div>
-        <dl class="kv">
-          <dt>标题</dt><dd>{{ stats.headings }}</dd>
-          <dt>表格行</dt><dd>{{ stats.tables }}</dd>
-          <dt>代码块</dt><dd>{{ stats.codes }}</dd>
-          <dt>链接 / 图片</dt><dd>{{ stats.links }} / {{ stats.images }}</dd>
-          <dt>便签 ID</dt><dd><code>{{ sticker.uid || "（旧数据，升级后自动补齐）" }}</code></dd>
-        </dl>
       </div>
     </template>
 
@@ -260,6 +259,23 @@ function formatSize(chars: number): string {
 .metric.ok .v {
   color: #2e9e5b;
 }
+/* 结构统计压成的一行灰色小字（位于统计卡下方、分割线上方） */
+.meta-line {
+  font-size: 11.5px;
+  color: #9aa0a8;
+  line-height: 1.8;
+  margin: 0 0 10px;
+}
+.meta-line b {
+  color: #666c74;
+  font-weight: 600;
+}
+.meta-line code {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  padding: 0 4px;
+  color: #666c74;
+}
 .pv-body {
   border-top: 1px solid rgba(0, 0, 0, 0.07);
   padding-top: 10px;
@@ -300,26 +316,6 @@ function formatSize(chars: number): string {
 }
 .md-body :deep(img) {
   max-width: 100%;
-}
-.kv {
-  display: grid;
-  grid-template-columns: 96px 1fr;
-  gap: 4px 10px;
-  font-size: 12.5px;
-  margin: 0;
-}
-.kv dt {
-  color: #9aa0a8;
-}
-.kv dd {
-  margin: 0;
-  color: #2f3338;
-  overflow-wrap: anywhere;
-}
-.kv code {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 4px;
-  padding: 0 4px;
 }
 .recent {
   list-style: none;

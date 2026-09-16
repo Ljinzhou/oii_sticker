@@ -92,7 +92,7 @@ onMounted(load);
         <button class="close" @click="emit('close')"><i class="ri-close-line"></i></button>
       </header>
 
-      <section class="group">
+      <section class="sec">
         <h3>外观（修改及时生效）</h3>
         <label class="row">
           <span>背景透明度</span>
@@ -205,8 +205,8 @@ h2 {
   gap: 4px;
 }
 
-.group {
-  margin-top: 12px;
+.sec {
+  margin-top: 14px;
 }
 
 h3 {

@@ -386,8 +386,18 @@ async function onGroupDrop(sec: Section, event: DragEvent) {
   }
 }
 
-// —— 右侧预览：悬停卡片看内容；点击分组看该文件夹概览 ——
-const previewSticker = ref<Sticker | null>(null);
+// —— 右侧预览：点击卡片选中后预览；点击分组看该文件夹概览 ——
+const selectedStickerId = ref<number | null>(null);
+const previewSticker = computed(() => {
+  const id = selectedStickerId.value;
+  if (id === null) return null;
+  return notes.stickers.find((s) => s.id === id) ?? null;
+});
+
+/** 点击卡片：选中并预览；再次点击同一张取消选中。 */
+function selectSticker(s: Sticker) {
+  selectedStickerId.value = selectedStickerId.value === s.id ? null : s.id;
+}
 const selectedGroupKey = ref<string | null>(null);
 const selectedGroup = computed(() => {
   const key = selectedGroupKey.value;
@@ -448,8 +458,9 @@ function showGroupToast(text: string) {
   toastTimer = setTimeout(() => (groupToast.value = null), 3000);
 }
 
-/** 选择分组（点击分组头）：折叠切换 + 右侧显示该文件夹概览。 */
+/** 选择分组（点击分组头）：折叠切换 + 右侧显示该文件夹概览（同时取消便签选中）。 */
 function selectGroup(sec: Section) {
+  selectedStickerId.value = null;
   selectedGroupKey.value = sec.key;
   toggleCollapse(sec.key);
 }
@@ -657,7 +668,8 @@ onBeforeUnmount(() => {
                 v-for="s in sec.stickers"
                 :key="s.id"
                 class="card-cell"
-                @mouseenter="previewSticker = s"
+                :class="{ selected: selectedStickerId === s.id }"
+                @click="selectSticker(s)"
               >
                 <StickerCard
                   :sticker="s"
@@ -720,7 +732,8 @@ onBeforeUnmount(() => {
               v-for="s in row.stickers"
               :key="s.id"
               class="card-cell"
-              @mouseenter="previewSticker = s"
+              :class="{ selected: selectedStickerId === s.id }"
+              @click="selectSticker(s)"
             >
               <StickerCard
                 :sticker="s"
@@ -1295,6 +1308,13 @@ onBeforeUnmount(() => {
 
 .card-cell {
   display: block;
+}
+
+/* 选中态：主色描边 + 淡蓝光晕（不改变尺寸，避免点击时布局跳动） */
+.card-cell.selected :deep(.card) {
+  border-color: #4f7cff;
+  box-shadow: 0 0 0 2px rgba(79, 124, 255, 0.1);
+  background: #fdfdff;
 }
 
 .empty {
