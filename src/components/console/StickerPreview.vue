@@ -1,9 +1,11 @@
 <script setup lang="ts">
 // 右侧预览面板：显示选中便签的渲染内容与统计；未选中便签时显示所属分组概览。
-// 统计全部来自正文（纯函数），不需要额外后端命令。
-import { computed } from "vue";
+// 正文里的 <todo-block> 标记要靠后端任务数据才能渲染成任务卡片，
+// 所以这里跨便签一次性拉全量 todo，再按当前便签 / 分组过滤，渲染与统计共用同一份数据。
+import { computed, ref, watch } from "vue";
 import { renderMarkdown } from "../../utils/markdown";
-import type { Sticker, StickerGroup } from "../../types";
+import { invoke } from "../../composables/useTauri";
+import type { Sticker, StickerGroup, TodoBlockWithSticker } from "../../types";
 
 const props = defineProps<{
   sticker: Sticker | null;
@@ -38,7 +40,60 @@ const stats = computed(() => {
   };
 });
 
-const rendered = computed(() => (props.sticker ? renderMarkdown(props.sticker.content) : ""));
+// —— todo 块：预览渲染与任务统计共用同一份数据 ——
+const allTodos = ref<TodoBlockWithSticker[]>([]);
+
+async function loadTodos() {
+  if (!props.sticker && !props.groupSelected) {
+    allTodos.value = [];
+    return;
+  }
+  try {
+    const list = await invoke<TodoBlockWithSticker[]>("list_all_todos_cmd", { filter: undefined });
+    allTodos.value = list ?? [];
+  } catch {
+    /* 测试环境 / IPC 失败：降级为无任务，正文照常渲染 */
+    allTodos.value = [];
+  }
+}
+
+watch(
+  () => [
+    props.sticker?.id ?? null,
+    props.sticker?.content ?? "",
+    props.groupSelected ? 1 : 0,
+    (props.groupStickers ?? []).length,
+  ],
+  () => void loadTodos(),
+  { immediate: true },
+);
+
+/** 当前便签的 todo 块（交给 renderMarkdown 渲染任务卡片）。 */
+const stickerTodos = computed(() =>
+  props.sticker ? allTodos.value.filter((b) => b.sticker_id === props.sticker?.id) : [],
+);
+
+/** 任务计数：todo 块里的任务（parent_id 为 null 的是块容器，本身不算任务）+ 正文里的 GFM 复选框。 */
+function countTodoTasks(list: TodoBlockWithSticker[]): { pending: number; done: number } {
+  let pending = 0;
+  let done = 0;
+  for (const b of list) {
+    if (b.parent_id == null) continue;
+    if (b.is_completed) done += 1;
+    else pending += 1;
+  }
+  return { pending, done };
+}
+
+const rendered = computed(() =>
+  props.sticker ? renderMarkdown(props.sticker.content, stickerTodos.value) : "",
+);
+
+/** 便签预览的任务统计（todo 块 + GFM 复选框）。 */
+const stickerTaskCounts = computed(() => {
+  const { pending, done } = countTodoTasks(stickerTodos.value);
+  return { pending: pending + stats.value.todo, done: done + stats.value.done };
+});
 
 /** 分组概览：任务汇总 + 最近更新。 */
 const groupSummary = computed(() => {
@@ -53,6 +108,13 @@ const groupSummary = computed(() => {
     .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
     .slice(0, 4);
   return { total: list.length, todo, done, recent };
+});
+
+/** 分组概览的任务统计（组内所有便签的 todo 块 + GFM 复选框）。 */
+const groupTaskCounts = computed(() => {
+  const ids = new Set((props.groupStickers ?? []).map((s) => s.id));
+  const { pending, done } = countTodoTasks(allTodos.value.filter((b) => ids.has(b.sticker_id)));
+  return { pending: pending + groupSummary.value.todo, done: done + groupSummary.value.done };
 });
 
 function formatSize(chars: number): string {
@@ -88,13 +150,13 @@ function formatSize(chars: number): string {
           <div class="k">字符 / 行</div>
           <div class="v">{{ stats.chars }}<small>/ {{ stats.lines }} 行</small></div>
         </div>
-        <div class="metric" :class="{ warn: stats.todo > 0 }">
+        <div class="metric" :class="{ warn: stickerTaskCounts.pending > 0 }">
           <div class="k">待完成任务</div>
-          <div class="v">{{ stats.todo }}<small>项</small></div>
+          <div class="v">{{ stickerTaskCounts.pending }}<small>项</small></div>
         </div>
-        <div class="metric" :class="{ ok: stats.done > 0 }">
+        <div class="metric" :class="{ ok: stickerTaskCounts.done > 0 }">
           <div class="k">已完成任务</div>
-          <div class="v">{{ stats.done }}<small>项</small></div>
+          <div class="v">{{ stickerTaskCounts.done }}<small>项</small></div>
         </div>
         <div class="metric">
           <div class="k">体积（约）</div>
@@ -130,13 +192,13 @@ function formatSize(chars: number): string {
           <div class="k">便签</div>
           <div class="v">{{ groupSummary.total }}<small>张</small></div>
         </div>
-        <div class="metric" :class="{ warn: groupSummary.todo > 0 }">
+        <div class="metric" :class="{ warn: groupTaskCounts.pending > 0 }">
           <div class="k">待完成任务</div>
-          <div class="v">{{ groupSummary.todo }}<small>项</small></div>
+          <div class="v">{{ groupTaskCounts.pending }}<small>项</small></div>
         </div>
-        <div class="metric" :class="{ ok: groupSummary.done > 0 }">
+        <div class="metric" :class="{ ok: groupTaskCounts.done > 0 }">
           <div class="k">已完成任务</div>
-          <div class="v">{{ groupSummary.done }}<small>项</small></div>
+          <div class="v">{{ groupTaskCounts.done }}<small>项</small></div>
         </div>
       </div>
       <div class="pv-body">
@@ -264,6 +326,106 @@ function formatSize(chars: number): string {
 }
 .md-body :deep(img) {
   max-width: 100%;
+}
+/* —— todo 块任务卡片（与便签窗口 MarkdownView 观感一致，只读态）—— */
+.md-body :deep(.todo-block-card),
+.md-body :deep(.done-block-card) {
+  margin: 8px 0;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  overflow: hidden;
+}
+.md-body :deep(.todo-block-missing) {
+  padding: 6px 10px;
+  color: #a9a9a9;
+  font-size: 12px;
+}
+.md-body :deep(.tb-head) {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+.md-body :deep(.tb-title) {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.md-body :deep(.tb-count) {
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.md-body :deep(.tb-caret) {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  color: #999;
+  font-size: 11px;
+  user-select: none;
+}
+.md-body :deep(.tb-caret-placeholder) {
+  visibility: hidden;
+}
+.md-body :deep(.tb-list) {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px;
+}
+.md-body :deep(.tb-list li) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+}
+.md-body :deep(.tb-sub) {
+  padding-left: 22px;
+}
+.md-body :deep(.tb-name) {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+.md-body :deep(.tb-done) {
+  color: #999;
+  text-decoration: line-through;
+}
+.md-body :deep(.tb-empty) {
+  justify-content: center;
+  padding: 2px 0;
+  color: #a9a9a9;
+  font-size: 12px;
+}
+.md-body :deep(.todo-task-checkbox) {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1.2px solid rgba(0, 0, 0, 0.18);
+  border-radius: 3.5px;
+  background: rgba(255, 255, 255, 0.75);
+  position: relative;
+}
+.md-body :deep(.todo-task-checkbox:checked) {
+  background: #4f7cff;
+  border-color: #4f7cff;
+}
+.md-body :deep(.todo-task-checkbox:checked::after) {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 3.5px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
 }
 .recent {
   list-style: none;
