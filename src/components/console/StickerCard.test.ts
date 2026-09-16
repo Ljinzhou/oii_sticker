@@ -243,3 +243,14 @@ describe("StickerCard 更多菜单", () => {
     expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "delete_sticker_cmd")).toBe(false);
   });
 });
+
+
+describe("卡片底部标识", () => {
+  it("显示便签 uid；uid 缺失时回退到自增 id", () => {
+    const withUid = mountCard({ ...mkSticker(1, null), uid: "8f3a91c2" });
+    expect(withUid.find(".card-foot .id").text()).toBe("8f3a91c2");
+
+    const withoutUid = mountCard({ ...mkSticker(2, 10), uid: null });
+    expect(withoutUid.find(".card-foot .id").text()).toBe("#2");
+  });
+});

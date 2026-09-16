@@ -1,10 +1,11 @@
 <script setup lang="ts">
 // 右侧预览面板：显示选中便签的渲染内容与统计；未选中便签时显示所属分组概览。
-// 统计全部来自正文（纯函数），不需要额外后端命令。
-import { computed } from "vue";
+// 正文里的 <todo-block> 标记要靠后端任务数据才能渲染成任务卡片，
+// 所以这里跨便签一次性拉全量 todo，再按当前便签 / 分组过滤，渲染与统计共用同一份数据。
+import { computed, ref, watch } from "vue";
 import { renderMarkdown } from "../../utils/markdown";
-import { useNotesStore } from "../../stores/notes";
-import type { Sticker, StickerGroup } from "../../types";
+import { invoke } from "../../composables/useTauri";
+import type { Sticker, StickerGroup, TodoBlock, TodoBlockWithSticker } from "../../types";
 
 const props = defineProps<{
   sticker: Sticker | null;
@@ -20,8 +21,6 @@ const emit = defineEmits<{
   edit: [sticker: Sticker];
   remove: [sticker: Sticker];
 }>();
-
-const notes = useNotesStore();
 
 /** 正文统计（纯函数）。 */
 const stats = computed(() => {
@@ -41,14 +40,71 @@ const stats = computed(() => {
   };
 });
 
-const rendered = computed(() => (props.sticker ? renderMarkdown(props.sticker.content) : ""));
+// —— todo 块数据 ——
+// 便签预览必须用 list_todo_for_sticker_cmd：它返回该便签的**全部块（含第 0 层容器）**，
+// 而正文里的 <todo-block id="…"> 标记正是按容器 id 查找渲染的；
+// （list_all_todos_cmd 是跨便签聚合，SQL 里带 parent_id IS NOT NULL，不含容器，渲染不出卡片。）
+const stickerTodos = ref<TodoBlock[]>([]);
+// 分组概览只需任务级统计，用聚合命令即可（只读，不触发孤儿补写）。
+const groupTodos = ref<TodoBlockWithSticker[]>([]);
 
-/** 便签所在路径：分组路径 + 标题.md（与磁盘布局一致）。 */
-const stickerPath = computed(() => {
-  if (!props.sticker) return "";
-  const groupPath = props.sticker.group_id != null ? notes.groupPath(props.sticker.group_id) : "";
-  const name = (props.sticker.title || "未命名").trim() || "未命名";
-  return groupPath ? `stickers/${groupPath}/${name}.md` : `stickers/${name}.md`;
+async function loadTodos() {
+  const id = props.sticker?.id ?? null;
+  if (id != null) {
+    try {
+      const list = await invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId: id });
+      stickerTodos.value = list ?? [];
+    } catch {
+      /* 测试环境 / IPC 失败：降级为无任务，正文照常渲染 */
+      stickerTodos.value = [];
+    }
+  } else {
+    stickerTodos.value = [];
+  }
+
+  if (props.groupSelected) {
+    try {
+      const list = await invoke<TodoBlockWithSticker[]>("list_all_todos_cmd", { filter: undefined });
+      groupTodos.value = list ?? [];
+    } catch {
+      groupTodos.value = [];
+    }
+  } else {
+    groupTodos.value = [];
+  }
+}
+
+watch(
+  () => [
+    props.sticker?.id ?? null,
+    props.sticker?.content ?? "",
+    props.groupSelected ? 1 : 0,
+    (props.groupStickers ?? []).length,
+  ],
+  () => void loadTodos(),
+  { immediate: true },
+);
+
+/** 任务计数：todo 块里的任务（parent_id 为 null 的是块容器，本身不算任务）+ 正文里的 GFM 复选框。 */
+function countTodoTasks(list: TodoBlock[]): { pending: number; done: number } {
+  let pending = 0;
+  let done = 0;
+  for (const b of list) {
+    if (b.parent_id == null) continue;
+    if (b.is_completed) done += 1;
+    else pending += 1;
+  }
+  return { pending, done };
+}
+
+const rendered = computed(() =>
+  props.sticker ? renderMarkdown(props.sticker.content, stickerTodos.value) : "",
+);
+
+/** 便签预览的任务统计（todo 块 + GFM 复选框）。 */
+const stickerTaskCounts = computed(() => {
+  const { pending, done } = countTodoTasks(stickerTodos.value);
+  return { pending: pending + stats.value.todo, done: done + stats.value.done };
 });
 
 /** 分组概览：任务汇总 + 最近更新。 */
@@ -66,7 +122,12 @@ const groupSummary = computed(() => {
   return { total: list.length, todo, done, recent };
 });
 
-const groupPath = computed(() => (props.group ? notes.groupPath(props.group.id) : ""));
+/** 分组概览的任务统计（组内所有便签的 todo 块 + GFM 复选框）。 */
+const groupTaskCounts = computed(() => {
+  const ids = new Set((props.groupStickers ?? []).map((s) => s.id));
+  const { pending, done } = countTodoTasks(groupTodos.value.filter((b) => ids.has(b.sticker_id)));
+  return { pending: pending + groupSummary.value.todo, done: done + groupSummary.value.done };
+});
 
 function formatSize(chars: number): string {
   if (chars < 1024) return `${chars} B`;
@@ -81,9 +142,6 @@ function formatSize(chars: number): string {
       <header class="pv-head">
         <div class="pv-title-wrap">
           <h4 class="pv-title">{{ sticker.title || "（无标题）" }}</h4>
-          <p class="pv-path">
-            <i class="ri-file-text-line"></i>{{ stickerPath }}
-          </p>
         </div>
         <div class="pv-actions">
           <button class="btn small" @click="emit('edit', sticker)">
@@ -104,13 +162,13 @@ function formatSize(chars: number): string {
           <div class="k">字符 / 行</div>
           <div class="v">{{ stats.chars }}<small>/ {{ stats.lines }} 行</small></div>
         </div>
-        <div class="metric" :class="{ warn: stats.todo > 0 }">
+        <div class="metric" :class="{ warn: stickerTaskCounts.pending > 0 }">
           <div class="k">待完成任务</div>
-          <div class="v">{{ stats.todo }}<small>项</small></div>
+          <div class="v">{{ stickerTaskCounts.pending }}<small>项</small></div>
         </div>
-        <div class="metric" :class="{ ok: stats.done > 0 }">
+        <div class="metric" :class="{ ok: stickerTaskCounts.done > 0 }">
           <div class="k">已完成任务</div>
-          <div class="v">{{ stats.done }}<small>项</small></div>
+          <div class="v">{{ stickerTaskCounts.done }}<small>项</small></div>
         </div>
         <div class="metric">
           <div class="k">体积（约）</div>
@@ -122,17 +180,9 @@ function formatSize(chars: number): string {
         </div>
       </div>
 
+      <!-- 分割线以下：全部是正文预览内容 -->
       <div class="pv-body">
-        <div class="sect-title">正文预览</div>
         <div class="md-body" v-html="rendered"></div>
-        <div class="sect-title">结构统计</div>
-        <dl class="kv">
-          <dt>标题</dt><dd>{{ stats.headings }}</dd>
-          <dt>表格行</dt><dd>{{ stats.tables }}</dd>
-          <dt>代码块</dt><dd>{{ stats.codes }}</dd>
-          <dt>链接 / 图片</dt><dd>{{ stats.links }} / {{ stats.images }}</dd>
-          <dt>便签 ID</dt><dd><code>{{ sticker.uid || "（旧数据，升级后自动补齐）" }}</code></dd>
-        </dl>
       </div>
     </template>
 
@@ -147,9 +197,6 @@ function formatSize(chars: number): string {
             ></i>
             {{ group ? group.name : "未分组" }}
           </h4>
-          <p class="pv-path">
-            <i class="ri-folder-3-line"></i>{{ group ? `stickers/${groupPath}` : "stickers/（根目录）" }}
-          </p>
         </div>
       </header>
       <div class="metrics">
@@ -157,13 +204,13 @@ function formatSize(chars: number): string {
           <div class="k">便签</div>
           <div class="v">{{ groupSummary.total }}<small>张</small></div>
         </div>
-        <div class="metric" :class="{ warn: groupSummary.todo > 0 }">
+        <div class="metric" :class="{ warn: groupTaskCounts.pending > 0 }">
           <div class="k">待完成任务</div>
-          <div class="v">{{ groupSummary.todo }}<small>项</small></div>
+          <div class="v">{{ groupTaskCounts.pending }}<small>项</small></div>
         </div>
-        <div class="metric" :class="{ ok: groupSummary.done > 0 }">
+        <div class="metric" :class="{ ok: groupTaskCounts.done > 0 }">
           <div class="k">已完成任务</div>
-          <div class="v">{{ groupSummary.done }}<small>项</small></div>
+          <div class="v">{{ groupTaskCounts.done }}<small>项</small></div>
         </div>
       </div>
       <div class="pv-body">
@@ -196,7 +243,7 @@ function formatSize(chars: number): string {
 }
 .pv-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   margin-bottom: 10px;
 }
@@ -211,15 +258,6 @@ function formatSize(chars: number): string {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-.pv-path {
-  margin: 3px 0 0;
-  font-size: 11.5px;
-  color: #9aa0a8;
-  overflow-wrap: anywhere;
-  display: flex;
-  align-items: center;
-  gap: 4px;
 }
 .pv-actions {
   display: flex;
@@ -301,25 +339,105 @@ function formatSize(chars: number): string {
 .md-body :deep(img) {
   max-width: 100%;
 }
-.kv {
-  display: grid;
-  grid-template-columns: 96px 1fr;
-  gap: 4px 10px;
-  font-size: 12.5px;
+/* —— todo 块任务卡片（与便签窗口 MarkdownView 观感一致，只读态）—— */
+.md-body :deep(.todo-block-card),
+.md-body :deep(.done-block-card) {
+  margin: 8px 0;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.42);
+  overflow: hidden;
+}
+.md-body :deep(.todo-block-missing) {
+  padding: 6px 10px;
+  color: #a9a9a9;
+  font-size: 12px;
+}
+.md-body :deep(.tb-head) {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+.md-body :deep(.tb-title) {
+  flex: 1 1 0%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.md-body :deep(.tb-count) {
+  color: #888;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.md-body :deep(.tb-caret) {
+  flex: none;
+  width: 18px;
+  text-align: center;
+  color: #999;
+  font-size: 11px;
+  user-select: none;
+}
+.md-body :deep(.tb-caret-placeholder) {
+  visibility: hidden;
+}
+.md-body :deep(.tb-list) {
+  list-style: none;
   margin: 0;
+  padding: 6px 10px;
 }
-.kv dt {
-  color: #9aa0a8;
+.md-body :deep(.tb-list li) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
 }
-.kv dd {
+.md-body :deep(.tb-sub) {
+  padding-left: 22px;
+}
+.md-body :deep(.tb-name) {
+  flex: 1 1 0%;
+  min-width: 0;
+}
+.md-body :deep(.tb-done) {
+  color: #999;
+  text-decoration: line-through;
+}
+.md-body :deep(.tb-empty) {
+  justify-content: center;
+  padding: 2px 0;
+  color: #a9a9a9;
+  font-size: 12px;
+}
+.md-body :deep(.todo-task-checkbox) {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
   margin: 0;
-  color: #2f3338;
-  overflow-wrap: anywhere;
+  border: 1.2px solid rgba(0, 0, 0, 0.18);
+  border-radius: 3.5px;
+  background: rgba(255, 255, 255, 0.75);
+  position: relative;
 }
-.kv code {
-  background: rgba(0, 0, 0, 0.05);
-  border-radius: 4px;
-  padding: 0 4px;
+.md-body :deep(.todo-task-checkbox:checked) {
+  background: #4f7cff;
+  border-color: #4f7cff;
+}
+.md-body :deep(.todo-task-checkbox:checked::after) {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 3.5px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
 }
 .recent {
   list-style: none;

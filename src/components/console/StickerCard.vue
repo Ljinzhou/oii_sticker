@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
     </div>
     <div class="card-preview">{{ preview(props.sticker) }}</div>
     <div class="card-foot">
-      <span class="id">#{{ props.sticker.id }}</span>
+      <span class="id">{{ props.sticker.uid || "#" + props.sticker.id }}</span>
     </div>
   </div>
 </template>

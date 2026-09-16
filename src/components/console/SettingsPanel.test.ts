@@ -91,3 +91,14 @@ describe("SettingsPanel 任务栏隐藏开关", () => {
     });
   });
 });
+
+
+describe("SettingsPanel 分组改为分割线（移除 group 卡片）", () => {
+  it("不再渲染 class=\"group\" 卡片，分组改用 .sec", async () => {
+    const wrapper = await mountPanel();
+    expect(wrapper.findAll(".group")).toHaveLength(0);
+    const secs = wrapper.findAll("section.sec");
+    expect(secs.length).toBeGreaterThanOrEqual(3); // 通用：启动与退出 / 主控台 / 便签窗口
+    expect(secs.every((s) => s.find(".gtitle").exists())).toBe(true);
+  });
+});

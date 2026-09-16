@@ -21,8 +21,28 @@ vi.mock("../../composables/useTauri", () => ({
   listen: (e: string, h: (p: unknown) => void) => mocks.listenMock(e, h),
 }));
 
+const winMock = vi.hoisted(() => {
+  const movedHandlers: ((e: { payload: { x: number; y: number } }) => void)[] = [];
+  return {
+    movedHandlers,
+    win: {
+      label: "main",
+      minimize: vi.fn(),
+      close: vi.fn(),
+      toggleMaximize: vi.fn(),
+      maximize: vi.fn(),
+      isMaximized: vi.fn(async () => false),
+      onMoved: vi.fn(async (cb: (e: { payload: { x: number; y: number } }) => void) => {
+        movedHandlers.push(cb);
+        return () => {};
+      }),
+    },
+  };
+});
+
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "main", minimize: vi.fn(), close: vi.fn() }),
+  getCurrentWindow: () => winMock.win,
+  currentMonitor: vi.fn(async () => ({ position: { x: 0, y: 0 } })),
 }));
 
 let nextStickerId = 100;
@@ -296,5 +316,77 @@ describe("ConsoleView", () => {
     // 分区视图下的「新建分组」入口仍在
     expect(wrapper.find(".group-create").exists()).toBe(true);
     expect(wrapper.find(".group-create button").text()).toContain("新建分组");
+  });
+});
+
+
+describe("点击选中预览（不再悬停预览）", () => {
+  it("鼠标划过卡片不会切换预览", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.find(".card-cell").trigger("mouseenter");
+    expect(wrapper.find(".preview .pv-actions").exists()).toBe(false);
+  });
+
+  it("点击卡片选中并预览，再次点击同一张取消选中", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.find(".card-cell").trigger("click");
+    expect(wrapper.find(".card-cell").classes()).toContain("selected");
+    expect(wrapper.find(".preview .pv-title").text()).toContain("欢迎使用 oii_sticker");
+    expect(wrapper.find(".preview .pv-actions").exists()).toBe(true);
+
+    await wrapper.find(".card-cell").trigger("click");
+    expect(wrapper.find(".card-cell").classes()).not.toContain("selected");
+    expect(wrapper.find(".preview .pv-actions").exists()).toBe(false);
+  });
+
+  it("点击分组头切回文件夹概览并取消便签选中", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.find(".card-cell").trigger("click");
+    expect(wrapper.find(".preview .pv-actions").exists()).toBe(true);
+
+    await wrapper.findAll(".group-head")[0]!.trigger("click");
+    expect(wrapper.find(".preview .pv-actions").exists()).toBe(false);
+    expect(wrapper.find(".preview .pv-title").text()).toContain("未分组");
+    expect(wrapper.find(".card-cell.selected").exists()).toBe(false);
+  });
+
+  it("平铺视图无预览面板，但点击卡片仍进入选中态", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.findAll(".list .view-switch button")[1]!.trigger("click"); // 平铺
+    expect(wrapper.find(".preview").exists()).toBe(false); // 平铺视图本来就没有右侧预览
+    await wrapper.find(".card-cell").trigger("click");
+    expect(wrapper.find(".card-cell").classes()).toContain("selected");
+  });
+});
+
+
+describe("拖动标题栏到屏幕最顶部 → 最大化", () => {
+  beforeEach(() => {
+    winMock.movedHandlers.length = 0;
+    winMock.win.maximize.mockClear();
+  });
+
+  it("拖拽中窗口贴到显示器顶部时调用 maximize()", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.find(".console-header").trigger("mousedown");
+    const handler = winMock.movedHandlers[0];
+    expect(handler).toBeTruthy();
+    handler!({ payload: { x: 120, y: 0 } });
+    await flushPromises();
+    expect(winMock.win.maximize).toHaveBeenCalled();
+  });
+
+  it("未开始拖拽、或未贴顶时不最大化", async () => {
+    const wrapper = await mountConsole();
+    const handler = winMock.movedHandlers[0]!;
+
+    handler!({ payload: { x: 120, y: 0 } }); // 没有 mousedown → 不是拖拽
+    await flushPromises();
+    expect(winMock.win.maximize).not.toHaveBeenCalled();
+
+    await wrapper.find(".console-header").trigger("mousedown");
+    handler!({ payload: { x: 120, y: 240 } }); // 拖了但没贴顶
+    await flushPromises();
+    expect(winMock.win.maximize).not.toHaveBeenCalled();
   });
 });

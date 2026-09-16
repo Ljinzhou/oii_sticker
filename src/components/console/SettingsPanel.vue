@@ -266,7 +266,7 @@ onMounted(async () => {
             <p class="pane-sub">启动、窗口与主控台行为</p>
           </header>
           <div class="stack">
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">启动与退出</div>
               <label class="row">
                 <span>开机自启</span>
@@ -284,7 +284,7 @@ onMounted(async () => {
               <p class="hint">点击主控台右上角「关闭」按钮时的行为（隐藏后可从托盘图标恢复）。</p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">主控台</div>
               <label class="row">
                 <span>背景透明度</span>
@@ -310,7 +310,7 @@ onMounted(async () => {
               <p class="hint">便签进入交互模式后无操作满该秒数自动恢复展示模式（编辑/设置打开时不收起）。</p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">便签窗口</div>
               <label class="row">
                 <span>便签隐藏任务栏窗口</span>
@@ -341,7 +341,7 @@ onMounted(async () => {
             <p class="pane-sub">新建便签的默认外观与编辑模式</p>
           </header>
           <div class="stack">
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">外观</div>
               <label class="row">
                 <span>背景透明度</span>
@@ -369,7 +369,7 @@ onMounted(async () => {
               </label>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">编辑模式</div>
               <label class="row">
                 <span>正文字号</span>
@@ -420,7 +420,7 @@ onMounted(async () => {
             <p class="pane-sub">任务窗口行为与预设</p>
           </header>
           <div class="stack">
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">窗口</div>
               <label class="row">
                 <span>Todo 窗口默认置顶</span>
@@ -433,7 +433,7 @@ onMounted(async () => {
               <p class="hint">新建任务窗口是否默认保持在其他窗口之上。</p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">预设</div>
               <TodoPresetsManager kind="reminders" title="提醒时间预设" hint="用于 Todo 详情「提醒时间」行" />
               <TodoPresetsManager kind="due" title="截至时间预设" hint="用于 Todo 详情「截至时间」行" />
@@ -449,7 +449,7 @@ onMounted(async () => {
             <p class="pane-sub">数据目录、备份与恢复</p>
           </header>
           <div class="stack">
-            <section class="group workspace-group">
+            <section class="sec">
               <WorkspaceManager />
             </section>
           </div>
@@ -462,12 +462,12 @@ onMounted(async () => {
             <p class="pane-sub">版本信息与更新</p>
           </header>
           <div class="stack">
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">基本信息</div>
               <p class="about-line"><strong>oii_sticker</strong> &nbsp;<span class="badge">v{{ appVersion }}</span></p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">更新检查</div>
               <div class="about-actions">
                 <!-- 主按钮：随更新状态机变形 -->
@@ -532,12 +532,12 @@ onMounted(async () => {
               </div>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">开源许可</div>
               <p class="about-line">本软件遵循 GPL v3 许可分发。</p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">作者</div>
               <p class="about-line">李jinzhou（Ljinzhou）</p>
               <p class="about-line">当前Tokens充足，身份为“天才程序员”！</p>
@@ -545,7 +545,7 @@ onMounted(async () => {
               <p class="about-line">邮箱：<span class="copy-mail">771625807@qq.com</span></p>
             </section>
 
-            <section class="group">
+            <section class="sec">
               <div class="gtitle">致谢</div>
               <p class="about-line">感谢DeepSeek的惊人智慧，贡献了本项目99.99%的代码</p>
               <img class="about-credit" src="/thanks-deepseek.png" alt="感谢蓝色大肥鱼" />
@@ -682,29 +682,32 @@ onMounted(async () => {
 
 .stack {
   display: grid;
-  gap: 14px;
+  gap: 0;
 }
 
-/* 设置分组卡片 */
-.group {
-  border: 1px solid rgba(0, 0, 0, 0.09);
-  border-radius: 11px;
-  background: #fff;
-  overflow: hidden;
+/* 设置分组：不用卡片，只用一条分割线分隔（第一组上方不画线） */
+.sec {
+  padding: 15px 0;
 }
 
+.sec + .sec {
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+.sec:first-child {
+  padding-top: 2px;
+}
+
+.sec:last-child {
+  padding-bottom: 4px;
+}
+
+/* 分组小标题 */
 .gtitle {
-  padding: 9px 14px;
+  padding: 0 0 7px;
   font-size: 12px;
   letter-spacing: 0.5px;
   color: #9aa0a8;
-  background: linear-gradient(#fbf7ec, rgba(251, 247, 236, 0.4));
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-/* 工作空间分类：整块面板塞进卡片里，去掉它自带的外边距 */
-.workspace-group {
-  padding: 12px 14px 14px;
 }
 
 h3 {
@@ -718,24 +721,19 @@ h3 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 14px 2px;
+  padding: 7px 0;
   font-size: 13px;
   color: #444;
 }
 
 /* 行内 hint 紧贴上一行（同一设置项的说明） */
-.group > .hint {
-  padding: 0 14px 11px;
-  margin: 0;
+.sec > .hint {
+  padding: 0 0 6px;
+  margin: 4px 0 0;
 }
 
-.row + .hint {
-  padding-top: 2px;
-}
-
-.row:last-child,
-.group > .row:not(:has(+ .hint)) {
-  padding-bottom: 11px;
+.row:last-child {
+  padding-bottom: 0;
 }
 
 .row input[type="range"] {
@@ -857,15 +855,14 @@ h3 {
   font-size: 13px;
   color: #555;
   margin: 6px 0;
-  padding: 0 14px;
 }
 
-.group > .about-line:first-of-type {
-  padding-top: 12px;
+.sec > .about-line:first-of-type {
+  margin-top: 2px;
 }
 
-.group > .about-line:last-of-type {
-  padding-bottom: 12px;
+.sec > .about-line:last-of-type {
+  margin-bottom: 2px;
 }
 
 .badge {
@@ -883,7 +880,7 @@ h3 {
   flex-wrap: wrap;
   gap: 8px;
   margin: 4px 0;
-  padding: 8px 14px 0;
+  padding: 6px 0 0;
 }
 
 .about-actions .btn:disabled {
@@ -918,9 +915,9 @@ h3 {
 }
 
 .about-credit {
-  margin: 0 14px 12px;
+  display: block;
+  margin: 8px 0 0;
   max-width: 260px;
-  width: calc(100% - 28px);
   border-radius: 8px;
   border: 1px solid rgba(0, 0, 0, 0.08);
 }
@@ -929,7 +926,6 @@ h3 {
   font-size: 12px;
   color: #2e7d32;
   margin: 6px 0;
-  padding: 0 14px;
 }
 
 .result.error {
@@ -947,7 +943,7 @@ h3 {
 
 /* 更新日志 + 进度条（方向 A：贴合现状） */
 .update-panel {
-  margin: 10px 14px 14px;
+  margin: 10px 0 0;
   padding: 10px 12px;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.1);
@@ -1014,29 +1010,30 @@ h3 {
   background: rgba(255, 255, 255, 0.9);
 }
 
-/* ── 窄窗口降级：导航折到顶部，内容单列 ── */
+/* ── 窄窗口降级：导航仍在左侧，只收窄宽度；内容随窗口自适应 ──
+   注意 .nav / .content 都显式写了 grid-row，这里只改列宽、不动行，
+   否则自动放置会把它们塞进两个隐式列（导航被压成竖排窄列，800×600 默认窗口即可复现）。 */
 @media (max-width: 820px) {
   .settings-page {
-    grid-template-columns: 1fr;
+    grid-template-columns: 152px 1fr;
   }
   .nav {
-    flex-direction: row;
-    align-items: center;
-    gap: 4px;
-    padding: 24px 10px 8px;
-    border-right: none;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.07);
-    overflow-x: auto;
+    padding: 26px 8px 12px;
   }
-  .page-title,
-  .side-foot {
-    display: none;
+  /* 导航项不参与压缩：文字始终单行 */
+  .nav-item {
+    flex: none;
+    white-space: nowrap;
+    padding: 8px 10px;
   }
   .nav-item.active::before {
-    display: none;
+    left: -8px;
   }
   .content {
-    padding: 14px 16px 20px;
+    padding: 18px 16px 22px;
+  }
+  .pane {
+    max-width: 100%;
   }
 }
 </style>
