@@ -78,14 +78,12 @@ describe("StickerPreview 结构", () => {
 describe("StickerPreview todo 块", () => {
   it("渲染 todo 块任务卡片（不再出现「未找到任务」）并统计任务数", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "list_all_todos_cmd") {
+      if (cmd === "list_todo_for_sticker_cmd") {
         return [
-          // 第 0 层块容器（parent_id = null，本身不算任务）
+          // 第 0 层块容器（parent_id = null，本身不算任务；正文标记按它的 id 渲染卡片）
           { id: "blk-1", sticker_id: 1, parent_id: null, title: "块", block_title: "块", is_completed: false },
           { id: "t-1", sticker_id: 1, parent_id: "blk-1", title: "待办任务", block_title: "块", is_completed: false },
           { id: "t-2", sticker_id: 1, parent_id: "blk-1", title: "已完成任务", block_title: "块", is_completed: true },
-          // 别的便签的任务不应计入
-          { id: "t-9", sticker_id: 2, parent_id: "blk-2", title: "他人任务", block_title: "块", is_completed: false },
         ];
       }
       return undefined;
@@ -108,7 +106,7 @@ describe("StickerPreview todo 块", () => {
     expect(wrapper.find(".pv-body").text()).not.toContain("未找到任务");
     expect(wrapper.find(".pv-body .todo-task-checkbox").exists()).toBe(true);
 
-    // 统计只算本便签的任务：1 项待完成 / 1 项已完成
+    // 统计只算任务（块容器不计入）：1 项待完成 / 1 项已完成
     const values = wrapper.findAll(".metric .v").map((v) => v.text());
     expect(values[2]).toBe("1项");
     expect(values[3]).toBe("1项");
@@ -116,8 +114,11 @@ describe("StickerPreview todo 块", () => {
 
   it("GFM 复选框与 todo 块任务合并计数", async () => {
     mocks.invokeMock.mockImplementation(async (cmd: string) => {
-      if (cmd === "list_all_todos_cmd") {
-        return [{ id: "t-1", sticker_id: 1, parent_id: "blk-1", title: "块任务", block_title: "块", is_completed: false }];
+      if (cmd === "list_todo_for_sticker_cmd") {
+        return [
+          { id: "blk-1", sticker_id: 1, parent_id: null, title: "块", block_title: "块", is_completed: false },
+          { id: "t-1", sticker_id: 1, parent_id: "blk-1", title: "块任务", block_title: "块", is_completed: false },
+        ];
       }
       return undefined;
     });

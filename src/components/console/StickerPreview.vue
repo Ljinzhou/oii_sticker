@@ -5,7 +5,7 @@
 import { computed, ref, watch } from "vue";
 import { renderMarkdown } from "../../utils/markdown";
 import { invoke } from "../../composables/useTauri";
-import type { Sticker, StickerGroup, TodoBlockWithSticker } from "../../types";
+import type { Sticker, StickerGroup, TodoBlock, TodoBlockWithSticker } from "../../types";
 
 const props = defineProps<{
   sticker: Sticker | null;
@@ -40,20 +40,37 @@ const stats = computed(() => {
   };
 });
 
-// —— todo 块：预览渲染与任务统计共用同一份数据 ——
-const allTodos = ref<TodoBlockWithSticker[]>([]);
+// —— todo 块数据 ——
+// 便签预览必须用 list_todo_for_sticker_cmd：它返回该便签的**全部块（含第 0 层容器）**，
+// 而正文里的 <todo-block id="…"> 标记正是按容器 id 查找渲染的；
+// （list_all_todos_cmd 是跨便签聚合，SQL 里带 parent_id IS NOT NULL，不含容器，渲染不出卡片。）
+const stickerTodos = ref<TodoBlock[]>([]);
+// 分组概览只需任务级统计，用聚合命令即可（只读，不触发孤儿补写）。
+const groupTodos = ref<TodoBlockWithSticker[]>([]);
 
 async function loadTodos() {
-  if (!props.sticker && !props.groupSelected) {
-    allTodos.value = [];
-    return;
+  const id = props.sticker?.id ?? null;
+  if (id != null) {
+    try {
+      const list = await invoke<TodoBlock[]>("list_todo_for_sticker_cmd", { stickerId: id });
+      stickerTodos.value = list ?? [];
+    } catch {
+      /* 测试环境 / IPC 失败：降级为无任务，正文照常渲染 */
+      stickerTodos.value = [];
+    }
+  } else {
+    stickerTodos.value = [];
   }
-  try {
-    const list = await invoke<TodoBlockWithSticker[]>("list_all_todos_cmd", { filter: undefined });
-    allTodos.value = list ?? [];
-  } catch {
-    /* 测试环境 / IPC 失败：降级为无任务，正文照常渲染 */
-    allTodos.value = [];
+
+  if (props.groupSelected) {
+    try {
+      const list = await invoke<TodoBlockWithSticker[]>("list_all_todos_cmd", { filter: undefined });
+      groupTodos.value = list ?? [];
+    } catch {
+      groupTodos.value = [];
+    }
+  } else {
+    groupTodos.value = [];
   }
 }
 
@@ -68,13 +85,8 @@ watch(
   { immediate: true },
 );
 
-/** 当前便签的 todo 块（交给 renderMarkdown 渲染任务卡片）。 */
-const stickerTodos = computed(() =>
-  props.sticker ? allTodos.value.filter((b) => b.sticker_id === props.sticker?.id) : [],
-);
-
 /** 任务计数：todo 块里的任务（parent_id 为 null 的是块容器，本身不算任务）+ 正文里的 GFM 复选框。 */
-function countTodoTasks(list: TodoBlockWithSticker[]): { pending: number; done: number } {
+function countTodoTasks(list: TodoBlock[]): { pending: number; done: number } {
   let pending = 0;
   let done = 0;
   for (const b of list) {
@@ -113,7 +125,7 @@ const groupSummary = computed(() => {
 /** 分组概览的任务统计（组内所有便签的 todo 块 + GFM 复选框）。 */
 const groupTaskCounts = computed(() => {
   const ids = new Set((props.groupStickers ?? []).map((s) => s.id));
-  const { pending, done } = countTodoTasks(allTodos.value.filter((b) => ids.has(b.sticker_id)));
+  const { pending, done } = countTodoTasks(groupTodos.value.filter((b) => ids.has(b.sticker_id)));
   return { pending: pending + groupSummary.value.todo, done: done + groupSummary.value.done };
 });
 
