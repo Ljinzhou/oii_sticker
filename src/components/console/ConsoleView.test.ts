@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { mount, flushPromises, type DOMWrapper } from "@vue/test-utils";
 import { createPinia } from "pinia";
 import ConsoleView from "./ConsoleView.vue";
 
@@ -113,6 +113,11 @@ function setupInvoke(configEntries: Record<string, string> = {}) {
         if (args!.mode === "with-stickers") db.stickers = db.stickers.filter((s) => s.group_id !== args!.id);
         else db.stickers.forEach((s) => { if (s.group_id === args!.id) s.group_id = null; });
         return Promise.resolve(args!.mode === "with-stickers" ? before : 0);
+      }
+      case "move_sticker_group_cmd": {
+        const s = db.stickers.find((x) => x.id === args!.stickerId);
+        if (s) s.group_id = (args!.groupId as number | null) ?? null;
+        return Promise.resolve(undefined);
       }
       default:
         return Promise.resolve(undefined);
@@ -356,6 +361,115 @@ describe("点击选中预览（不再悬停预览）", () => {
     expect(wrapper.find(".preview").exists()).toBe(false); // 平铺视图本来就没有右侧预览
     await wrapper.find(".card-cell").trigger("click");
     expect(wrapper.find(".card-cell").classes()).toContain("selected");
+  });
+
+  it("主控台头部不再渲染 h1 标题（只留页签与操作按钮）", async () => {
+    const wrapper = await mountConsole();
+    expect(wrapper.find(".console-header h1").exists()).toBe(false);
+    expect(wrapper.find(".console-header .page-switch").exists()).toBe(true);
+  });
+
+  it("分区视图的便签卡片渲染拖拽手柄（可拖动排序的提示）", async () => {
+    const wrapper = await mountConsole();
+    expect(wrapper.findAll(".card-cell").length).toBe(db.stickers.length);
+    expect(wrapper.findAll(".card-cell .card-grip").length).toBe(db.stickers.length);
+  });
+});
+
+// —— 拖拽排序（指针事件；WebView2 里 HTML5 DnD 不触发） ——
+describe("ConsoleView 拖拽排序", () => {
+  /** 指针拖拽：按下 → 移动（stub 指针下的元素）→ 松开。 */
+  async function dragTo(source: DOMWrapper<Element>, target: Element, clientY = 60) {
+    if (typeof document.elementFromPoint !== "function") {
+      Object.defineProperty(document, "elementFromPoint", {
+        value: () => null,
+        writable: true,
+        configurable: true,
+      });
+    }
+    await source.trigger("mousedown", { button: 0, clientX: 5, clientY: 5 });
+    const spy = vi.spyOn(document, "elementFromPoint").mockReturnValue(target);
+    document.dispatchEvent(new MouseEvent("mousemove", { clientX: 60, clientY, bubbles: true }));
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    spy.mockRestore();
+    await flushPromises();
+  }
+
+  /** 让目标分组头有确定的几何：顶部 27% 判定为「插到它前面」。 */
+  function stubRect(el: Element, top: number, height: number) {
+    Object.defineProperty(el, "getBoundingClientRect", {
+      value: () => ({ top, bottom: top + height, height, left: 0, right: 200, x: 0, y: top, width: 200, toJSON: () => ({}) }),
+      configurable: true,
+    });
+  }
+
+  it("拖分组头到另一个分组上方 → 同级重排（group_move + group_reorder）", async () => {
+    const wrapper = await mountConsole();
+    const heads = wrapper.findAll(".group-head");
+    // [未分组, 工作(10), 生活(11)]；把「生活」拖到「工作」上方
+    const life = heads[2]!;
+    const work = heads[1]!;
+    stubRect(work.element, 100, 40);
+    await dragTo(life, work.element, 105); // 落在「工作」头部（before 区）
+
+    const moveCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_move_cmd");
+    expect(moveCall?.[1]).toMatchObject({ id: 11, parentId: null });
+    const reorderCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_reorder_cmd");
+    expect(reorderCall?.[1]).toEqual({ parentId: null, ids: [11, 10] });
+  });
+
+  it("拖分组头到另一个分组中间 → 成为它的子分组", async () => {
+    const wrapper = await mountConsole();
+    const heads = wrapper.findAll(".group-head");
+    const life = heads[2]!;
+    const work = heads[1]!;
+    stubRect(work.element, 100, 40);
+    await dragTo(life, work.element, 120); // 正中 → inside
+
+    const moveCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "group_move_cmd");
+    expect(moveCall?.[1]).toMatchObject({ id: 11, parentId: 10 });
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "group_reorder_cmd")).toBe(false);
+  });
+
+  it("拖便签卡片到同组另一张卡之前 → reorder_stickers_cmd 提交组内新顺序", async () => {
+    db.stickers.push(mkSticker(4, 10, "工作便签2"));
+    const wrapper = await mountConsole();
+    const cells = wrapper.findAll(".card-cell");
+    // 同组两张卡：工作便签(2) / 工作便签2(4)
+    const second = cells.find((c) => c.attributes("data-sticker-id") === "4")!;
+    const first = cells.find((c) => c.attributes("data-sticker-id") === "2")!;
+    expect(second).toBeTruthy();
+
+    await dragTo(second, first.element);
+
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "reorder_stickers_cmd");
+    expect(call?.[1]).toEqual({ ids: [4, 2] });
+  });
+
+  it("拖便签卡片到另一个分组 → 先移动分组再按落点重排", async () => {
+    db.stickers.push(mkSticker(4, 10, "工作便签2"));
+    const wrapper = await mountConsole();
+    const cells = wrapper.findAll(".card-cell");
+    const moved = cells.find((c) => c.attributes("data-sticker-id") === "4")!;
+    const target = cells.find((c) => c.attributes("data-sticker-id") === "3")!; // 生活便签（组 11）
+
+    await dragTo(moved, target.element);
+
+    const moveCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "move_sticker_group_cmd");
+    expect(moveCall?.[1]).toMatchObject({ stickerId: 4, groupId: 11 });
+    // 目标组原有 [3]，4 插到 3 之前 → [4, 3]
+    const reorderCall = mocks.invokeMock.mock.calls.find((c) => c[0] === "reorder_stickers_cmd");
+    expect(reorderCall?.[1]).toEqual({ ids: [4, 3] });
+  });
+
+  it("只是点击（未超过拖拽阈值）不触发任何排序命令", async () => {
+    const wrapper = await mountConsole();
+    const head = wrapper.findAll(".group-head")[2]!;
+    await head.trigger("mousedown", { button: 0, clientX: 5, clientY: 5 });
+    document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    await flushPromises();
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "group_move_cmd")).toBe(false);
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "group_reorder_cmd")).toBe(false);
   });
 });
 
