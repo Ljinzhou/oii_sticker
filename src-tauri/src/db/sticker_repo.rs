@@ -3,7 +3,7 @@
 //! 所有方法以 `&Connection` 为入参，由调用方（state.rs / commands.rs）
 //! 负责把 DB IO 派发到 `spawn_blocking` 上运行，避免阻塞 UI 线程。
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -34,15 +34,26 @@ pub fn new_uid() -> String {
 }
 
 /// 新建一条便签，返回自增 id（同时生成 8 位随机 uid）。
+///
+/// `sort_order` 取该分组内 `MAX(sort_order) + 1`（追加到**组末尾**）：
+/// 不能依赖列默认值 0，否则组内拖拽重排（sort_order 被重编号成 0..n）之后
+/// 新建的便签会插到组首，与 "新便签追加在最后" 的预期不符。
 pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
     let bg = s.bg_color.as_deref();
+    let order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM stickers WHERE group_id IS ?1",
+            params![s.group_id],
+            |row| row.get(0),
+        )
+        .context("计算新便签组内序号失败")?;
     conn.execute(
         "INSERT INTO stickers
            (parent_id, group_id, title, content, heading_level,
             pos_x, pos_y, width, height, opacity, bg_color,
-            always_on_top, auto_scroll, is_completed, display_mode, uid)
+            always_on_top, auto_scroll, is_completed, display_mode, uid, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                 ?11, ?12, ?13, 0, 'display', ?14)",
+                 ?11, ?12, ?13, 0, 'display', ?14, ?15)",
         params![
             s.parent_id,
             s.group_id,
@@ -58,6 +69,7 @@ pub fn insert(conn: &Connection, s: &NewSticker) -> Result<i64> {
             s.always_on_top as i32,
             s.auto_scroll as i32,
             new_uid(),
+            order,
         ],
     )
     .context("插入便签失败")?;
@@ -71,13 +83,55 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<Sticker>> {
     Ok(s)
 }
 
-/// 列出全部便签。
+/// 列出全部便签（组内按用户拖拽顺序；`sort_order` 相同的旧数据按 id 兜底）。
 pub fn list_all(conn: &Connection) -> Result<Vec<Sticker>> {
-    let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM stickers ORDER BY id"))?;
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COLS} FROM stickers ORDER BY sort_order, id"
+    ))?;
     let rows = stmt
         .query_map([], row_to_sticker)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// 某一分组（`None` = 未分组）内的便签 id，按当前顺序。
+pub fn ids_in_group(conn: &Connection, group_id: Option<i64>) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id FROM stickers WHERE group_id IS ?1 ORDER BY sort_order, id",
+    )?;
+    let rows = stmt
+        .query_map(params![group_id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// 组内重排（主控台拖拽调整位置）：`ids` 必须是**同一分组**且覆盖该组全部便签的完整新顺序。
+///
+/// 与 `group_repo::reorder` 同一套防御：id 集合与库内不一致直接报错，
+/// 避免前后端视图不同步时静默丢序。事务内把组内 `sort_order` 重编号为 0..n。
+pub fn reorder(conn: &Connection, ids: &[i64]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let first = get(conn, ids[0])?.context("便签不存在")?;
+    let group_id = first.group_id;
+    let mut existing = ids_in_group(conn, group_id)?;
+    let mut wanted = ids.to_vec();
+    existing.sort_unstable();
+    wanted.sort_unstable();
+    if existing != wanted {
+        bail!("排序列表必须为该分组全部便签，且与当前顺序集合一致");
+    }
+    let tx = conn.unchecked_transaction()?;
+    for (index, id) in ids.iter().enumerate() {
+        tx.execute(
+            "UPDATE stickers SET sort_order = ?1, updated_at = datetime('now') WHERE id = ?2",
+            params![index as i64, id],
+        )
+        .context("更新便签排序失败")?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// 部分更新便签字段；只覆盖传入的 Option 字段。
@@ -261,9 +315,11 @@ mod tests {
         }
     }
 
-    fn test_conn() -> Connection {
+    /// 每个用例一个独立库文件：并行执行时互不污染（同一文件会让计数类断言随机失败）。
+    fn test_conn(tag: &str) -> Connection {
         // 用临时文件库测试（WAL 模式在内存库上可用但行为略有差异）
-        let dir = std::env::temp_dir().join(format!("oii-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("oii-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let conn = open(&dir.join("test.db")).unwrap();
         crate::db::schema::run_migrations(&conn).unwrap();
@@ -272,7 +328,7 @@ mod tests {
 
     #[test]
     fn sticker_crud_roundtrip() {
-        let conn = test_conn();
+        let conn = test_conn("crud");
         let new = NewSticker {
             title: "测试便签".into(),
             content: "# 标题
@@ -344,5 +400,39 @@ mod tests {
         // 删除级联清理
         delete(&conn, id).unwrap();
         assert!(get(&conn, id).unwrap().is_none());
+    }
+
+    /// 组内排序（v21）：新便签追加到组末尾；拖拽重排按传入顺序重编号；
+    /// 集合与库内不一致时拒绝（防前后端视图不同步时静默丢序）。
+    #[test]
+    fn sort_order_appends_and_reorders_within_group() {
+        let conn = test_conn("sort-order");
+        let group = crate::db::group_repo::create(&conn, "工作", None).unwrap();
+        let make = |title: &str, gid: Option<i64>| {
+            insert(
+                &conn,
+                &NewSticker { title: title.into(), group_id: gid, ..Default::default() },
+            )
+            .unwrap()
+        };
+        let a = make("甲", Some(group.id));
+        let b = make("乙", Some(group.id));
+        let loose = make("散", None);
+
+        // 新便签追加到组末尾（不能因默认值 0 插到组首）
+        assert_eq!(ids_in_group(&conn, Some(group.id)).unwrap(), vec![a, b]);
+        assert_eq!(ids_in_group(&conn, None).unwrap(), vec![loose]);
+
+        // 拖拽重排：乙在前、甲在后
+        reorder(&conn, &[b, a]).unwrap();
+        assert_eq!(ids_in_group(&conn, Some(group.id)).unwrap(), vec![b, a]);
+
+        // 再新建 → 仍追加到末尾（旧 bug：sort_order 默认 0 会插到第 1 位之后）
+        let c = make("丙", Some(group.id));
+        assert_eq!(ids_in_group(&conn, Some(group.id)).unwrap(), vec![b, a, c]);
+
+        // 集合不一致（少了 c / 混入其它组的 id）一律拒绝
+        assert!(reorder(&conn, &[b, a]).is_err(), "必须覆盖该组全部便签");
+        assert!(reorder(&conn, &[b, a, c, loose]).is_err(), "不得跨组重排");
     }
 }

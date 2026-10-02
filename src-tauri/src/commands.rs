@@ -278,6 +278,11 @@ pub fn move_sticker_group(conn: &Connection, sticker_id: i64, group_id: Option<i
     crate::db::group_repo::move_sticker(conn, sticker_id, group_id)
 }
 
+/// 组内便签重排（主控台拖拽调整位置）：`ids` 为该分组（含未分组）的完整新顺序。
+pub fn reorder_stickers(conn: &Connection, ids: &[i64]) -> Result<()> {
+    sticker_repo::reorder(conn, ids)
+}
+
 // ── 偏好 ──
 
 /// 写入/覆盖便签偏好。

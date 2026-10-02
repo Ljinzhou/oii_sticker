@@ -156,13 +156,20 @@ pub fn delete(conn: &Connection, id: i64, mode: &str) -> Result<Vec<i64>> {
 }
 
 /// 移动便签到指定分组；None = 回默认组。目标分组必须存在。
+///
+/// 落位到目标分组**末尾**（`sort_order = MAX+1`）：跨分组移动不应插到别人的排序中间。
 pub fn move_sticker(conn: &Connection, sticker_id: i64, group_id: Option<i64>) -> Result<()> {
     if let Some(gid) = group_id {
         get(conn, gid)?.context("目标分组不存在")?;
     }
+    let order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM stickers WHERE group_id IS ?1",
+        params![group_id],
+        |r| r.get(0),
+    )?;
     conn.execute(
-        "UPDATE stickers SET group_id = ?2, updated_at = datetime('now') WHERE id = ?1",
-        params![sticker_id, group_id],
+        "UPDATE stickers SET group_id = ?2, sort_order = ?3, updated_at = datetime('now') WHERE id = ?1",
+        params![sticker_id, group_id, order],
     )
     .context("移动便签分组失败")?;
     Ok(())

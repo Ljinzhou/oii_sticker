@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 20;
+pub const SCHEMA_VERSION: u32 = 21;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -521,6 +521,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
         migrate_v19_to_v20(conn)?;
     }
 
+    if current < 21 {
+        migrate_v20_to_v21(conn)?;
+    }
+
     // 升级完成后把 user_version 写到位。
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .context("更新 user_version 失败")?;
@@ -599,6 +603,30 @@ fn migrate_v19_to_v20(conn: &Connection) -> Result<()> {
                 [],
             )
             .context("迁移 v19→v20 对齐 Todo 窗口置顶默认值失败")?;
+        }
+        Ok(())
+    })
+}
+
+/// v20 → v21 迁移：便签支持**分组内拖拽排序**（`stickers.sort_order`）。
+///
+/// - 新增 `sort_order`（NOT NULL DEFAULT 0）；
+/// - 老数据按 `id` 回填：与旧的 `ORDER BY id` 视觉顺序完全一致，用户无感。
+///
+/// 新插入的便签由 `sticker_repo::insert` 写入「组内 MAX+1」（追加到末尾），
+/// 因此不需要在迁移里做后续维护。
+fn migrate_v20_to_v21(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_stickers: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stickers')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_stickers && !table_has_column(c, "stickers", "sort_order")? {
+            c.execute_batch("ALTER TABLE stickers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;")
+                .context("迁移 v20→v21 新增 sort_order 列失败")?;
+            c.execute_batch("UPDATE stickers SET sort_order = id;")
+                .context("迁移 v20→v21 回填 sort_order 失败")?;
         }
         Ok(())
     })
@@ -973,6 +1001,51 @@ mod tests {
             .unwrap(),
             "0",
         );
+    }
+
+    /// v20 → v21：stickers 新增 sort_order 并按 id 回填（保持旧视觉顺序）；幂等。
+    #[test]
+    fn migrate_v20_to_v21_adds_sticker_sort_order_backfilled_by_id() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE sticker_groups (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL,
+                 sort_order INTEGER NOT NULL DEFAULT 0,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 parent_id INTEGER REFERENCES sticker_groups(id) ON DELETE CASCADE,
+                 color TEXT
+             );
+             CREATE TABLE stickers (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 title TEXT NOT NULL DEFAULT '',
+                 group_id INTEGER REFERENCES sticker_groups(id) ON DELETE SET NULL
+             );
+             INSERT INTO sticker_groups (name) VALUES ('学习');
+             INSERT INTO stickers (title, group_id) VALUES ('甲', 1), ('乙', NULL), ('丙', 1);
+             PRAGMA user_version = 20;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert!(table_has_column(&conn, "stickers", "sort_order").unwrap());
+        let rows: Vec<(i64, i64)> = conn
+            .prepare("SELECT id, sort_order FROM stickers ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1, 1), (2, 2), (3, 3)], "老数据按 id 回填，视觉顺序不变");
+
+        // 幂等：再跑一次不报错、值不被重置
+        conn.execute_batch("UPDATE stickers SET sort_order = 42 WHERE id = 1;").unwrap();
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        let kept: i64 = conn
+            .query_row("SELECT sort_order FROM stickers WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 42, "重复迁移不得重置已有排序");
     }
 
     /// v10 库执行迁移：file_history 表应被创建；重复执行幂等。

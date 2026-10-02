@@ -435,6 +435,20 @@ fn move_sticker_group_cmd(
     Ok(())
 }
 
+/// 组内便签重排（主控台拖拽调整位置）：ids 为该分组（含未分组）的完整新顺序。
+#[tauri::command]
+fn reorder_stickers_cmd(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    state
+        .with_conn(|c| commands::reorder_stickers(c, &ids))
+        .map_err(|e| e.to_string())?;
+    events::emit_push_update(&app, 0);
+    Ok(())
+}
+
 // ── 在资源管理器中打开 ──
 
 /// 打开系统文件管理器；`select` 为 true 时选中该文件而不是打开其所在目录。
@@ -1712,6 +1726,7 @@ pub fn run() {
             group_reorder_cmd,
             group_move_cmd,
             move_sticker_group_cmd,
+            reorder_stickers_cmd,
             open_group_in_explorer_cmd,
             open_sticker_in_explorer_cmd,
             fetch_page_title_cmd,

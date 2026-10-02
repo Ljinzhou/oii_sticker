@@ -158,3 +158,6 @@ ALTER TABLE stickers ADD COLUMN uid TEXT;
 -- v19：md 文件相对 stickers/ 的路径（NULL = 尚未落定，按「分组路径/标题.md」派生）
 ALTER TABLE stickers ADD COLUMN file_name TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_stickers_uid ON stickers(uid);
+
+-- v21：便签在所属分组内的排序（主控台拖拽调整位置；新便签追加到组末尾）
+ALTER TABLE stickers ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
