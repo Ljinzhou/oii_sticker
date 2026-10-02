@@ -408,8 +408,8 @@ fn open_todo_for_notification(app: &AppHandle, id: &str) {
     }
     let always_on_top = state
         .with_conn(crate::commands::get_config)
-        .map(|cfg| cfg.get_or("default_todo_always_on_top", "1") == "1")
-        .unwrap_or(true);
+        .map(|cfg| cfg.get_or("default_todo_always_on_top", "0") == "1")
+        .unwrap_or(false);
     let label = format!("todo-{id}");
     if let Some(win) = app.get_webview_window(&label) {
         let _ = win.set_always_on_top(always_on_top);

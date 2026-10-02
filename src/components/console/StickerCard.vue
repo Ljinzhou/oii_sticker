@@ -4,7 +4,7 @@ import type { Sticker } from "../../types";
 import { useNotesStore } from "../../stores/notes";
 import { setTitleInContent } from "../../utils/sticker-title";
 
-const props = defineProps<{ sticker: Sticker; isOpen: boolean }>();
+const props = defineProps<{ sticker: Sticker; isOpen: boolean; showGrip?: boolean }>();
 const emit = defineEmits<{
   toggle: [s: Sticker]; // 显示/隐藏窗口
   remove: [s: Sticker]; // 打开删除确认弹窗
@@ -163,6 +163,10 @@ onBeforeUnmount(() => {
     </div>
     <div class="card-preview">{{ preview(props.sticker) }}</div>
     <div class="card-foot">
+      <!-- 拖拽手柄：整张卡都可拖动，这里给出可拖的视觉提示（主控台分区视图启用） -->
+      <span v-if="props.showGrip" class="card-grip" title="按住拖动调整便签在分组内的位置">
+        <i class="ri-draggable"></i>
+      </span>
       <span class="id">{{ props.sticker.uid || "#" + props.sticker.id }}</span>
     </div>
   </div>
@@ -225,9 +229,29 @@ onBeforeUnmount(() => {
 .card-foot {
   margin-top: 6px;
   display: flex;
+  align-items: center;
   gap: 12px;
   font-size: 11px;
   color: #aaa;
+}
+
+/* 拖拽手柄：常驻但很低调，悬停卡片时变亮（提示"这张卡可以拖动排序"） */
+.card-grip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  line-height: 1;
+  color: #cfc9bb;
+  cursor: grab;
+  transition: color 0.15s;
+}
+
+.card:hover .card-grip {
+  color: #8a8375;
+}
+
+.card-grip:active {
+  cursor: grabbing;
 }
 
 .btn {

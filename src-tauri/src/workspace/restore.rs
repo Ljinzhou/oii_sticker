@@ -459,6 +459,10 @@ fn restore_overwrite_impl(
     let layout = Layout::at(&root);
     // 恢复前先校验备份合法：不合法就完全不动现有数据
     backup::inspect(zip).context("备份文件不可用")?;
+    // 父便签保护：覆盖当前工作空间会关闭全部便签窗口，还有打开的任务窗口时先拒绝。
+    if is_current {
+        crate::ensure_no_open_todo_anywhere(app).map_err(|e| anyhow::anyhow!(e))?;
+    }
     // 1) 回滚点（需要数据库连接，必须在 release_db 之前）
     let rollback_zip = if is_current {
         Some(state.with_conn(|conn| make_recovery_point(&layout, conn))?)

@@ -75,6 +75,11 @@ export const useNotesStore = defineStore("notes", {
       await invoke("move_sticker_group_cmd", { stickerId, groupId });
       await this.refresh();
     },
+    /** 组内便签重排（主控台拖拽调整位置）：`ids` 为该分组（含未分组）的完整新顺序。 */
+    async reorderStickers(ids: number[]) {
+      await invoke("reorder_stickers_cmd", { ids });
+      await this.refresh();
+    },
 
     // ── 文件系统（在资源管理器中查看） ──
     /** 在资源管理器中定位该便签的 md 文件（选中文件）；返回文件完整路径。 */

@@ -57,11 +57,31 @@ pub fn create(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Re
         }
     }
     let id = next_id();
+    // 新建节点排在**同级末尾**：必须显式写 sort_order，不能依赖列默认值 0。
+    // 拖拽重排（reorder）会把组内 sort_order 重新编号成 0..n，此时若新行取默认 0，
+    // 它会与当前第 1 条并列，再按 created_at 排在它后面 —— 表现为"新建任务插到了第 2 个位置"。
+    let order = next_sort_order(conn, sticker_id, parent_id)?;
     conn.execute(
-        "INSERT INTO todo_blocks (id, sticker_id, parent_id) VALUES (?1, ?2, ?3)",
-        params![id, sticker_id, parent_id],
+        "INSERT INTO todo_blocks (id, sticker_id, parent_id, sort_order) VALUES (?1, ?2, ?3, ?4)",
+        params![id, sticker_id, parent_id, order],
     ).context("创建 Todo 块失败")?;
     get(conn, &id)?.context("创建 Todo 块后读取失败")
+}
+
+/// 同级末尾序号 = 同便签 + 同父级下的 `MAX(sort_order) + 1`（组内为空时为 0）。
+///
+/// 兼容历史数据：老库 `sort_order` 可能全是 0（该列 v10 才引入，且 create 一直没写），
+/// 取 MAX+1 仍能保证新节点排在现有全部同级节点之后。
+fn next_sort_order(conn: &Connection, sticker_id: i64, parent_id: Option<&str>) -> Result<i64> {
+    let order: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM todo_blocks
+             WHERE sticker_id = ?1 AND (parent_id = ?2 OR (parent_id IS NULL AND ?2 IS NULL))",
+            params![sticker_id, parent_id],
+            |row| row.get(0),
+        )
+        .context("计算新节点排序序号失败")?;
+    Ok(order)
 }
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<TodoBlock>> {
@@ -559,6 +579,36 @@ mod tests {
         let child_two = create(&conn, sticker_id, Some(&parent.id)).unwrap();
         assert_eq!(child_one.parent_id.as_deref(), Some(parent.id.as_str()));
         assert_eq!(child_two.parent_id.as_deref(), Some(parent.id.as_str()));
+    }
+
+    /// 回归：拖拽重排后新建任务必须排在**同级末尾**。
+    ///
+    /// 旧实现 create 不写 sort_order（取列默认值 0），而 reorder 会把组内重新编号 0..n，
+    /// 于是新任务与当前第 1 条同为 0、再按 created_at 排在它之后 → 视觉上"插到第 2 个位置"。
+    #[test]
+    fn create_appends_to_end_after_reorder() {
+        let conn = conn();
+        let sticker_id = sticker(&conn);
+        let block = create(&conn, sticker_id, None).unwrap();
+        let a = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        let b = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        let c = create(&conn, sticker_id, Some(&block.id)).unwrap();
+        // 拖拽成 c → a → b：组内 sort_order 被重编号为 0/1/2
+        reorder(&conn, &[c.id.clone(), a.id.clone(), b.id.clone()]).unwrap();
+
+        let fresh = create(&conn, sticker_id, Some(&block.id)).unwrap();
+
+        let roots: Vec<String> = list_by_sticker(&conn, sticker_id)
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.parent_id.as_deref() == Some(block.id.as_str()))
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(
+            roots,
+            vec![c.id, a.id, b.id, fresh.id],
+            "新建任务必须排在同级末尾，而不是被 sort_order 默认值挤到第 2 位"
+        );
     }
 
     /// 三层结构：块(0) → 父任务(1) → 子任务(2)，第四层被拒绝。

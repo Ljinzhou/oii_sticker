@@ -14,6 +14,7 @@ const todoId = getCurrentWindow().label.replace(/^todo-/, "");
 const upperHeight = ref(220); let stop: (() => void) | undefined;
 let stopClose: (() => void) | undefined;
 let stopReminder: (() => void) | undefined;
+let stopStickerClosed: (() => void) | undefined;
 let patchTimer: number | undefined;
 let pendingPatch: TodoPatch = {};
 const isReady = ref(false);
@@ -28,6 +29,8 @@ function showToast(message: string) {
   }, 2500);
 }
 const selected = computed(() => todo.selected);
+/** 新建任务后要求列表滚动/高亮的目标行（TodoList 消费后自行清除高亮）。 */
+const revealId = ref<string | null>(null);
 // 窗口对应的块（独立于当前选中的任务），顶部标题输入框绑定其 block_title
 const windowBlock = computed(() => todo.blocks.find((block) => block.id === todoId) ?? null);
 const blockTitle = ref("");
@@ -62,6 +65,32 @@ async function notifyTodoPresence(present: boolean) {
 async function closeWindow() {
   await notifyTodoPresence(false);
   await invoke("close_todo_window_cmd", { id: todoId });
+}
+/**
+ * 父便签被意外关闭/删除时的兜底：**先尽力落库当前编辑，再关闭本窗口**。
+ *
+ * 触发来源（Rust 侧 `sticky://sticker-closed`）：父便签消失的任何路径——
+ * 外部删除 md 文件、Alt+F4 / 任务栏强关、删除便签、切换或恢复工作空间。
+ * 正常关闭路径会被后端 `ensure_no_open_todo` 拒绝，这里是它们的补漏：
+ * 若父便签已不存在，保存会失败，此时只关窗，绝不把窗口留在桌面上。
+ *
+ * 后端可能在同一次销毁里发两次（窗口 Destroyed + 同步线程显式通知），
+ * 用 closing 标志保证只跑一遍。
+ */
+let closingForStickerGone = false;
+async function autoSaveAndClose() {
+  if (closingForStickerGone || !isReady.value) return;
+  closingForStickerGone = true;
+  try {
+    await flushSelected();
+  } catch (error) {
+    console.warn("[todo] 父便签已关闭，未落库的编辑无法保存：", error);
+  }
+  try {
+    await closeWindow();
+  } catch (error) {
+    console.error("[todo] 关闭任务窗口失败：", error);
+  }
 }
 async function handleRemove(id: string) {
   try {
@@ -108,11 +137,15 @@ const blockTasks = computed(() => {
  * "+ 新建任务"：始终在**当前块**下新建一条**父任务**。
  * 块本身由编辑器 `/` 菜单创建，这里绝不建块（因此不会多出卡片）。
  * 子任务不需要 markdown 标签——块根上的标签已覆盖整棵子树。
+ * 新建后要求列表滚动到新任务位置并高亮，否则长列表里用户看不到变化。
  */
 async function createRoot() {
   if (!todo.stickerId && todo.blocks.length === 0) return;
   const created = await todo.create(todoId);
-  if (created) todo.selectedId = created.id;
+  if (created) {
+    todo.selectedId = created.id;
+    revealId.value = created.id;
+  }
 }
 
 /**
@@ -131,7 +164,10 @@ async function createChild(id?: string) {
   }
   const created = await todo.create(parentId);
   // 保持父任务选中，便于连续添加子任务
-  if (created) todo.selectedId = parentId;
+  if (created) {
+    todo.selectedId = parentId;
+    revealId.value = created.id;
+  }
 }
 function beginResize(event: MouseEvent) { const startY = event.clientY; const startHeight = upperHeight.value; const move = (e: MouseEvent) => { upperHeight.value = Math.max(120, Math.min(420, startHeight + e.clientY - startY)); }; const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); document.body.style.userSelect = ""; }; document.body.style.userSelect = "none"; document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); }
 async function flushSelected() { if (!selected.value || !Object.keys(pendingPatch).length) return; const patch = pendingPatch; pendingPatch = {}; if (patchTimer) { window.clearTimeout(patchTimer); patchTimer = undefined; } await todo.update(selected.value.id, patch); }
@@ -172,6 +208,12 @@ async function initialize() {
   try {
     stop = await listen<string>("todo://updated", () => { void todo.loadForTodo(todoId); });
     stopClose = await getCurrentWindow().onCloseRequested((event) => { event.preventDefault(); void closeWindow(); });
+    // 父便签消失（见 autoSaveAndClose）：自动保存并关闭本窗口。
+    stopStickerClosed = await listen<number>("sticky://sticker-closed", (closedStickerId) => {
+      const mine = todo.stickerId ?? windowBlock.value?.sticker_id ?? null;
+      if (mine !== null && closedStickerId !== mine) return;
+      void autoSaveAndClose();
+    });
     // 提醒触发：只响应本窗口所属便签的任务，刷新列表 + 弹提示
     stopReminder = await watchTodoReminders({
       onFire: (payload) => {
@@ -185,11 +227,11 @@ async function initialize() {
   }
 }
 onMounted(() => { void initialize(); });
-onBeforeUnmount(() => { stop?.(); stopClose?.(); stopReminder?.(); if (blockTitleTimer) window.clearTimeout(blockTitleTimer); void notifyTodoPresence(false); void flushSelected(); });
+onBeforeUnmount(() => { stop?.(); stopClose?.(); stopStickerClosed?.(); stopReminder?.(); if (blockTitleTimer) window.clearTimeout(blockTitleTimer); void notifyTodoPresence(false); void flushSelected(); });
 </script>
 
 <template>
-  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><input v-if="isReady && windowBlock" class="block-title" v-model="blockTitle" placeholder="点击输入任务块标题" @mousedown.stop @click.stop @input="inputBlockTitle" /><button title="关闭" @mousedown.stop @click.stop="closeWindow"><i class="ri-close-line"></i></button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="blockTasks" :block-id="todoId" :selected-id="todo.selectedId" :height="upperHeight" @select="todo.selectedId = $event" @ack="handleAck" @create-root="createRoot" @create-child="createChild" @toggle="todo.toggle" @remove="handleRemove" @reorder="handleReorder" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :block-id="todoId" @patch="patchSelected" @create-child="createChild" /><footer><button @click="saveSelected">保存</button></footer><transition name="toast"><p v-if="toastMessage" class="todo-toast" role="alert">{{ toastMessage }}</p></transition></template></main>
+  <main class="todo-window"><div class="drag-bar" @mousedown="startDragging"><input v-if="isReady && windowBlock" class="block-title" v-model="blockTitle" placeholder="点击输入任务块标题" @mousedown.stop @click.stop @input="inputBlockTitle" /><button title="关闭" @mousedown.stop @click.stop="closeWindow"><i class="ri-close-line"></i></button></div><p v-if="loadError" class="todo-status todo-error" role="alert">Todo 加载失败：{{ loadError }}</p><p v-else-if="!isReady" class="todo-status">正在加载 Todo...</p><template v-else><TodoList :items="blockTasks" :block-id="todoId" :selected-id="todo.selectedId" :height="upperHeight" :reveal-id="revealId" @select="todo.selectedId = $event" @ack="handleAck" @create-child="createChild" @toggle="todo.toggle" @remove="handleRemove" @reorder="handleReorder" /><div class="splitter" @mousedown="beginResize"><i></i></div><TodoDetail :item="selected" :block-id="todoId" @patch="patchSelected" @create-child="createChild" @create-root="createRoot" /><footer><button @click="saveSelected">保存</button></footer><transition name="toast"><p v-if="toastMessage" class="todo-toast" role="alert">{{ toastMessage }}</p></transition></template></main>
 </template>
 
 <style scoped>

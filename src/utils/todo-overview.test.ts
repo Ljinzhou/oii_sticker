@@ -94,7 +94,14 @@ describe("countStats", () => {
 });
 
 describe("filterBlocks", () => {
-  const todayDue = isoFromNow(6 * 3600_000); // 今天稍晚（未过期，仍属今天）
+  // "今天稍晚"必须真的是今天：原先写死 now+6h，18:00 之后运行就落到明天，
+  // 用例会在晚间无故失败。这里取「今天 23:59:59.999」与 now+6h 的较早者。
+  // 筛选用的是「今天 00:00 ~ 23:59:59.999」闭区间，取到边界也仍然算今天。
+  const todayDue = (() => {
+    const endOfToday = new Date(NOW_MS);
+    endOfToday.setHours(23, 59, 59, 999);
+    return new Date(Math.min(NOW_MS + 6 * 3600_000, endOfToday.getTime())).toISOString();
+  })();
   const tomorrowDue = isoFromNow(24 * 3600_000);
   const pastDue = isoFromNow(-48 * 3600_000);
   const blocks: TodoBlockWithSticker[] = [

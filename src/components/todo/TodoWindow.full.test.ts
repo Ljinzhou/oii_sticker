@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createPinia } from "pinia";
 import TodoWindow from "./TodoWindow.vue";
 
@@ -7,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
   onCloseRequested: vi.fn(),
+  handlers: new Map<string, (payload: unknown) => void>(),
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
@@ -37,13 +39,18 @@ describe("TodoWindow 完整组件树", () => {
     mocks.invoke.mockReset();
     mocks.listen.mockReset();
     mocks.onCloseRequested.mockReset();
+    mocks.handlers.clear();
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "get_todo_block_cmd") return Promise.resolve(block);
       if (command === "list_todo_for_sticker_cmd") return Promise.resolve([block, task]);
       if (command === "get_config_cmd") return Promise.resolve({ entries: {} });
       return Promise.resolve(undefined);
     });
-    mocks.listen.mockResolvedValue(() => {});
+    // 记录事件处理器，便于用例直接触发后端广播
+    mocks.listen.mockImplementation((event: string, handler: (payload: unknown) => void) => {
+      mocks.handlers.set(event, handler);
+      return Promise.resolve(() => {});
+    });
     mocks.onCloseRequested.mockResolvedValue(() => {});
   });
 
@@ -115,8 +122,10 @@ describe("TodoWindow 完整组件树", () => {
     const wrapper = mount(TodoWindow, { global: { plugins: [createPinia()] } });
     await flushPromises();
     expect(wrapper.find("button.add-block").exists()).toBe(false);
-    // 只有「新建任务」一个按钮
-    expect(wrapper.findAll(".header-actions button")).toHaveLength(1);
+    // 唯一的创建入口是「新建任务」，且它已移到「任务详情」标题右侧
+    expect(wrapper.findAll("button.add-task")).toHaveLength(1);
+    expect(wrapper.find(".detail-head button.add-task").exists()).toBe(true);
+    expect(wrapper.find(".header-actions").exists()).toBe(false);
   });
 
   it("子任务行下不出现「添加子任务」（子任务不能再挂子任务）", async () => {
@@ -134,5 +143,67 @@ describe("TodoWindow 完整组件树", () => {
     // 1 个父任务 → 只有 1 条「添加子任务」，子任务自身不产生
     expect(wrapper.findAll(".sub-task")).toHaveLength(1);
     expect(wrapper.findAll(".add-child")).toHaveLength(1);
+  });
+
+  // ── 新建任务后的定位反馈（需求：点完要能看到新任务，而不是留在原地） ──
+  it("「新建任务」后新行被滚动到可视区并高亮", async () => {
+    const fresh = { ...task, id: "t-9", title: "新任务" };
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "get_todo_block_cmd") return Promise.resolve(block);
+      if (command === "list_todo_for_sticker_cmd") return Promise.resolve([block, task]);
+      if (command === "create_todo_block_cmd") return Promise.resolve(fresh);
+      if (command === "get_config_cmd") return Promise.resolve({ entries: {} });
+      return Promise.resolve(undefined);
+    });
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const wrapper = mount(TodoWindow, { global: { plugins: [createPinia()] } });
+      await flushPromises();
+      await wrapper.find(".detail-head button.add-task").trigger("click");
+      await flushPromises();
+      await nextTick();
+
+      const freshRow = wrapper.findAll(".todo-list > li").find((li) => li.text().includes("新任务"));
+      expect(freshRow).toBeDefined();
+      expect(freshRow!.classes()).toContain("just-created");
+      expect(scrollIntoView).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  // ── 需求5：父便签消失时任务窗口自动保存并关闭 ──
+  it("父便签关闭事件：先落库未保存的编辑，再关闭任务窗口", async () => {
+    const wrapper = mount(TodoWindow, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    // 选中父任务并在「任务详情」改名（250ms 防抖补丁尚未落库）
+    await wrapper.findAll(".todo-list > li")[0].trigger("click");
+    await flushPromises();
+    await wrapper.find(".fields input[type='text']").setValue("改名后的任务");
+    mocks.invoke.mockClear();
+
+    mocks.handlers.get("sticky://sticker-closed")?.(7);
+    await flushPromises();
+
+    const commands = mocks.invoke.mock.calls.map((call) => call[0]);
+    expect(commands).toContain("update_todo_block_cmd");
+    expect(commands).toContain("close_todo_window_cmd");
+    expect(commands.indexOf("update_todo_block_cmd")).toBeLessThan(
+      commands.indexOf("close_todo_window_cmd"),
+    );
+  });
+
+  it("其它便签的关闭事件不影响本窗口", async () => {
+    mount(TodoWindow, { global: { plugins: [createPinia()] } });
+    await flushPromises();
+    mocks.invoke.mockClear();
+
+    mocks.handlers.get("sticky://sticker-closed")?.(999);
+    await flushPromises();
+
+    expect(mocks.invoke.mock.calls.some((call) => call[0] === "close_todo_window_cmd")).toBe(false);
   });
 });

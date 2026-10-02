@@ -273,12 +273,33 @@ async function onSaved() {
   applyMode("interact");
 }
 
+/** 应用内提示（2.5 秒自动消失）：用于「关闭被拒绝」等一次性反馈。 */
+function showModeToast(text: string) {
+  reminderPayload.value = null;
+  modeToast.value = text;
+  if (toastTimer) window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    modeToast.value = "";
+  }, 2500);
+}
+
 async function onClosed() {
   // 关闭=隐藏窗口（不删除数据）；由 Rust hide_sticker_cmd 隐藏并广播
   // push-update，主控台收到后把按钮切到"显示"，点"显示"再经 wake 恢复。
+  // 还开着任务（Todo 编辑）窗口时后端会拒绝：此时提示用户先去关任务窗口，
+  // 并且**保留**当前内容（不 releaseData）。
   if (mode.value === "edit") await editorRef.value?.discard();
-  await invoke("hide_sticker_cmd", { id: stickerId });
+  try {
+    await invoke("hide_sticker_cmd", { id: stickerId });
+  } catch (error) {
+    showModeToast(messageOf(error));
+    return;
+  }
   releaseData();
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 隐藏时释放内容引用（内存策略）：下次打开由 sticky://wake 或恢复流程重新 load。 */
@@ -289,6 +310,18 @@ function releaseData() {
 
 onMounted(async () => {
   await load();
+  // OS 级关闭（Alt+F4 / 任务栏"关闭窗口"）与关闭按钮走同一条路径：
+  // 还开着任务（Todo 编辑）窗口时后端会拒绝关闭，这里先拦下系统关闭再提示。
+  try {
+    unlisteners.push(
+      await getCurrentWindow().onCloseRequested((event) => {
+        event.preventDefault();
+        void onClosed();
+      }),
+    );
+  } catch (error) {
+    console.warn("[sticker] 注册关闭拦截失败：", error);
+  }
   unlisteners.push(
     await listen<number>("sticky://push-update", (id) => {
       if (id === stickerId) load();

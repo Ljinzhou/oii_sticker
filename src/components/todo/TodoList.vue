@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { TodoBlock } from "../../types";
 import { todoHighlightState } from "../../utils/todo-dates";
 
@@ -10,12 +10,12 @@ const props = defineProps<{
   blockId: string;
   selectedId: string | null;
   height: number;
+  /** 新建任务后要求滚动并高亮该行（值为新任务 id；滚完由父级清空）。 */
+  revealId?: string | null;
 }>();
 const emit = defineEmits<{
   select: [id: string];
   ack: [id: string];
-  /** "+ 新建任务"：在当前块下新建一条**父任务**（不建块）。 */
-  createRoot: [];
   /** "添加子任务"：在某条父任务下新建**子任务**。 */
   createChild: [id: string];
   toggle: [id: string, checked: boolean];
@@ -160,7 +160,38 @@ onBeforeUnmount(() => {
   document.removeEventListener("mousemove", onPointerMove);
   document.removeEventListener("mouseup", onPointerUp);
   document.body.style.userSelect = "";
+  if (revealTimer) window.clearTimeout(revealTimer);
 });
+
+// ── 新建任务后自动滚动到新任务位置 ──
+// 列表可能比可视区更长（新建项在末尾），必须把新行滚进视野并短暂高亮，
+// 否则用户点完「新建任务」看不到任何变化，会以为没生效。
+const listRef = ref<HTMLElement | null>(null);
+const revealFlashId = ref<string | null>(null);
+let revealTimer: number | undefined;
+
+watch(
+  () => props.revealId,
+  async (id) => {
+    if (!id) return;
+    await nextTick();
+    // 不用 CSS.escape / 属性选择器拼接：直接按 dataset 比对，id 无需转义。
+    const rows = listRef.value?.querySelectorAll<HTMLElement>("li[data-id]") ?? [];
+    const row = Array.from(rows).find((el) => el.dataset.id === id);
+    if (!row) return;
+    // 立即定位（不带动画）：行为可预期，且用户正在手动滚动时也能准确落位。
+    // 注意：这里刻意不给 behavior:"smooth"，也不要给容器加 scroll-behavior:smooth
+    // —— 那会让 scrollIntoView({behavior:"auto"}) 变成动画滚动，依赖帧调度。
+    // jsdom 无 scrollIntoView：可选调用保证测试环境不炸。
+    row.scrollIntoView?.({ block: "nearest" });
+    revealFlashId.value = id;
+    if (revealTimer) window.clearTimeout(revealTimer);
+    revealTimer = window.setTimeout(() => {
+      if (revealFlashId.value === id) revealFlashId.value = null;
+      revealTimer = undefined;
+    }, 1200);
+  },
+);
 
 function endDrag() { dragId.value = null; dropTargetId.value = null; dropAddParentId.value = null; }
 
@@ -218,19 +249,16 @@ function onDrop(targetId: string) {
 </script>
 
 <template>
-  <section class="todo-upper" :style="{ height: height + 'px' }">
-    <!-- 块的创建入口只有编辑器 / 菜单，这里只提供「新建父任务」。 -->
+  <section ref="listRef" class="todo-upper" :style="{ height: height + 'px' }">
+    <!-- 块的创建入口只有编辑器 / 菜单；「新建任务」按钮已移到「任务详情」标题右侧。 -->
     <header>
       <strong>任务列表</strong>
-      <div class="header-actions">
-        <button class="add-task" @click="emit('createRoot')" title="在当前块中新建一条父任务"><i class="ri-add-line"></i>新建任务</button>
-      </div>
     </header>
     <ul class="todo-list">
       <template v-for="item in roots" :key="item.id">
         <li
           :data-id="item.id"
-          :class="{ selected: item.id === selectedId, done: item.is_completed, dragging: dragId === item.id, 'drop-target': dropTargetId === item.id && dragId !== item.id, reminded: isReminded(item), overdue: isOverdue(item), 'just-acked': flashId === item.id }"
+          :class="{ selected: item.id === selectedId, done: item.is_completed, dragging: dragId === item.id, 'drop-target': dropTargetId === item.id && dragId !== item.id, reminded: isReminded(item), overdue: isOverdue(item), 'just-acked': flashId === item.id, 'just-created': revealFlashId === item.id }"
           @mousedown="onRowMouseDown(item.id, $event)"
           @click="onRowClick(item.id)"
         >
@@ -243,7 +271,7 @@ function onDrop(targetId: string) {
           :key="child.id"
           class="sub-task"
           :data-id="child.id"
-          :class="{ selected: child.id === selectedId, done: child.is_completed, dragging: dragId === child.id, 'drop-target': dropTargetId === child.id && dragId !== child.id, reminded: isReminded(child), overdue: isOverdue(child), 'just-acked': flashId === child.id }"
+          :class="{ selected: child.id === selectedId, done: child.is_completed, dragging: dragId === child.id, 'drop-target': dropTargetId === child.id && dragId !== child.id, reminded: isReminded(child), overdue: isOverdue(child), 'just-acked': flashId === child.id, 'just-created': revealFlashId === child.id }"
           @mousedown="onRowMouseDown(child.id, $event)"
           @click="onRowClick(child.id)"
         >
@@ -264,10 +292,7 @@ function onDrop(targetId: string) {
 
 <style scoped>
 .todo-upper { height: 220px; min-height: 120px; max-height: 420px; overflow: auto; padding: 12px 14px; background: rgba(255,255,255,.55); box-sizing: border-box; }
-header { display:flex; justify-content:space-between; align-items:center; font-size:14px; color:#333; margin-bottom:7px; }
-header .header-actions { display:inline-flex; gap:6px; }
-header button { border:0; background:rgba(255,255,255,.7); color:#4f7cff; border-radius:6px; padding:4px 8px; font:inherit; font-size:12px; cursor:pointer; display:inline-flex; align-items:center; }
-header button .ri { vertical-align:-1px; margin-right:3px; }
+header { display:flex; align-items:center; font-size:14px; color:#333; margin-bottom:7px; }
 .todo-list { list-style:none; margin:0; padding:0; }
 .todo-list li { display:flex; align-items:center; gap:8px; min-height:28px; padding:5px 8px; box-sizing:border-box; border-radius:6px; cursor:pointer; color:#222; font-size:13px; }
 .todo-list li.selected { background:rgba(79,124,255,.12); color:#4f7cff; font-weight:600; box-shadow:inset 3px 0 #4f7cff; }
@@ -287,6 +312,13 @@ header button .ri { vertical-align:-1px; margin-right:3px; }
   0% { box-shadow: 0 0 0 5px rgba(79,124,255,.6); background: rgba(79,124,255,.28); }
   60% { box-shadow: 0 0 0 3px rgba(79,124,255,.25); background: rgba(79,124,255,.12); }
   100% { box-shadow: 0 0 0 0 rgba(79,124,255,0); }
+}
+/* 新建任务落位反馈：滚到该行并轻微高亮，提示"新任务在这里"。 */
+.todo-list li.just-created { animation: created-flash 1.2s ease; }
+@keyframes created-flash {
+  0% { background: rgba(46,158,91,.34); box-shadow: inset 3px 0 #2e9e5b; }
+  70% { background: rgba(46,158,91,.14); box-shadow: inset 3px 0 rgba(46,158,91,.55); }
+  100% { background: rgba(46,158,91,0); box-shadow: inset 3px 0 rgba(46,158,91,0); }
 }
 .drag-handle { flex:none; width:16px; text-align:center; color:#bbb; font-size:14px; line-height:1; display:inline-flex; align-items:center; justify-content:center; cursor:grab; user-select:none; }
 .todo-list li:hover .drag-handle { color:#4f7cff; }

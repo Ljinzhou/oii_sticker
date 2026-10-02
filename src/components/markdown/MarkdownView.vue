@@ -269,10 +269,24 @@ function onContainerClick(e: MouseEvent) {
   overflow-x: auto;
 }
 
-/* 任务清单 checkbox */
-.markdown :deep(.task-item) {
+/* 任务清单 checkbox：`- [ ] 文本` 的列表标记由 checkbox 代替，收掉无序列表缩进 */
+.markdown :deep(ul > li.task-item) {
   list-style: none;
   margin-left: -22px;
+}
+
+/* `1. [ ] 文本`（有序列表里的任务项）：编号是挂在 li 外面的 ::before，
+   li 本身**不能**再整体左移 —— 否则整个条目被推出容器，编号被便签裁掉。 */
+.markdown :deep(.task-item) {
+  list-style: none;
+}
+
+/* 松散列表（项之间有空行 → markdown-it 用 `<p>` 包裹）里，编号是 inline 的 ::before、
+   而 `<p>` 是块盒：两者会被拆到两行（"1." 单独一行、正文另起一行）。
+   把首个段落改回行内，编号/checkbox 与正文就回到同一行。
+   用 :first-of-type 而不是 :first-child —— 任务项的 checkbox 会插在 `<p>` 前面。 */
+.markdown :deep(li > p:first-of-type) {
+  display: inline;
 }
 
 .markdown :deep(.task-checkbox) {

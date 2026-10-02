@@ -53,18 +53,31 @@ async function createStickerInGroup(groupId: number | null) {
 }
 
 async function removeSticker(s: Sticker) {
-  await notes.remove(s.id);
+  try {
+    await notes.remove(s.id);
+  } catch (e) {
+    // 后端"父便签保护"（还有打开的任务窗口）等拒绝原因直接展示中文文案
+    showGroupToast(messageOf(e));
+  }
   confirming.value = null;
 }
 
 /** 隐藏/显示便签窗口切换（数据保留）。 */
 async function toggleSticker(s: Sticker) {
-  if (isOpen(s.id)) {
-    await invoke("hide_sticker_cmd", { id: s.id });
-  } else {
-    await invoke("wake_sticker_cmd", { id: s.id });
+  try {
+    if (isOpen(s.id)) {
+      await invoke("hide_sticker_cmd", { id: s.id });
+    } else {
+      await invoke("wake_sticker_cmd", { id: s.id });
+    }
+  } catch (e) {
+    showGroupToast(messageOf(e));
   }
   await refreshOpenIds();
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 重置便签窗口大小与位置：恢复默认 400×500 并居中到当前显示器；展示模式保持尺寸锁定 */
@@ -360,9 +373,14 @@ async function onDeleteGroupConfirmed() {
     confirmingWithStickers.value = true; // 第一次点「连带删除」进入二次确认态
     return;
   }
-  const removed = await notes.deleteGroup(id, choice);
-  if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
-  else showGroupToast("分组已删除，便签已移到未分组");
+  try {
+    const removed = await notes.deleteGroup(id, choice);
+    if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
+    else showGroupToast("分组已删除，便签已移到未分组");
+  } catch (e) {
+    // 后端"父便签保护"（组内便签还有打开的任务窗口）等拒绝原因直接展示文案
+    showGroupToast(messageOf(e));
+  }
   deletingGroup.value = null;
   confirmingWithStickers.value = false;
 }
@@ -370,55 +388,161 @@ async function onDeleteGroupConfirmed() {
 // 组菜单（标题条 ⋯）
 const groupMenuFor = ref<string | null>(null);
 
-// —— 分组拖拽排序（上/下插入到同级；拖到分组上成为子分组） ——
-const dragGroupId = ref<number | null>(null);
+// —— 拖拽排序（**指针事件**实现）——
+// WebView2 里 HTML5 DnD 的 dragstart/drop 不会触发（Tauri 默认接管了 OS 级拖放），
+// 所以这里与 Todo 列表保持一致，改用 mousedown/mousemove/mouseup + elementFromPoint。
+// 两种拖拽对象：
+//   group   分组头 → 同级前后插入 / 拖到分组中间成为子分组
+//   sticker 便签卡片 → 组内重排 / 拖到别的分组末尾（= 移动分组）
+type DragPayload = { kind: "group"; id: number } | { kind: "sticker"; id: number; groupId: number | null };
+
+const DRAG_THRESHOLD = 5;
+const dragPayload = ref<DragPayload | null>(null);
+/** 已按下但还未超过阈值：此时不进入拖拽，保留点击语义。 */
+let pendingDrag: DragPayload | null = null;
+let dragStartX = 0;
+let dragStartY = 0;
+/** 拖拽结束后的那次 click 不再当作「选中」。 */
+let suppressClickUntil = 0;
+
+const dragGroupId = computed(() => (dragPayload.value?.kind === "group" ? dragPayload.value.id : null));
+const dragStickerId = computed(() => (dragPayload.value?.kind === "sticker" ? dragPayload.value.id : null));
 const dropHint = ref<{ key: string; mode: "before" | "after" | "inside" } | null>(null);
+/** 便签落点：目标分组 key + 插到哪张卡之前（`beforeId = null` = 追加到该分组末尾）。 */
+const cardDropHint = ref<{ secKey: string; beforeId: number | null } | null>(null);
 
-function onGroupDragStart(sec: Section, event: DragEvent) {
-  if (sec.isDefault || sec.groupId == null) return;
-  dragGroupId.value = sec.groupId;
-  groupMenuFor.value = null;
-  event.dataTransfer?.setData("text/plain", String(sec.groupId));
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+function beginDrag(payload: DragPayload, event: MouseEvent) {
+  if (event.button !== 0) return;
+  const target = event.target as HTMLElement | null;
+  // 卡片/分组头里的按钮、输入框有各自的点击语义，不作为拖拽起点
+  if (target?.closest("button, input, select, a, .card-dropdown")) return;
+  pendingDrag = payload;
+  dragStartX = event.clientX;
+  dragStartY = event.clientY;
+  document.addEventListener("mousemove", onDragMove);
+  document.addEventListener("mouseup", onDragUp);
 }
 
-function onGroupDragOver(sec: Section, event: DragEvent) {
-  if (dragGroupId.value === null || sec.groupId === dragGroupId.value) return;
-  event.preventDefault();
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  const ratio = rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5;
-  const mode = ratio < 0.27 ? "before" : ratio > 0.73 ? "after" : "inside";
-  dropHint.value = { key: sec.key, mode };
+function onDragMove(event: MouseEvent) {
+  if (pendingDrag && !dragPayload.value) {
+    if (Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY) < DRAG_THRESHOLD) return;
+    dragPayload.value = pendingDrag;
+    groupMenuFor.value = null;
+    document.body.style.userSelect = "none";
+  }
+  if (!dragPayload.value) return;
+  updateDropTarget(event.clientX, event.clientY);
 }
 
-function onGroupDragEnd() {
-  dragGroupId.value = null;
+function onDragUp() {
+  document.removeEventListener("mousemove", onDragMove);
+  document.removeEventListener("mouseup", onDragUp);
+  document.body.style.userSelect = "";
+  pendingDrag = null;
+  const payload = dragPayload.value;
+  const groupTarget = dropHint.value;
+  const cardTarget = cardDropHint.value;
+  dragPayload.value = null;
   dropHint.value = null;
+  cardDropHint.value = null;
+  if (!payload) return;
+  // 拖过的这一下不再当作点击（否则会顺手切换选中/折叠）
+  suppressClickUntil = Date.now() + 250;
+  if (payload.kind === "group" && groupTarget) void commitGroupDrop(payload.id, groupTarget);
+  if (payload.kind === "sticker" && cardTarget) void commitCardDrop(payload, cardTarget);
 }
 
-async function onGroupDrop(sec: Section, event: DragEvent) {
-  event.preventDefault();
-  const id = dragGroupId.value;
-  const hint = dropHint.value;
-  dragGroupId.value = null;
+/** 按指针位置更新落点提示（分组头的前/中/后，或卡片前/末尾）。 */
+function updateDropTarget(x: number, y: number) {
+  let el: HTMLElement | null = null;
+  try {
+    el = (document.elementFromPoint?.(x, y) as HTMLElement | null) ?? null;
+  } catch {
+    el = null;
+  }
+  if (dragPayload.value?.kind === "group") {
+    cardDropHint.value = null;
+    const head = el?.closest<HTMLElement>(".group-head") ?? null;
+    const key = head?.dataset.secKey ?? null;
+    if (!head || !key || key === String(dragGroupId.value)) {
+      dropHint.value = null;
+      return;
+    }
+    const rect = head.getBoundingClientRect();
+    const ratio = rect.height > 0 ? (y - rect.top) / rect.height : 0.5;
+    dropHint.value = { key, mode: ratio < 0.27 ? "before" : ratio > 0.73 ? "after" : "inside" };
+    return;
+  }
   dropHint.value = null;
-  if (id === null || hint === null || hint.key !== sec.key || sec.groupId === id) return;
+  const cell = el?.closest<HTMLElement>(".card-cell") ?? null;
+  const block = el?.closest<HTMLElement>(".group-block") ?? null;
+  const secKey = cell?.dataset.secKey ?? block?.dataset.secKey ?? null;
+  if (!secKey) {
+    cardDropHint.value = null;
+    return;
+  }
+  const beforeId = cell ? Number(cell.dataset.stickerId) : null;
+  // 落在被拖拽的卡片自己身上：无意义，不给提示
+  if (beforeId !== null && beforeId === dragStickerId.value) {
+    cardDropHint.value = null;
+    return;
+  }
+  cardDropHint.value = { secKey, beforeId };
+}
+
+/** 分组拖放：同级前后插入，或成为目标分组的子分组。 */
+async function commitGroupDrop(id: number, hint: { key: string; mode: "before" | "after" | "inside" }) {
+  const sec = groupSections.value.find((item) => item.key === hint.key);
+  if (!sec || sec.groupId === id) return;
   try {
     if (hint.mode === "inside" && sec.groupId != null) {
       await notes.moveGroup(id, sec.groupId);
-      collapsed.value[String(sec.groupId)] = false;
+      collapsed.value[String(sec.groupId)] = false; // 展开目标，新子分组立即可见
       return;
     }
-    const parentId = notes.groups.find((g) => g.id === id)?.parent_id ?? null;
+    // 同级插入：先移到目标所在的父级，再按目标位置重排同级集合
+    const parentId =
+      sec.groupId != null ? notes.groups.find((g) => g.id === sec.groupId)?.parent_id ?? null : null;
     await notes.moveGroup(id, parentId);
     const siblings = notes
       .childrenOf(parentId)
       .map((g) => g.id)
-      .filter((sid) => sid !== id);
-    const index = sec.groupId != null ? siblings.indexOf(sec.groupId) : siblings.length - 1;
-    const at = hint.mode === "before" ? index : index + 1;
-    siblings.splice(at < 0 ? siblings.length : at, 0, id);
+      .filter((gid) => gid !== id);
+    let at: number;
+    if (sec.groupId == null) {
+      at = 0; // 「未分组」块永远在最前：插到顶层开头
+    } else {
+      const index = siblings.indexOf(sec.groupId);
+      at = index < 0 ? siblings.length : hint.mode === "before" ? index : index + 1;
+    }
+    siblings.splice(Math.max(0, Math.min(at, siblings.length)), 0, id);
     await notes.reorderGroups(parentId, siblings);
+  } catch (e) {
+    showGroupToast(String(e));
+  }
+}
+
+/** 便签拖放：同组内重排；跨分组则移动到目标分组（再按落点定位）。 */
+async function commitCardDrop(
+  payload: { kind: "sticker"; id: number; groupId: number | null },
+  target: { secKey: string; beforeId: number | null },
+) {
+  const sec = groupSections.value.find((item) => item.key === target.secKey);
+  if (!sec) return;
+  const sameGroup = (sec.groupId ?? null) === (payload.groupId ?? null);
+  try {
+    if (!sameGroup) await notes.moveStickerToGroup(payload.id, sec.groupId);
+    const current = notes.stickers
+      .filter((s) => (s.group_id ?? null) === (sec.groupId ?? null))
+      .map((s) => s.id);
+    const before = [...current];
+    const from = current.indexOf(payload.id);
+    if (from < 0) return;
+    current.splice(from, 1);
+    const at = target.beforeId == null ? current.length : current.indexOf(target.beforeId);
+    current.splice(at < 0 ? current.length : at, 0, payload.id);
+    if (current.join(",") === before.join(",")) return; // 位置没变，不必打扰后端
+    await notes.reorderStickers(current);
   } catch (e) {
     showGroupToast(String(e));
   }
@@ -434,6 +558,7 @@ const previewSticker = computed(() => {
 
 /** 点击卡片：选中并预览；再次点击同一张取消选中。 */
 function selectSticker(s: Sticker) {
+  if (Date.now() < suppressClickUntil) return; // 刚拖拽过，不当作点击
   selectedStickerId.value = selectedStickerId.value === s.id ? null : s.id;
 }
 const selectedGroupKey = ref<string | null>(null);
@@ -498,6 +623,7 @@ function showGroupToast(text: string) {
 
 /** 选择分组（点击分组头）：折叠切换 + 右侧显示该文件夹概览（同时取消便签选中）。 */
 function selectGroup(sec: Section) {
+  if (Date.now() < suppressClickUntil) return; // 刚拖拽过，不当作点击
   selectedStickerId.value = null;
   selectedGroupKey.value = sec.key;
   toggleCollapse(sec.key);
@@ -545,7 +671,6 @@ onBeforeUnmount(() => {
 <template>
   <main class="console" :style="{ '--console-alpha': consoleBgAlpha, background: `rgba(255, 255, 255, ${consoleBgAlpha})` }">
     <header class="console-header" data-tauri-drag-region @mousedown="markDragStart">
-      <h1>oii_sticker 主控台</h1>
       <div class="view-switch page-switch" role="tablist">
         <button :class="{ on: consolePage === 'stickers' }" @click="setConsolePage('stickers')">
           <i class="ri-sticky-note-line"></i>便签
@@ -602,9 +727,10 @@ onBeforeUnmount(() => {
       <!-- 分区视图：左（文件夹树 + 便签）/ 中（分隔线）/ 右（预览） -->
       <div v-if="viewMode === 'section'" ref="splitEl" class="section-split" :class="{ collapsed: previewCollapsed }">
         <div class="section-main">
-          <div v-for="sec in groupSections" :key="sec.key" class="group-block">
+          <div v-for="sec in groupSections" :key="sec.key" class="group-block" :data-sec-key="sec.key">
             <header
               class="group-head"
+              :data-sec-key="sec.key"
               :class="{
                 'group-sub': sec.depth > 0,
                 dragging: dragGroupId === sec.groupId,
@@ -616,14 +742,10 @@ onBeforeUnmount(() => {
                 marginLeft: `${sec.depth * 16}px`,
                 background: sec.color ? `color-mix(in srgb, ${sec.color} 15%, #ffffff)` : undefined,
               }"
-              :draggable="!sec.isDefault"
+              @mousedown="!sec.isDefault && sec.groupId != null && beginDrag({ kind: 'group', id: sec.groupId }, $event)"
               @click="selectGroup(sec)"
-              @dragstart="onGroupDragStart(sec, $event)"
-              @dragover="onGroupDragOver(sec, $event)"
-              @dragend="onGroupDragEnd"
-              @drop="onGroupDrop(sec, $event)"
             >
-              <span v-if="!sec.isDefault" class="grip" title="拖动调整顺序，拖到分组中间成为子分组" @click.stop>
+              <span v-if="!sec.isDefault" class="grip" title="按住拖动调整顺序；拖到分组中间成为子分组" @click.stop>
                 <i class="ri-draggable"></i>
               </span>
               <span class="caret"><i :class="collapsed[sec.key] ? 'ri-arrow-right-s-line' : 'ri-arrow-down-s-line'"></i></span>
@@ -691,9 +813,9 @@ onBeforeUnmount(() => {
               </div>
             </header>
 
-            <!-- 子分组内联新建 -->
+            <!-- 子分组内联新建（`creatingChildUnder` 为 null 时不得匹配「未分组」的 groupId=null） -->
             <div
-              v-if="creatingChildUnder === sec.groupId"
+              v-if="creatingChildUnder != null && creatingChildUnder === sec.groupId"
               class="child-create"
               :style="{ marginLeft: `${(sec.depth + 1) * 16 + 12}px` }"
             >
@@ -709,7 +831,11 @@ onBeforeUnmount(() => {
               <button class="btn small" @click="creatingChildUnder = null">取消</button>
             </div>
 
-            <div v-show="!collapsed[sec.key]" class="cards">
+            <div
+              v-show="!collapsed[sec.key]"
+              class="cards"
+              :class="{ 'drop-end': cardDropHint?.secKey === sec.key && cardDropHint?.beforeId === null }"
+            >
               <p v-if="sec.stickers.length === 0" class="group-empty">
                 {{ sec.isDefault ? "未分组暂无便签" : "此分组暂无便签" }}
               </p>
@@ -717,12 +843,20 @@ onBeforeUnmount(() => {
                 v-for="s in sec.stickers"
                 :key="s.id"
                 class="card-cell"
-                :class="{ selected: selectedStickerId === s.id }"
+                :data-sticker-id="s.id"
+                :data-sec-key="sec.key"
+                :class="{
+                  selected: selectedStickerId === s.id,
+                  dragging: dragStickerId === s.id,
+                  'drop-before': cardDropHint?.secKey === sec.key && cardDropHint?.beforeId === s.id,
+                }"
+                @mousedown="beginDrag({ kind: 'sticker', id: s.id, groupId: s.group_id ?? null }, $event)"
                 @click="selectSticker(s)"
               >
                 <StickerCard
                   :sticker="s"
                   :is-open="isOpen(s.id)"
+                  show-grip
                   @toggle="toggleSticker"
                   @remove="confirming = $event"
                   @reset-window="resetStickerWindow"
@@ -880,12 +1014,6 @@ onBeforeUnmount(() => {
   padding: 14px 18px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   cursor: grab;
-}
-
-.console-header h1 {
-  margin: 0;
-  font-size: 18px;
-  color: #333;
 }
 
 .actions {
@@ -1357,6 +1485,35 @@ onBeforeUnmount(() => {
 
 .card-cell {
   display: block;
+  position: relative;
+  /* 整张卡都可按住拖动调整位置（按钮/输入框除外） */
+  cursor: grab;
+}
+
+.card-cell.dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+/* 拖拽落点：卡片上方蓝线；拖到分组末尾时在 .cards 末尾画线 */
+.card-cell.drop-before::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: -5px;
+  height: 2px;
+  border-radius: 2px;
+  background: #4f7cff;
+}
+
+.cards.drop-end::after {
+  content: "";
+  display: block;
+  height: 2px;
+  border-radius: 2px;
+  background: #4f7cff;
+  margin-top: 2px;
 }
 
 /* 选中态：主色描边 + 淡蓝光晕（不改变尺寸，避免点击时布局跳动） */

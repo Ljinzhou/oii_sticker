@@ -201,6 +201,11 @@ pub fn move_group(conn: &Connection, id: i64, parent_id: Option<i64>) -> Result<
     crate::db::group_repo::move_to_parent(conn, id, parent_id)
 }
 
+/// 分组子树（含自身）内的全部便签 id（删组前的父便签保护用）。
+pub fn sticker_ids_in_group(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    crate::db::group_repo::sticker_ids_in_subtree(conn, id)
+}
+
 /// 分组在 `stickers/` 下的相对目录（逐级拼接分组名并做文件名清洗）；
 /// 分组不存在时返回空路径（即视为 stickers 根）。
 pub fn group_rel_dir(conn: &Connection, id: i64) -> Result<std::path::PathBuf> {
@@ -271,6 +276,11 @@ pub fn delete_group(conn: &Connection, id: i64, mode: &str, db_path: &str) -> Re
 
 pub fn move_sticker_group(conn: &Connection, sticker_id: i64, group_id: Option<i64>) -> Result<()> {
     crate::db::group_repo::move_sticker(conn, sticker_id, group_id)
+}
+
+/// 组内便签重排（主控台拖拽调整位置）：`ids` 为该分组（含未分组）的完整新顺序。
+pub fn reorder_stickers(conn: &Connection, ids: &[i64]) -> Result<()> {
+    sticker_repo::reorder(conn, ids)
 }
 
 // ── 偏好 ──

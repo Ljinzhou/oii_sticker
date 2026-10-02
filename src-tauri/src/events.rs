@@ -13,6 +13,8 @@ pub const OPEN_SETTINGS: &str = "sticky://open-settings";
 pub const TODO_UPDATED: &str = "todo://updated";
 /// Todo 提醒触发（到点/截止），广播给所有窗口弹应用内提示。
 pub const TODO_REMINDER: &str = "todo://reminder-fired";
+/// 父便签窗口/便签已消失：通知其 Todo 编辑窗口自动保存并关闭（按 sticker_id 过滤）。
+pub const STICKER_CLOSED: &str = "sticky://sticker-closed";
 
 /// 向指定窗口 label 发事件。
 pub fn emit_to_label(app: &AppHandle, label: &str, event: &str, payload: impl Serialize + Clone) {
@@ -36,4 +38,14 @@ pub fn emit_todo_updated(app: &AppHandle, sticker_id: i64, todo_id: &str) {
 pub fn emit_todo_reminder(app: &AppHandle, ctx: &crate::reminder::FireContext) {
     tracing::info!("[event] todo_reminder todo={} kind={:?}", ctx.id, ctx.kind);
     let _ = app.emit(TODO_REMINDER, ctx);
+}
+
+/// 广播「父便签已关闭/已删除」（Todo 窗口按自身 sticker_id 过滤后自动保存并关闭）。
+///
+/// 触发点只有一处：便签窗口被真正销毁时（`RunEvent::WindowEvent::Destroyed`）。
+/// 正常关闭路径已被 `ensure_no_open_todo` 拦截，这里是**兜底**——外部删除 md、
+/// Alt+F4/任务栏强关、切库、程序退出等任何让父便签消失的路径都能覆盖到。
+pub fn emit_sticker_closed(app: &AppHandle, sticker_id: i64) {
+    tracing::info!("[event] sticker_closed sticker={sticker_id}");
+    let _ = app.emit(STICKER_CLOSED, sticker_id);
 }

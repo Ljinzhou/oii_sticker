@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { mount, type DOMWrapper } from "@vue/test-utils";
+import { nextTick } from "vue";
 import TodoList from "./TodoList.vue";
 import type { TodoBlock } from "../../types";
 
@@ -154,5 +155,51 @@ describe("TodoList 三层结构（父任务 / 子任务）", () => {
     });
     expect(wrapper.text()).toContain("本块任务");
     expect(wrapper.text()).not.toContain("别块任务");
+  });
+
+  // ── 「新建任务」入口已移到「任务详情」标题右侧（TodoDetail），列表头部只剩标题 ──
+  it("列表头部不再有「新建任务」按钮", () => {
+    const wrapper = mount(TodoList, {
+      props: { items: [parentTask("p1", "任务一")], blockId: BLOCK, selectedId: null, height: 220 },
+    });
+    expect(wrapper.get("header").text()).toBe("任务列表");
+    expect(wrapper.find("header button").exists()).toBe(false);
+  });
+
+  // ── 需求：新建任务后自动滚动到新行并高亮 ──
+  it("revealId 变化时滚动到该行并打上 just-created 高亮", async () => {
+    const p = parentTask("p1", "任务一");
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      const wrapper = mount(TodoList, {
+        props: { items: [p], blockId: BLOCK, selectedId: null, height: 220, revealId: null },
+      });
+      await wrapper.setProps({ revealId: p.id });
+      // watcher 内部先 await nextTick 再定位/高亮：多等一拍让 DOM 反映高亮类
+      await nextTick();
+      await nextTick();
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(wrapper.get(`li[data-id="${p.id}"]`).classes()).toContain("just-created");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it("revealId 为空时不滚动（仅新建任务才定位）", async () => {
+    const p = parentTask("p1", "任务一");
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      mount(TodoList, {
+        props: { items: [p], blockId: BLOCK, selectedId: null, height: 220, revealId: null },
+      });
+      await nextTick();
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
   });
 });
