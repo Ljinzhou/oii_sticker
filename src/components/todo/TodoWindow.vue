@@ -69,13 +69,18 @@ async function closeWindow() {
 /**
  * 父便签被意外关闭/删除时的兜底：**先尽力落库当前编辑，再关闭本窗口**。
  *
- * 触发来源（Rust 侧 `sticky://sticker-closed`）：便签窗口被销毁的任何路径——
+ * 触发来源（Rust 侧 `sticky://sticker-closed`）：父便签消失的任何路径——
  * 外部删除 md 文件、Alt+F4 / 任务栏强关、删除便签、切换或恢复工作空间。
  * 正常关闭路径会被后端 `ensure_no_open_todo` 拒绝，这里是它们的补漏：
  * 若父便签已不存在，保存会失败，此时只关窗，绝不把窗口留在桌面上。
+ *
+ * 后端可能在同一次销毁里发两次（窗口 Destroyed + 同步线程显式通知），
+ * 用 closing 标志保证只跑一遍。
  */
+let closingForStickerGone = false;
 async function autoSaveAndClose() {
-  if (!isReady.value) return;
+  if (closingForStickerGone || !isReady.value) return;
+  closingForStickerGone = true;
   try {
     await flushSelected();
   } catch (error) {

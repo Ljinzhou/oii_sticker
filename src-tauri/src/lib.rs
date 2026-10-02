@@ -305,6 +305,8 @@ fn delete_sticker_cmd(
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         let _ = win.close();
     }
+    // 便签已不存在：通知其任务窗口自动保存并关闭（兜底；正常已被上面的拦截挡住）。
+    events::emit_sticker_closed(&app, id);
     events::emit_push_update(&app, id);
     Ok(())
 }
@@ -398,17 +400,22 @@ fn group_delete_cmd(
 ) -> Result<usize, String> {
     // 父便签保护：with-stickers 会连带删除组内便签（及其任务数据），
     // 动手前先对该分组子树内的每个便签校验是否还有打开的任务窗口。
+    let mut doomed: Vec<i64> = Vec::new();
     if mode == "with-stickers" {
-        let ids = state
+        doomed = state
             .with_conn(|c| commands::sticker_ids_in_group(c, id))
             .map_err(|e| e.to_string())?;
-        for sticker_id in ids {
-            ensure_no_open_todo(&app, &state, sticker_id)?;
+        for sticker_id in &doomed {
+            ensure_no_open_todo(&app, &state, *sticker_id)?;
         }
     }
     let removed = state
         .with_conn_path(|c, db| commands::delete_group(c, id, &mode, db))
         .map_err(|e| e.to_string())?;
+    // 被连带删除的便签已不复存在：通知其任务窗口自动保存并关闭（兜底，正常已被上面的拦截挡住）。
+    for sticker_id in &doomed {
+        events::emit_sticker_closed(&app, *sticker_id);
+    }
     events::emit_push_update(&app, 0);
     Ok(removed)
 }

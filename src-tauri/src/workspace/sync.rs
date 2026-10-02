@@ -295,6 +295,12 @@ fn run_loop(app: tauri::AppHandle, state: crate::state::AppState) {
                                     tracing::info!("[同步] 便签 {id} 的文件已不存在，关闭其窗口");
                                 }
                             }
+                            // 便签已从库里删除：通知它的任务（Todo 编辑）窗口自动保存并关闭。
+                            // 必须显式发——父便签窗口可能本来就没开（用户先隐藏了便签，
+                            // 再从任务总览打开任务窗口），那就没有 Destroyed 事件可依赖。
+                            for id in &report.removed {
+                                crate::events::emit_sticker_closed(&app, *id);
+                            }
                         }
                     }
                 }

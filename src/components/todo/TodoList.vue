@@ -179,8 +179,11 @@ watch(
     const rows = listRef.value?.querySelectorAll<HTMLElement>("li[data-id]") ?? [];
     const row = Array.from(rows).find((el) => el.dataset.id === id);
     if (!row) return;
+    // 立即定位（不带动画）：行为可预期，且用户正在手动滚动时也能准确落位。
+    // 注意：这里刻意不给 behavior:"smooth"，也不要给容器加 scroll-behavior:smooth
+    // —— 那会让 scrollIntoView({behavior:"auto"}) 变成动画滚动，依赖帧调度。
     // jsdom 无 scrollIntoView：可选调用保证测试环境不炸。
-    row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+    row.scrollIntoView?.({ block: "nearest" });
     revealFlashId.value = id;
     if (revealTimer) window.clearTimeout(revealTimer);
     revealTimer = window.setTimeout(() => {
@@ -288,7 +291,7 @@ function onDrop(targetId: string) {
 </template>
 
 <style scoped>
-.todo-upper { height: 220px; min-height: 120px; max-height: 420px; overflow: auto; padding: 12px 14px; background: rgba(255,255,255,.55); box-sizing: border-box; scroll-behavior: smooth; }
+.todo-upper { height: 220px; min-height: 120px; max-height: 420px; overflow: auto; padding: 12px 14px; background: rgba(255,255,255,.55); box-sizing: border-box; }
 header { display:flex; align-items:center; font-size:14px; color:#333; margin-bottom:7px; }
 .todo-list { list-style:none; margin:0; padding:0; }
 .todo-list li { display:flex; align-items:center; gap:8px; min-height:28px; padding:5px 8px; box-sizing:border-box; border-radius:6px; cursor:pointer; color:#222; font-size:13px; }
