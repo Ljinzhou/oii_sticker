@@ -32,6 +32,17 @@ describe("renderMarkdown", () => {
     expect(html).toContain("第一");
   });
 
+  // 回归：`1. [ ] 文本`（有序列表里的任务项）必须保持 `<ol><li class="task-item">` 结构。
+  // 编号由 CSS 的 `ol > li::before` 挂在 li 外面，所以 li 不能再整体左移（否则编号被挤出便签）。
+  it("有序列表里的任务项：仍是 ol > li.task-item，checkbox 在 li 内", () => {
+    const html = renderMarkdown("1. [ ] 编辑todo窗口\n2. 第二条");
+    expect(html).toContain("<ol>");
+    expect(html).toContain('<li class="task-item">');
+    expect(html).toContain("task-checkbox");
+    // 任务标记文本已被 checkbox 取代，不能残留在正文里
+    expect(html).not.toContain("[ ]");
+  });
+
   it("数学公式 $..$ 渲染为 math-inline 容器（含真实 SVG 输出）", async () => {
     await mathInstancePromise;
     const html = renderMarkdown("公式 $E=mc^2$ 测试");
