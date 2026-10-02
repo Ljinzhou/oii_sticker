@@ -201,6 +201,11 @@ pub fn move_group(conn: &Connection, id: i64, parent_id: Option<i64>) -> Result<
     crate::db::group_repo::move_to_parent(conn, id, parent_id)
 }
 
+/// 分组子树（含自身）内的全部便签 id（删组前的父便签保护用）。
+pub fn sticker_ids_in_group(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    crate::db::group_repo::sticker_ids_in_subtree(conn, id)
+}
+
 /// 分组在 `stickers/` 下的相对目录（逐级拼接分组名并做文件名清洗）；
 /// 分组不存在时返回空路径（即视为 stickers 根）。
 pub fn group_rel_dir(conn: &Connection, id: i64) -> Result<std::path::PathBuf> {

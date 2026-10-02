@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 /// 目标 schema 版本号。新增迁移时同步递增此常量。
-pub const SCHEMA_VERSION: u32 = 19;
+pub const SCHEMA_VERSION: u32 = 20;
 
 /// 首次启动（DB 为空）时建表并写入默认配置。
 pub fn init_schema(conn: &Connection) -> Result<()> {
@@ -36,7 +36,8 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
         ("default_sticker_auto_scroll_speed", "30", "新便签默认自动滚动速度（px/s）"),
         // v4：窗口置顶默认参数。
         ("default_sticker_always_on_top", "1", "新便签默认是否置顶（0 否，1 是）"),
-        ("default_todo_always_on_top", "1", "Todo 窗口默认是否置顶"),
+        // v20：Todo 窗口改为**默认不置顶**（并显示在任务栏），见 migrate_v19_to_v20。
+        ("default_todo_always_on_top", "0", "Todo 窗口默认是否置顶（0 否，1 是）"),
         ("recent_slash_commands", "[]", "最近使用的斜杠命令 JSON 数组"),
         ("todo_remind_tomorrow_hour", "9", "Todo 明天提醒的小时"),
         ("todo_remind_next_week_dow", "1", "Todo 下周提醒星期（0=周日）"),
@@ -516,6 +517,10 @@ pub fn run_migrations(conn: &Connection) -> Result<u32> {
         migrate_v18_to_v19(conn)?;
     }
 
+    if current < 20 {
+        migrate_v19_to_v20(conn)?;
+    }
+
     // 升级完成后把 user_version 写到位。
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
         .context("更新 user_version 失败")?;
@@ -567,6 +572,33 @@ fn migrate_v18_to_v19(conn: &Connection) -> Result<()> {
                 c.execute_batch("ALTER TABLE stickers ADD COLUMN file_name TEXT;")
                     .context("迁移 v18→v19 新增 file_name 列失败")?;
             }
+        }
+        Ok(())
+    })
+}
+
+/// v19 → v20 迁移：Todo 窗口默认改为**不置顶**（v0.4.2 起同时显示在任务栏）。
+///
+/// 语义变更是"默认值"级别，但老库的 `default_todo_always_on_top` 在 v7→v8 迁移时
+/// 已被写成 `'1'`，仅改 `init_schema` 的默认值对老库无效。这里把仍是旧默认 `'1'` 的
+/// 记录对齐为新默认 `'0'`；用户随后可在「系统设置 → Todo 设置」重新打开置顶。
+///
+/// 说明：无法区分"出厂默认 1"与"用户显式设为 1"（旧版没有写入痕迹），
+/// 因此统一按新默认对齐；这条迁移只跑一次，之后用户的选择不会再被覆盖。
+fn migrate_v19_to_v20(conn: &Connection) -> Result<()> {
+    in_tx(conn, |c| {
+        let has_config: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'system_config')",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_config {
+            c.execute(
+                "UPDATE system_config SET value = '0'
+                 WHERE key = 'default_todo_always_on_top' AND value = '1'",
+                [],
+            )
+            .context("迁移 v19→v20 对齐 Todo 窗口置顶默认值失败")?;
         }
         Ok(())
     })
@@ -836,7 +868,8 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-            "1",
+            "0",
+            "v20 起 Todo 窗口默认不置顶（v7→v8 写入的 '1' 会被 v19→v20 对齐为 '0'）",
         );
     }
 
@@ -894,7 +927,51 @@ mod tests {
                     |row| row.get::<_, String>(0),
                 )
                 .unwrap(),
-            "1",
+            "0",
+            "v7→v8 补写的旧默认 '1' 由 v19→v20 对齐为新默认 '0'",
+        );
+    }
+
+    /// v19 → v20：Todo 窗口默认置顶由 1 对齐为 0；已是 0 或缺失时不报错；重复执行幂等。
+    #[test]
+    fn migrate_v19_to_v20_aligns_todo_topmost_default() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, description TEXT NOT NULL DEFAULT '');
+             INSERT INTO system_config VALUES ('default_todo_always_on_top', '1', '旧默认');
+             INSERT INTO system_config VALUES ('default_sticker_always_on_top', '1', '便签置顶不受影响');
+             PRAGMA user_version = 19;",
+        )
+        .unwrap();
+
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        let value: String = conn
+            .query_row(
+                "SELECT value FROM system_config WHERE key = 'default_todo_always_on_top'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(value, "0", "Todo 窗口旧默认置顶应对齐为不置顶");
+        let sticker: String = conn
+            .query_row(
+                "SELECT value FROM system_config WHERE key = 'default_sticker_always_on_top'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sticker, "1", "便签置顶默认值不受影响");
+
+        // 幂等：再跑一次不报错，值保持 0
+        assert_eq!(run_migrations(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM system_config WHERE key = 'default_todo_always_on_top'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+            "0",
         );
     }
 

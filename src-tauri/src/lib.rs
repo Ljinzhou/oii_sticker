@@ -127,7 +127,8 @@ fn create_sticker_win(app: &tauri::AppHandle, args: StickerWinArgs) -> tauri::Re
     Ok(win)
 }
 
-/// 创建独立 Todo 窗口。OS 关闭请求隐藏窗口，数据持续由 SQLite 保存。
+/// 创建独立 Todo 窗口：显示在任务栏、默认不置顶（可在系统设置开启置顶）。
+/// 关闭请求由前端（TodoWindow）接管：先保存再隐藏，数据始终由 SQLite 保存。
 fn create_todo_win(
     app: &tauri::AppHandle,
     id: &str,
@@ -139,7 +140,8 @@ fn create_todo_win(
         .inner_size(440.0, 620.0)
         .min_inner_size(320.0, 420.0)
         .decorations(false)
-        .skip_taskbar(true)
+        // 任务栏中显示：用户可最小化 / 切换 / 从任务栏关闭（关闭走遮蔽保存流程）。
+        .skip_taskbar(false)
         .maximizable(false)
         .resizable(true)
         .build()?;
@@ -295,6 +297,8 @@ fn delete_sticker_cmd(
     state: State<'_, AppState>,
     id: i64,
 ) -> Result<(), String> {
+    // 父便签保护：还有打开的任务窗口时不允许删除本便签（任务数据会被级联删掉）。
+    ensure_no_open_todo(&app, &state, id)?;
     state
         .with_conn_path(|c, db| commands::delete_sticker(c, id, db))
         .map_err(|e| e.to_string())?;
@@ -392,6 +396,16 @@ fn group_delete_cmd(
     id: i64,
     mode: String,
 ) -> Result<usize, String> {
+    // 父便签保护：with-stickers 会连带删除组内便签（及其任务数据），
+    // 动手前先对该分组子树内的每个便签校验是否还有打开的任务窗口。
+    if mode == "with-stickers" {
+        let ids = state
+            .with_conn(|c| commands::sticker_ids_in_group(c, id))
+            .map_err(|e| e.to_string())?;
+        for sticker_id in ids {
+            ensure_no_open_todo(&app, &state, sticker_id)?;
+        }
+    }
     let removed = state
         .with_conn_path(|c, db| commands::delete_group(c, id, &mode, db))
         .map_err(|e| e.to_string())?;
@@ -822,8 +836,8 @@ async fn open_todo_window_cmd(
     }
     let always_on_top = state
         .with_conn(commands::get_config)
-        .map(|cfg| cfg.get_or("default_todo_always_on_top", "1") == "1")
-        .unwrap_or(true);
+        .map(|cfg| cfg.get_or("default_todo_always_on_top", "0") == "1")
+        .unwrap_or(false);
     let label = format!("todo-{id}");
     if let Some(win) = app.get_webview_window(&label) {
         if let Err(e) = win.set_always_on_top(always_on_top) {
@@ -1184,9 +1198,78 @@ fn list_open_sticker_ids_cmd(app: tauri::AppHandle) -> Vec<i64> {
         .collect()
 }
 
+/// 当前**可见**的 Todo 编辑窗口对应的块 id。
+///
+/// "打开"以 `is_visible()` 为准：用户点「保存」后 `close_todo_window_cmd` 只是隐藏窗口
+/// （WebView 仍存活），那种状态不该再锁住父便签。最小化窗口仍算打开。
+fn visible_todo_block_ids(app: &tauri::AppHandle) -> Vec<String> {
+    app.webview_windows()
+        .iter()
+        .filter_map(|(label, win)| {
+            let block_id = label.strip_prefix("todo-")?;
+            win.is_visible().ok().filter(|v| *v)?;
+            Some(block_id.to_string())
+        })
+        .collect()
+}
+
+/// 指定便签是否还有打开的 Todo 编辑窗口（块 id → 所属便签需要查库）。
+fn open_todo_count_for_sticker(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    sticker_id: i64,
+) -> usize {
+    visible_todo_block_ids(app)
+        .into_iter()
+        .filter(|block_id| {
+            state
+                .with_conn(|c| db::todo_block_repo::get(c, block_id))
+                .ok()
+                .flatten()
+                .map(|b| b.sticker_id == sticker_id)
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// **父便签保护**：该便签还有打开的任务（Todo 编辑）窗口时拒绝关闭/删除它。
+///
+/// 需求来自用户：编辑 Todo 期间父便签不能被关掉，否则任务窗口会失去归属、
+/// 未保存的编辑也无处可写。前端拿到这条中文错误文案后直接提示用户。
+fn ensure_no_open_todo(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    sticker_id: i64,
+) -> Result<(), String> {
+    let open = open_todo_count_for_sticker(app, state, sticker_id);
+    if open > 0 {
+        return Err(format!(
+            "该便签还有 {open} 个打开的任务窗口，请先关闭任务窗口再操作"
+        ));
+    }
+    Ok(())
+}
+
+/// 工作空间级操作（切换 / 覆盖恢复）会关闭**全部**便签窗口：
+/// 只要还有任一可见的 Todo 编辑窗口就拒绝，避免任务窗口指向已切走的库。
+pub(crate) fn ensure_no_open_todo_anywhere(app: &tauri::AppHandle) -> Result<(), String> {
+    let open = visible_todo_block_ids(app).len();
+    if open > 0 {
+        return Err(format!(
+            "还有 {open} 个打开的任务窗口，请先关闭任务窗口再切换工作空间"
+        ));
+    }
+    Ok(())
+}
+
 /// 隐藏便签窗口（数据保留，主控台显示"显示"按钮）。
 #[tauri::command]
 fn hide_sticker_cmd(app: tauri::AppHandle, id: i64) -> Result<(), String> {
+    {
+        // 父便签保护：还有打开的任务窗口时不允许关闭本便签。
+        let state = app.state::<AppState>().inner().clone();
+        ensure_no_open_todo(&app, &state, id)?;
+    }
     if let Some(win) = app.get_webview_window(&format!("sticker-{id}")) {
         win.hide().map_err(|e| format!("隐藏窗口失败: {e}"))?;
         tracing::info!("[cmd] hide_sticker id={id}");
@@ -1334,6 +1417,8 @@ fn workspace_switch_cmd(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
+    // 父便签保护：切换会关闭全部便签窗口，还有打开的任务窗口时先拒绝。
+    ensure_no_open_todo_anywhere(&app)?;
     let entry = workspace::cmds::switch(&state.registry_path(), &id).map_err(|e| e.to_string())?;
     // 切换前必须关闭所有 open 的便签窗口（含隐藏的）：粘旧工作空间数据的
     // 窗口若继续存在，编辑会静默 no-op 或写错 md。UI 亦承诺"所有便签窗口将被关闭"。
@@ -1675,6 +1760,19 @@ pub fn run() {
             match event {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                     persist_sticker_window_states(app);
+                }
+                // 兜底：便签窗口被真正销毁（外部删除 md、Alt+F4/任务栏强关、切库、
+                // 删除便签等任何路径）时，通知其 Todo 编辑窗口自动保存并关闭，
+                // 避免留下一个失去父便签、写不回任何数据任务窗口。
+                tauri::RunEvent::WindowEvent { label, event, .. } => {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        if let Some(id) = label
+                            .strip_prefix("sticker-")
+                            .and_then(|s| s.parse::<i64>().ok())
+                        {
+                            events::emit_sticker_closed(app, id);
+                        }
+                    }
                 }
                 _ => {}
             }

@@ -177,6 +177,28 @@ fn next_sort_order(conn: &Connection, parent_id: Option<i64>) -> Result<i64> {
     Ok(next)
 }
 
+/// 分组子树（含自身）内的全部便签 id。
+///
+/// 用于「删组前的父便签保护」：`with-stickers` 会连带删除组内便签，
+/// 必须在动手前把受影响便签全部查出来逐一校验是否还有打开的任务窗口。
+/// 递归 CTE 表达层级；`group_id` 为 NULL 的未分组便签不属于任何分组。
+pub fn sticker_ids_in_subtree(conn: &Connection, id: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare_cached(
+        "WITH RECURSIVE sub(gid) AS (
+             SELECT id FROM sticker_groups WHERE id = ?1
+             UNION ALL
+             SELECT g.id FROM sticker_groups g JOIN sub ON g.parent_id = sub.gid
+         )
+         SELECT s.id FROM stickers s
+         WHERE s.group_id IN (SELECT gid FROM sub)
+         ORDER BY s.id",
+    )?;
+    let rows = stmt
+        .query_map(params![id], |r| r.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// candidate 是否位于 ancestor 的子树内（用于阻止「把分组拖进自己的子分组」）。
 fn is_descendant(conn: &Connection, candidate: i64, ancestor: i64) -> Result<bool> {
     let mut current = Some(candidate);
@@ -228,6 +250,31 @@ mod tests {
         rename(&c, g.id, "学习").unwrap();
         assert_eq!(get(&c, g.id).unwrap().unwrap().name, "学习");
         assert!(list(&c).unwrap().iter().any(|x| x.id == g.id));
+    }
+
+    /// 子树便签集合：含自身与后代分组内的便签；未分组便签不计入。
+    #[test]
+    fn sticker_ids_in_subtree_collects_group_and_descendants() {
+        let c = conn();
+        let root = create(&c, "学习", None).unwrap();
+        let child = create(&c, "英语", Some(root.id)).unwrap();
+        let other = create(&c, "工作", None).unwrap();
+        let s_root = make_sticker(&c);
+        let s_child = make_sticker(&c);
+        let s_other = make_sticker(&c);
+        let s_loose = make_sticker(&c); // 未分组
+        move_sticker(&c, s_root, Some(root.id)).unwrap();
+        move_sticker(&c, s_child, Some(child.id)).unwrap();
+        move_sticker(&c, s_other, Some(other.id)).unwrap();
+        move_sticker(&c, s_loose, None).unwrap();
+
+        assert_eq!(sticker_ids_in_subtree(&c, root.id).unwrap(), vec![s_root, s_child]);
+        assert_eq!(sticker_ids_in_subtree(&c, child.id).unwrap(), vec![s_child]);
+        assert_eq!(sticker_ids_in_subtree(&c, other.id).unwrap(), vec![s_other]);
+        assert!(
+            sticker_ids_in_subtree(&c, 9999).unwrap().is_empty(),
+            "不存在的分组返回空集合"
+        );
     }
 
     /// v19：分组的 parent_id / color 可读写（层级落库、颜色可清除）。
