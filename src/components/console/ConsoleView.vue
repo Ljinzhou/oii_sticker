@@ -53,18 +53,31 @@ async function createStickerInGroup(groupId: number | null) {
 }
 
 async function removeSticker(s: Sticker) {
-  await notes.remove(s.id);
+  try {
+    await notes.remove(s.id);
+  } catch (e) {
+    // 后端"父便签保护"（还有打开的任务窗口）等拒绝原因直接展示中文文案
+    showGroupToast(messageOf(e));
+  }
   confirming.value = null;
 }
 
 /** 隐藏/显示便签窗口切换（数据保留）。 */
 async function toggleSticker(s: Sticker) {
-  if (isOpen(s.id)) {
-    await invoke("hide_sticker_cmd", { id: s.id });
-  } else {
-    await invoke("wake_sticker_cmd", { id: s.id });
+  try {
+    if (isOpen(s.id)) {
+      await invoke("hide_sticker_cmd", { id: s.id });
+    } else {
+      await invoke("wake_sticker_cmd", { id: s.id });
+    }
+  } catch (e) {
+    showGroupToast(messageOf(e));
   }
   await refreshOpenIds();
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 重置便签窗口大小与位置：恢复默认 400×500 并居中到当前显示器；展示模式保持尺寸锁定 */
@@ -360,9 +373,14 @@ async function onDeleteGroupConfirmed() {
     confirmingWithStickers.value = true; // 第一次点「连带删除」进入二次确认态
     return;
   }
-  const removed = await notes.deleteGroup(id, choice);
-  if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
-  else showGroupToast("分组已删除，便签已移到未分组");
+  try {
+    const removed = await notes.deleteGroup(id, choice);
+    if (choice === "with-stickers") showGroupToast(`已删除分组及其内 ${removed} 张便签`);
+    else showGroupToast("分组已删除，便签已移到未分组");
+  } catch (e) {
+    // 后端"父便签保护"（组内便签还有打开的任务窗口）等拒绝原因直接展示文案
+    showGroupToast(messageOf(e));
+  }
   deletingGroup.value = null;
   confirmingWithStickers.value = false;
 }

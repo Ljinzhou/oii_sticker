@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia } from "pinia";
 import { nextTick } from "vue";
@@ -65,6 +65,32 @@ function expectedIso(presetIndex: number, now: dayjs.Dayjs) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+describe("TodoDetail 标题行", () => {
+  it("「新建任务」按钮位于「任务详情」标题右侧，点击 emit createRoot", async () => {
+    const wrapper = mountDetail();
+    const head = wrapper.get(".detail-head");
+    expect(head.get(".todo-title").text()).toBe("任务详情");
+    const btn = head.get("button.add-task");
+    expect(btn.text()).toContain("新建任务");
+    await btn.trigger("click");
+    expect(wrapper.emitted("createRoot")).toHaveLength(1);
+  });
+
+  it("选中子任务时标题变为「子任务详情」，新建任务入口仍在", () => {
+    const wrapper = mountDetail(makeTodo({ id: "s1", parent_id: "p1" }));
+    expect(wrapper.get(".detail-head .todo-title").text()).toBe("子任务详情");
+    expect(wrapper.find(".detail-head button.add-task").exists()).toBe(true);
+  });
+
+  it("标题行不随详情内容滚动（滚动容器在标题行之下）", () => {
+    const wrapper = mountDetail();
+    expect(wrapper.find(".detail-head").exists()).toBe(true);
+    // 标题行在 .todo-lower 直接子级，滚动容器是 .detail-body
+    expect(wrapper.find(".todo-lower > .detail-head").exists()).toBe(true);
+    expect(wrapper.find(".detail-body .field").exists()).toBe(true);
+  });
+});
 
 describe("TodoDetail preset selections（预设来自设置页列表）", () => {
   it("渲染预设列表按钮与「自定义」，点「1小时后」写入解析后的 ISO 并高亮", async () => {

@@ -23,7 +23,11 @@ vi.mock("../../composables/useTauri", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ label: "sticker-7" }),
+  getCurrentWindow: () => ({
+    label: "sticker-7",
+    // OS 级关闭拦截注册（Alt+F4 / 任务栏关闭）——测试里只要求存在
+    onCloseRequested: vi.fn(async () => () => {}),
+  }),
 }));
 
 const sticker = {
