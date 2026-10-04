@@ -5,6 +5,7 @@ import { renderMarkdown, collectMathStyle, mathVersion } from "../../utils/markd
 import { invoke } from "../../composables/useTauri";
 import type { TodoBlock } from "../../types";
 import { applyBlockUiAction, type BlockUiState } from "../../utils/block-ui";
+import { resolveRelativeImages } from "../../utils/asset-url";
 
 const props = defineProps<{
   content: string;
@@ -30,6 +31,8 @@ watch(
   html,
   async () => {
     await nextTick();
+    // 本地相对路径图片（粘贴进来的）→ asset: URL，否则 WebView 加载不到
+    void resolveRelativeImages(root.value);
     // 数学公式样式（每次渲染后收集增量 CSS）
     const css = await collectMathStyle();
     if (css) {

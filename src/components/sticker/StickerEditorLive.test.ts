@@ -28,6 +28,7 @@ vi.mock("./live/LiveEditorView", () => ({
       get state() {
         return { doc: { toString: () => mocks.editorDoc.value } };
       },
+      dom: document.createElement("div"),
       composing: false,
       focus() {},
       destroy() {},
@@ -55,6 +56,7 @@ function mountEditor(modelValue = "") {
   return mount(StickerEditorLive, {
     props: {
       modelValue,
+      stickerId: 7,
       fontSize: 14,
       fontFamily: "Microsoft YaHei",
       showLineNumbers: false,

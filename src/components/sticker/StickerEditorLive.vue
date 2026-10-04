@@ -15,6 +15,7 @@ import {
   flushTableEditing,
 } from "./live/LiveEditorView";
 import type { TodoBlock } from "../../types";
+import { attachImagePaste } from "../../utils/paste-image";
 import type { SlashAnchor } from "../slash/types";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -25,6 +26,7 @@ import {
 
 const props = defineProps<{
   modelValue: string;
+  stickerId: number;
   fontSize: number;
   fontFamily: string;
   showLineNumbers: boolean;
@@ -51,6 +53,8 @@ const emit = defineEmits<{
   slashNav: [dir: 1 | -1];
   slashConfirm: [];
   slashCancel: [];
+  /** 图片粘贴失败等需要提示用户的错误（由 StickerWindow 弹应用内 toast）。 */
+  error: [message: string];
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -116,6 +120,8 @@ onMounted(() => {
     onSlashConfirm: () => emit("slashConfirm"),
     onSlashCancel: () => emit("slashCancel"),
   });
+  // 粘贴图片：落盘到工作空间 assets/<id>/ 并插入 `![粘贴图片](相对路径)`
+  attachImagePaste(view, props.stickerId, (message) => emit("error", message));
   view.focus();
 });
 

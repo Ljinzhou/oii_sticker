@@ -449,6 +449,23 @@ fn reorder_stickers_cmd(
     Ok(())
 }
 
+/// 便签粘贴图片落盘：写入 `<工作空间>/assets/<便签 id>/`，返回 md 里可用的相对路径。
+///
+/// 前端把剪贴板图片读成 base64 传进来（blob → Uint8Array → base64），
+/// 由后端决定文件名与落盘位置（只收扩展名，不信任调用方路径）。
+#[tauri::command]
+fn save_sticker_image_cmd(
+    state: State<'_, AppState>,
+    sticker_id: i64,
+    ext: String,
+    data_base64: String,
+) -> Result<String, String> {
+    let bytes = commands::decode_base64_image(&data_base64).map_err(|e| e.to_string())?;
+    state
+        .with_conn_path(|c, db| commands::save_sticker_image(c, db, sticker_id, &ext, &bytes))
+        .map_err(|e| e.to_string())
+}
+
 // ── 在资源管理器中打开 ──
 
 /// 打开系统文件管理器；`select` 为 true 时选中该文件而不是打开其所在目录。
@@ -1727,6 +1744,7 @@ pub fn run() {
             group_move_cmd,
             move_sticker_group_cmd,
             reorder_stickers_cmd,
+            save_sticker_image_cmd,
             open_group_in_explorer_cmd,
             open_sticker_in_explorer_cmd,
             fetch_page_title_cmd,

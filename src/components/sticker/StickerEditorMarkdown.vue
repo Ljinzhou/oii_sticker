@@ -13,9 +13,11 @@ import {
   setMarkdownSourceLineNumbers,
 } from "./live/sourceEditor";
 import type { SlashAnchor } from "../slash/types";
+import { attachImagePaste } from "../../utils/paste-image";
 
 const props = defineProps<{
   modelValue: string;
+  stickerId: number;
   fontSize: number;
   fontFamily: string;
   showLineNumbers: boolean;
@@ -30,6 +32,8 @@ const emit = defineEmits<{
   slashNav: [dir: 1 | -1];
   slashConfirm: [];
   slashCancel: [];
+  /** 图片粘贴失败等需要提示用户的错误（由 StickerWindow 弹应用内 toast）。 */
+  error: [message: string];
 }>();
 
 const host = ref<HTMLDivElement | null>(null);
@@ -53,6 +57,8 @@ onMounted(() => {
     onSlashConfirm: () => emit("slashConfirm"),
     onSlashCancel: () => emit("slashCancel"),
   });
+  // 粘贴图片：与及时预览同一套处理（落盘 + 插入 Markdown）
+  attachImagePaste(view, props.stickerId, (message) => emit("error", message));
 });
 
 // 外部内容更新（保存后 load / push-update / 斜杠插入）→ 同步进编辑器

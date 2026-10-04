@@ -283,6 +283,78 @@ pub fn reorder_stickers(conn: &Connection, ids: &[i64]) -> Result<()> {
     sticker_repo::reorder(conn, ids)
 }
 
+/// ── 粘贴图片 ──
+
+/// 允许的图片扩展名（文件名后缀白名单）。
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+/// 单张图片大小上限（base64 解码后的字节数）：32 MiB，防误传大文件把工作空间撑爆。
+const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+
+/// 便签图片落盘：写入 `<工作空间>/assets/<便签 id>/粘贴-YYYYMMDD-HHmmss.<ext>`，
+/// 返回**相对工作空间**的 Markdown 可用路径（`assets/<id>/<文件>`，正斜杠）。
+///
+/// - 便签必须存在（避免往一个不存在的便签目录写文件）；
+/// - 文件名由后端生成（只收扩展名），不信任调用方给的路径 —— 从根上杜绝目录穿越；
+/// - 同一秒内多张图自动加 `-2`/`-3` 后缀，不覆盖已有文件。
+pub fn save_sticker_image(
+    conn: &Connection,
+    db_path: &str,
+    sticker_id: i64,
+    ext: &str,
+    data: &[u8],
+) -> Result<String> {
+    if sticker_repo::get(conn, sticker_id)?.is_none() {
+        bail!("便签不存在");
+    }
+    if data.is_empty() {
+        bail!("图片内容为空");
+    }
+    if data.len() > MAX_IMAGE_BYTES {
+        bail!("图片过大（超过 {} MB）", MAX_IMAGE_BYTES / 1024 / 1024);
+    }
+    let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        bail!("不支持的图片格式：{ext}");
+    }
+
+    let dir = ws_root(db_path).join("assets").join(sticker_id.to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| anyhow::anyhow!("创建图片目录失败：{e}"))?;
+
+    let stamp = local_timestamp();
+    let mut name = format!("粘贴-{stamp}.{ext}");
+    let mut seq = 2;
+    while dir.join(&name).exists() {
+        name = format!("粘贴-{stamp}-{seq}.{ext}");
+        seq += 1;
+    }
+    let target = dir.join(&name);
+    std::fs::write(&target, data).map_err(|e| anyhow::anyhow!("写入图片失败：{e}"))?;
+    tracing::info!("[图片] 粘贴落盘 sticker={sticker_id} → {}", target.display());
+    Ok(format!("assets/{sticker_id}/{name}"))
+}
+
+/// 本地时间戳 "YYYYMMDD-HHmmss"（取不到本地时区时退化为 UTC）。
+fn local_timestamp() -> String {
+    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day(),
+        now.hour(),
+        now.minute(),
+        now.second()
+    )
+}
+
+/// base64 → 字节（粘贴图片经 IPC 以 base64 字符串传输）。
+pub fn decode_base64_image(data_base64: &str) -> Result<Vec<u8>> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| anyhow::anyhow!("图片数据解码失败：{e}"))
+}
+
 // ── 偏好 ──
 
 /// 写入/覆盖便签偏好。
@@ -445,6 +517,43 @@ mod tests {
             .unwrap();
         let db = d.join("data").join("index.db").to_string_lossy().into_owned();
         (d, db)
+    }
+
+    /// 粘贴图片：落盘到 assets/<id>/、同名自动加序号、扩展名/空数据/便签不存在都拒绝。
+    #[test]
+    fn save_sticker_image_writes_into_assets_and_validates_input() {
+        use base64::Engine;
+        let conn = test_conn();
+        let (root, db_path) = tmp_ws("image");
+        let id = create_sticker(
+            &conn,
+            &sticker_repo::NewSticker { title: "图片便签".into(), ..Default::default() },
+            &db_path,
+        )
+        .unwrap();
+        let png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3];
+
+        let rel = save_sticker_image(&conn, &db_path, id, "png", &png).unwrap();
+        assert!(rel.starts_with(&format!("assets/{id}/粘贴-")), "got: {rel}");
+        assert!(rel.ends_with(".png"), "got: {rel}");
+        let abs = root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        assert_eq!(std::fs::read(&abs).unwrap(), png, "图片字节应原样落盘");
+
+        // 同一秒内的第二张：不覆盖，追加 -2
+        let rel2 = save_sticker_image(&conn, &db_path, id, ".PNG", &png).unwrap();
+        assert!(rel2.ends_with("-2.png"), "got: {rel2}");
+        assert_ne!(rel, rel2);
+        assert_eq!(std::fs::read(&root.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR))).unwrap(), png);
+
+        // 非法输入
+        assert!(save_sticker_image(&conn, &db_path, id, "exe", &png).is_err(), "扩展名白名单");
+        assert!(save_sticker_image(&conn, &db_path, id, "png", &[]).is_err(), "空数据");
+        assert!(save_sticker_image(&conn, &db_path, 9999, "png", &png).is_err(), "便签必须存在");
+
+        // base64 往返（IPC 传输路径）
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        assert_eq!(decode_base64_image(&encoded).unwrap(), png);
+        assert!(decode_base64_image("not base64!!").is_err());
     }
 
     #[test]
