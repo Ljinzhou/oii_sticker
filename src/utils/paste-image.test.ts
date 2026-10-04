@@ -7,6 +7,7 @@ import {
   imageExt,
   imageFilesFrom,
   imageMarkdown,
+  standaloneInsertion,
 } from "./paste-image";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -16,11 +17,14 @@ vi.mock("../composables/useTauri", () => ({
   listen: vi.fn(),
 }));
 
-/** 最小 EditorView 替身：只需 selection / dispatch / focus。 */
-function fakeView(anchor = 3) {
+/** 最小 EditorView 替身：只需 state.doc / state.selection / dispatch / focus。 */
+function fakeView(anchor = 3, docText = "") {
   const dispatched: Array<Record<string, unknown>> = [];
   const view = {
-    state: { selection: { main: { from: anchor } } },
+    state: {
+      doc: { toString: () => docText, length: docText.length },
+      selection: { main: { from: anchor } },
+    },
     dispatch: (spec: Record<string, unknown>) => dispatched.push(spec),
     focus: vi.fn(),
     dom: document.createElement("div"),
@@ -83,6 +87,21 @@ describe("扩展名与 base64", () => {
 
   it("图片 Markdown 用固定 alt 文本", () => {
     expect(imageMarkdown("assets/7/a.png")).toBe("![粘贴图片](assets/7/a.png)");
+  });
+
+  // 图片行必须独占一行：否则会和相邻文字粘在一起（`![..](..)# 标题` 会让标题失效、标题推导变脏）
+  it("standaloneInsertion：按上下文补换行，光标落在插入内容之后", () => {
+    const img = "![粘贴图片](assets/7/a.png)";
+    // 文档开头 + 后面有内容 → 只补尾换行
+    expect(standaloneInsertion("# 标题\n正文", 0, img)).toEqual({ insert: `${img}\n`, anchor: img.length + 1 });
+    // 行中间 → 前后都补
+    expect(standaloneInsertion("abc\ndef", 1, img)).toEqual({ insert: `\n${img}\n`, anchor: 1 + img.length + 2 });
+    // 行首（前面是换行）→ 不补前缀
+    expect(standaloneInsertion("abc\ndef", 4, img)).toEqual({ insert: `${img}\n`, anchor: 4 + img.length + 1 });
+    // 文末且前面是换行 → 原样
+    expect(standaloneInsertion("abc\n", 4, img)).toEqual({ insert: img, anchor: 4 + img.length });
+    // 空文档 → 原样
+    expect(standaloneInsertion("", 0, img)).toEqual({ insert: img, anchor: img.length });
   });
 });
 

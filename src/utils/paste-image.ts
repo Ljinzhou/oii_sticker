@@ -75,6 +75,26 @@ export function imageMarkdown(relPath: string): string {
 }
 
 /**
+ * 让插入片段**独占一行**：图片 Markdown 若直接贴到相邻文字上，
+ * 会和那一行粘成一句（例如插到 `# 标题` 前面变成 `![..](..)# 标题`，
+ * 标题行就失效了，便签标题还会被推导成图片路径）。
+ *
+ * @returns 实际插入文本与插入后的光标位置。
+ */
+export function standaloneInsertion(
+  doc: string,
+  pos: number,
+  text: string,
+): { insert: string; anchor: number } {
+  const before = pos > 0 ? doc.slice(pos - 1, pos) : "";
+  const after = pos < doc.length ? doc.slice(pos, pos + 1) : "";
+  const prefix = before && before !== "\n" ? "\n" : "";
+  const suffix = after && after !== "\n" ? "\n" : "";
+  const insert = `${prefix}${text}${suffix}`;
+  return { insert, anchor: pos + insert.length };
+}
+
+/**
  * 处理一次粘贴事件。
  *
  * 剪贴板里没有图片时**什么都不做**（不 preventDefault）：纯文本/链接粘贴
@@ -95,10 +115,12 @@ export async function handleImagePaste(
   for (const file of files) {
     const rel = await savePastedImage(stickerId, file);
     const text = imageMarkdown(rel);
+    const doc = view.state.doc.toString();
     const pos = view.state.selection.main.from;
+    const { insert, anchor } = standaloneInsertion(doc, pos, text);
     view.dispatch({
-      changes: { from: pos, insert: text },
-      selection: { anchor: pos + text.length },
+      changes: { from: pos, insert },
+      selection: { anchor },
     });
     inserted.push(text);
   }

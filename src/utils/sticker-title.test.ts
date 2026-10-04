@@ -18,6 +18,17 @@ describe("extractTitleFromContent", () => {
     expect(extractTitleFromContent("\n普通开头没有井号标题\n更多")).toBe("普通开头没有井号标题");
     expect(extractTitleFromContent("a".repeat(50))).toHaveLength(30);
   });
+
+  // 粘贴图片会往正文里插 ![](assets/..)：这种行不能当标题（否则会推导出图片路径做标题/文件名）
+  it("跳过纯图片行：有标题时仍取标题", () => {
+    expect(extractTitleFromContent("![粘贴图片](assets/7/a.png)\n# 我的标题\n正文")).toBe("我的标题");
+  });
+
+  it("跳过纯图片行：没有标题时取其后第一行正文", () => {
+    expect(extractTitleFromContent("![粘贴图片](assets/7/a.png)\n\n随手记的内容")).toBe("随手记的内容");
+    // 整篇只有图片 → 退回空串（调用方会显示「（无标题）」）
+    expect(extractTitleFromContent("![粘贴图片](assets/7/a.png)")).toBe("");
+  });
 });
 
 describe("setTitleInContent", () => {
