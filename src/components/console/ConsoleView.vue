@@ -234,10 +234,46 @@ const groupSections = computed<Section[]>(() => {
   return sections;
 });
 
-// 折叠状态（会话级，不持久化）
+// 折叠状态：持久化到 system_config.console_group_folds（JSON 对象，键 = 分组 key）。
+// 只在用户主动折叠/展开时写回；启动时在 settings 回读完成后恢复（见 onMounted）。
 const collapsed = ref<Record<string, boolean>>({});
+const COLLAPSED_KEY = "console_group_folds";
+
+function persistCollapsed() {
+  const entries: Record<string, boolean> = {};
+  // 只落库「已折叠」的键：默认全展开，配置里没有就是展开
+  for (const [key, folded] of Object.entries(collapsed.value)) {
+    if (folded) entries[key] = true;
+  }
+  void settings.set(COLLAPSED_KEY, JSON.stringify(entries));
+}
+
 function toggleCollapse(key: string) {
   collapsed.value[key] = !collapsed.value[key];
+  persistCollapsed();
+}
+
+/** 程序性展开（新建子分组/拖入分组后展开目标）：同步落库，避免下次启动又折叠回去。 */
+function expandGroup(key: string) {
+  if (!collapsed.value[key]) return;
+  collapsed.value[key] = false;
+  persistCollapsed();
+}
+
+/** 从 system_config 恢复折叠状态（非法 JSON / 非对象一律按"全展开"处理）。 */
+function restoreCollapsed(raw: string) {
+  const next: Record<string, boolean> = {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [key, folded] of Object.entries(parsed as Record<string, unknown>)) {
+        if (folded === true) next[key] = true;
+      }
+    }
+  } catch {
+    // 忽略：按全展开处理
+  }
+  collapsed.value = next;
 }
 
 // 平铺筛选（分行渲染见 flatRows；选中某分组时只保留该行）
@@ -309,7 +345,7 @@ async function onCreateChildGroup() {
   }
   try {
     await notes.createGroup(name, parentId);
-    collapsed.value[String(parentId)] = false; // 展开父级，新子分组立即可见
+    expandGroup(String(parentId)); // 展开父级，新子分组立即可见
   } catch (e) {
     showGroupToast(String(e));
   } finally {
@@ -497,7 +533,7 @@ async function commitGroupDrop(id: number, hint: { key: string; mode: "before" |
   try {
     if (hint.mode === "inside" && sec.groupId != null) {
       await notes.moveGroup(id, sec.groupId);
-      collapsed.value[String(sec.groupId)] = false; // 展开目标，新子分组立即可见
+      expandGroup(String(sec.groupId)); // 展开目标，新子分组立即可见
       return;
     }
     // 同级插入：先移到目标所在的父级，再按目标位置重排同级集合
@@ -635,6 +671,8 @@ onMounted(async () => {
   viewMode.value =
     settings.get("console_group_view", "section") === "flat" ? "flat" : "section";
   consolePage.value = settings.get("console_page", "stickers") === "todos" ? "todos" : "stickers";
+  // 折叠状态同样在配置回读后恢复（默认全展开）
+  restoreCollapsed(settings.get(COLLAPSED_KEY, ""));
   refreshOpenIds();
   refreshMaximized();
   // 拖动标题栏到屏幕最顶部 → 最大化（无边框窗口没有系统 Aero Snap）

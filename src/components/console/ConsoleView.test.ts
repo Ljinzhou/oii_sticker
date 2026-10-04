@@ -369,6 +369,53 @@ describe("点击选中预览（不再悬停预览）", () => {
     expect(wrapper.find(".console-header .page-switch").exists()).toBe(true);
   });
 
+  it("分组折叠状态持久化到 console_group_folds，重新挂载后仍是折叠的", async () => {
+    const entries: Record<string, string> = {};
+    setupInvoke(entries);
+    /** 折叠 = 卡片容器 v-show 关掉（内联 display:none）+ 箭头转成向右。
+     *  用 DOM 直接判定：jsdom 的 getComputedStyle 在此环境不反映内联 display，
+     *  vue-test-utils 的 isVisible() 恒为 true，不可用。 */
+    const folded = (wrapper: Awaited<ReturnType<typeof mountConsole>>, index: number) => ({
+      hidden: (wrapper.findAll(".cards")[index]!.attributes("style") ?? "").includes("display: none"),
+      arrowRight: wrapper
+        .findAll(".group-head")[index]!
+        .find(".caret i")
+        .classes()
+        .includes("ri-arrow-right-s-line"),
+    });
+
+    const first = await mountConsole();
+    // sections 顺序：[未分组, 工作(10), 生活(11)]
+    expect(folded(first, 1)).toEqual({ hidden: false, arrowRight: false });
+
+    await first.findAll(".group-head")[1]!.trigger("click"); // 点「工作」分组头 = 折叠
+    await flushPromises();
+
+    const call = mocks.invokeMock.mock.calls.filter((c) => c[0] === "set_config_cmd").slice(-1)[0];
+    expect(call?.[1]).toMatchObject({ key: "console_group_folds" });
+    expect(JSON.parse(call![1]!.value as string)).toEqual({ "10": true });
+    expect(folded(first, 1)).toEqual({ hidden: true, arrowRight: true });
+
+    // 模拟重启：重新挂载（配置里已有折叠记录）
+    const second = await mountConsole();
+    expect(folded(second, 1)).toEqual({ hidden: true, arrowRight: true });
+    expect(folded(second, 0)).toEqual({ hidden: false, arrowRight: false }); // 未分组仍展开
+  });
+
+  it("console_group_folds 非法/为空时按全展开处理", async () => {
+    setupInvoke({ console_group_folds: "{不是 json" });
+    const wrapper = await mountConsole();
+    expect(
+      wrapper.findAll(".cards").every((c) => !(c.attributes("style") ?? "").includes("display: none")),
+    ).toBe(true);
+  });
+
+  it("console_group_folds 非法/为空时按全展开处理", async () => {
+    setupInvoke({ console_group_folds: "{不是 json" });
+    const wrapper = await mountConsole();
+    expect(wrapper.findAll(".cards").every((c) => c.isVisible())).toBe(true);
+  });
+
   it("分区视图的便签卡片渲染拖拽手柄（可拖动排序的提示）", async () => {
     const wrapper = await mountConsole();
     expect(wrapper.findAll(".card-cell").length).toBe(db.stickers.length);
