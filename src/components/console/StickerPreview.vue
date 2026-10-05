@@ -2,9 +2,10 @@
 // 右侧预览面板：显示选中便签的渲染内容与统计；未选中便签时显示所属分组概览。
 // 正文里的 <todo-block> 标记要靠后端任务数据才能渲染成任务卡片，
 // 所以这里跨便签一次性拉全量 todo，再按当前便签 / 分组过滤，渲染与统计共用同一份数据。
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { renderMarkdown } from "../../utils/markdown";
 import { invoke } from "../../composables/useTauri";
+import { resolveRelativeImages } from "../../utils/asset-url";
 import type { Sticker, StickerGroup, TodoBlock, TodoBlockWithSticker } from "../../types";
 
 const props = defineProps<{
@@ -101,6 +102,17 @@ const rendered = computed(() =>
   props.sticker ? renderMarkdown(props.sticker.content, stickerTodos.value) : "",
 );
 
+// 正文里的本地图片（粘贴进来的）是相对工作空间的路径，渲染后换成 asset: URL 才能显示
+const bodyRef = ref<HTMLElement | null>(null);
+watch(
+  rendered,
+  async () => {
+    await nextTick();
+    void resolveRelativeImages(bodyRef.value);
+  },
+  { immediate: true },
+);
+
 /** 便签预览的任务统计（todo 块 + GFM 复选框）。 */
 const stickerTaskCounts = computed(() => {
   const { pending, done } = countTodoTasks(stickerTodos.value);
@@ -182,7 +194,7 @@ function formatSize(chars: number): string {
 
       <!-- 分割线以下：全部是正文预览内容 -->
       <div class="pv-body">
-        <div class="md-body" v-html="rendered"></div>
+        <div ref="bodyRef" class="md-body" v-html="rendered"></div>
       </div>
     </template>
 

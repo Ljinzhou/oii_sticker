@@ -457,6 +457,7 @@ onBeforeUnmount(() => {
         :todo-blocks="todoBlocks"
         @saved="onSaved"
         @cancelled="() => applyMode('interact')"
+        @error="showModeToast"
       />
     </div>
 

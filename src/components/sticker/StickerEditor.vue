@@ -18,7 +18,7 @@ const props = defineProps<{
   todoBlocks?: TodoBlock[];
 }>();
 
-const emit = defineEmits<{ saved: [] }>();
+const emit = defineEmits<{ saved: []; error: [message: string] }>();
 
 const settings = useSettingsStore();
 const draft = ref(props.content);
@@ -148,6 +148,7 @@ defineExpose({ save, discard });
       v-if="!isLive"
       :model-value="draft"
       @update:model-value="onDraftEdit"
+      :sticker-id="props.stickerId"
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
@@ -158,12 +159,14 @@ defineExpose({ save, discard });
       @slash-confirm="confirmSlash"
       @slash-cancel="closeSlash"
       @open-todo="openTodo"
+      @error="emit('error', $event)"
     />
     <StickerEditorLive
       v-else
       ref="liveRef"
       :model-value="draft"
       @update:model-value="onDraftEdit"
+      :sticker-id="props.stickerId"
       :font-size="editFontSize"
       :font-family="editFontFamily"
       :show-line-numbers="showLineNumbers"
@@ -177,6 +180,7 @@ defineExpose({ save, discard });
       @slash-confirm="confirmSlash"
       @slash-cancel="closeSlash"
       @open-todo="openTodo"
+      @error="emit('error', $event)"
     />
     <SlashMenu v-if="slashItems.length" :items="slashItems" :selected="slashSelected" :recent-ids="settings.recentSlashCommands" :anchor="slashAnchor" @select="selectSlash" @hover="slashSelected = $event" @close="closeSlash" />
   </div>
