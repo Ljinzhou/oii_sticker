@@ -1,8 +1,10 @@
 // 便签编辑器「粘贴图片」：把剪贴板里的图片交给后端落盘，并在光标处插入 Markdown。
 //
-// 约定（与后端一致）：图片落在 `<工作空间>/assets/<便签 id>/粘贴-YYYYMMDD-HHmmss.<ext>`，
-// md 里插入的是**相对工作空间**的路径 `![粘贴图片](assets/<id>/<文件>)`，
-// 显示时由 `utils/asset-url.ts` 解析成 asset: URL。
+// 约定（与后端一致）：图片落在
+// `<工作空间>/assets/<分组路径>/<便签标题>_<便签 id>/粘贴-YYYYMMDD-HHmmss.<ext>`，
+// md 里插入的是**相对工作空间**的路径 `![粘贴图片](assets/…)`，
+// 显示时由 `utils/asset-url.ts` 解析成 asset: URL；便签改名/换分组时后端会
+// 搬动该目录并改写正文里的链接。
 
 import type { EditorView } from "@codemirror/view";
 import { invoke } from "../composables/useTauri";
