@@ -256,8 +256,9 @@ function formatTime(ms: number): string {
                   </option>
                 </select>
                 <p class="wsr-hint">
-                  恢复前会：① 把该工作空间完整备份到 cache/recovery-*.zip；② 关闭其便签窗口；
-                  ③ 旧数据改名保留到 cache/rollback-*（不删除）。
+                  恢复前会：① 把该工作空间完整备份成工作空间外暂存目录里的 recovery-*.zip
+                  （暂存目录默认是同卷的「<工作空间父目录>/.oiisticker-tmp-<工作空间名>」）；
+                  ② 关闭其便签窗口；③ 旧数据改名保留到同目录的 rollback-*（不删除，可回滚）。
                 </p>
               </div>
 

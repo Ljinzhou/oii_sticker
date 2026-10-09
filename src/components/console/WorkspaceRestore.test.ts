@@ -157,8 +157,8 @@ describe("WorkspaceRestore（从备份恢复）", () => {
           root: "C:/ws/a",
           entries: 6,
           workspace: null,
-          rollback_zip: "C:/ws/a/cache/recovery-1.zip",
-          rollback_dir: "C:/ws/a/cache/rollback-1.tmp",
+          rollback_zip: "C:/ws/.oiisticker-tmp-a/recovery-1.zip",
+          rollback_dir: "C:/ws/.oiisticker-tmp-a/rollback-1.tmp",
         }),
     });
     const wrapper = mountPanel();

@@ -1,9 +1,13 @@
 //! 备份与恢复。
 //!
-//! - `backup`：SQLite 在线快照（VACUUM INTO）+ zip 打包（排除 cache/）+ 写入 manifest.json。
+//! - `backup`：SQLite 在线快照（VACUUM INTO）+ zip 打包（只收 `stickers/` 与 `assets/`）+ 写入 manifest.json。
 //! - `inspect`：读取备份 zip 的签名与 manifest，校验必需条目（恢复前预览 / 校验）。
 //! - `extract`：解压备份到目标目录（防目录穿越 + 必需条目校验），返回其签名。
-//! - `transfer`：整目录复制（排除 cache/）→ 校验签名（删除源由命令层负责）。
+//! - `transfer`：整目录复制（跳过暂存目录）→ 校验签名（删除源由命令层负责）。
+//!
+//! 工作空间里只有 `stickers/`（便签与分组）、`assets/`（附件）、`data/`（数据库）、
+//! `workspace.json`（签名）四样东西；曾经存在的 `cache/`、`library/` 已废弃，
+//! 打包与解压都主动忽略它们，旧备份也仍能恢复。
 
 use anyhow::{bail, Context, Result};
 use std::fs::File;
@@ -51,7 +55,7 @@ pub struct BackupInfo {
     pub zip_bytes: u64,
 }
 
-/// 备份工作空间：SQLite 在线快照 + zip（排除 cache/）。
+/// 备份工作空间：SQLite 在线快照 + zip（只收 stickers/ 与 assets/）。
 /// dest_zip 为输出 zip 完整路径；返回 zip 字节数。
 pub fn backup(layout: &Layout, conn: &rusqlite::Connection, dest_zip: &Path) -> Result<u64> {
     // 备份文件不能落在工作空间内：否则打包时会读到正在写入的自身（自包含/损坏）
@@ -60,10 +64,11 @@ pub fn backup(layout: &Layout, conn: &rusqlite::Connection, dest_zip: &Path) -> 
         bail!("备份文件不能保存在工作空间目录内，请换一个位置");
     }
     let sig = read_signature(&layout.signature_path())?.context("工作空间签名缺失，无法备份")?;
-    // 快照落在 cache/（不参与打包）；目录被删时补建，避免 VACUUM INTO 失败
-    let cache = layout.cache_dir();
-    std::fs::create_dir_all(&cache).with_context(|| format!("创建缓存目录失败：{}", cache.display()))?;
-    let snap = cache.join(format!("backup-snapshot-{}.db", unique_tag()));
+    // 快照落在工作空间**之外**的暂存目录（同卷，不参与打包）；目录被删时补建，避免 VACUUM INTO 失败
+    let staging = layout.staging_dir();
+    std::fs::create_dir_all(&staging)
+        .with_context(|| format!("创建暂存目录失败：{}", staging.display()))?;
+    let snap = staging.join(format!("backup-snapshot-{}.db", unique_tag()));
     let _guard = TempFile(snap.clone());
     let snap_str = snap.to_string_lossy().replace('\\', "/");
     // 参数化绑定（VACUUM INTO ?1）：路径含单引号等字符不破坏 SQL
@@ -80,8 +85,8 @@ pub fn backup(layout: &Layout, conn: &rusqlite::Connection, dest_zip: &Path) -> 
     bytes += add_file(&mut zip, &layout.signature_path(), &layout.root, &options)?;
     entries += 1;
     bytes += add_file_named(&mut zip, ENTRY_DB, &snap, &options)?;
-    // 2) stickers/** 与 assets/**、library/** 递归（目录缺失时跳过，不视为错误）
-    for dir in [layout.stickers_dir(), layout.assets_dir(), layout.library_dir()] {
+    // 2) stickers/** 与 assets/** 递归（含分组子目录；目录缺失时跳过，不视为错误）
+    for dir in [layout.stickers_dir(), layout.assets_dir()] {
         for entry in walk_recursive(&dir)? {
             entries += 1;
             bytes += add_file(&mut zip, &entry, &layout.root, &options)?;
@@ -178,8 +183,14 @@ pub fn extract(zip_path: &Path, dest: &Path) -> Result<Signature> {
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
         let name = entry.name().to_string();
-        if name == ENTRY_MANIFEST || name.starts_with("cache/") || name == "cache" {
-            continue; // 元数据与缓存都不落盘
+        // 旧备份可能含 cache/ 与 library/：都不落盘（本项目只保留 stickers + assets + data）
+        if name == ENTRY_MANIFEST
+            || name == "cache"
+            || name.starts_with("cache/")
+            || name == "library"
+            || name.starts_with("library/")
+        {
+            continue; // 元数据与废弃目录都不落盘
         }
         let Some(rel) = entry.enclosed_name() else {
             bail!("备份包含非法路径条目：{name}");
@@ -203,30 +214,30 @@ pub fn extract(zip_path: &Path, dest: &Path) -> Result<Signature> {
     Ok(sig)
 }
 
-/// 转移：整目录复制（跳过 cache/）→ 校验签名。
+/// 转移：整目录复制（跳过 cache/ 与 library/）→ 校验签名。
 /// 只负责复制与校验；注册表更新、DB 切换、删源目录由命令层完成。
 pub fn transfer(root: &Path, dest: &Path) -> Result<()> {
     if dest == root || dest.starts_with(root) {
         bail!("目标路径不能是源目录自身或其子目录");
     }
-    copy_tree_excluding_cache(root, dest)?;
+    copy_tree_excluding_legacy(root, dest)?;
     // 校验：转移后签名必须存在且可解析。
     let sig = read_signature(&dest.join("workspace.json"))?.context("转移后签名缺失")?;
     let _ = sig;
     Ok(())
 }
 
-fn copy_tree_excluding_cache(src: &Path, dest: &Path) -> Result<()> {
+fn copy_tree_excluding_legacy(src: &Path, dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name == "cache" {
+        if name == "cache" || name == "library" {
             continue;
         }
         let target = dest.join(&name);
         if entry.path().is_dir() {
-            copy_tree_excluding_cache(&entry.path(), &target)?;
+            copy_tree_excluding_legacy(&entry.path(), &target)?;
         } else {
             std::fs::copy(entry.path(), &target)?;
         }
@@ -339,20 +350,34 @@ mod tests {
         dir
     }
 
-    /// 小工作空间：签名 + 2 个便签 md + 1 个 asset（assets/12/）+ 1 个库文件 + cache 垃圾。
+    /// 小工作空间：签名 + 2 个便签 md（其中一个在分组目录里）+ 1 个附件 + 遗留 cache/library 垃圾。
     fn build_ws(root: &Path) -> Layout {
         let layout = Layout::at(root);
         super::super::layout::ensure_layout(&layout, "备份测试").unwrap();
-        std::fs::write(layout.stickers_dir().join("1-欢迎.md"), "# 欢迎\n内容").unwrap();
-        std::fs::write(layout.stickers_dir().join("2-笔记.md"), "# 笔记").unwrap();
-        std::fs::create_dir_all(layout.assets_dir().join("12")).unwrap();
-        std::fs::write(layout.assets_dir().join("12").join("icon.png"), b"png-bytes").unwrap();
-        std::fs::write(layout.library_dir().join("book.md"), "# 书").unwrap();
-        std::fs::write(layout.cache_dir().join("scratch.bin"), b"cache-me-not").unwrap();
+        std::fs::write(layout.stickers_dir().join("欢迎.md"), "# 欢迎\n内容").unwrap();
+        let group = layout.stickers_dir().join("随手记");
+        std::fs::create_dir_all(&group).unwrap();
+        std::fs::write(group.join("想法.md"), "# 想法").unwrap();
+        let assets = layout.assets_dir().join("随手记").join("想法_3");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("icon.png"), b"png-bytes").unwrap();
+        // 遗留目录（旧版本会创建）：不属工作空间数据，备份 / 转移 / 解压都必须忽略
+        std::fs::create_dir_all(layout.root.join("library")).unwrap();
+        std::fs::write(layout.root.join("library").join("book.md"), "# 书").unwrap();
+        std::fs::create_dir_all(layout.root.join("cache")).unwrap();
+        std::fs::write(layout.root.join("cache").join("scratch.bin"), b"cache-me-not").unwrap();
         let conn = rusqlite::Connection::open(layout.db_path()).unwrap();
         crate::db::schema::run_migrations(&conn).unwrap();
         let _ = conn.close();
         layout
+    }
+
+    /// 遗留目录不在打包范围内（`library/` 已废弃，`cache/` 也从工作空间移除）。
+    fn assert_no_legacy(names: &[String]) {
+        assert!(
+            !names.iter().any(|n| n.starts_with("library/") || n.starts_with("cache/")),
+            "library/ 与 cache/ 不得进入 zip：{names:?}"
+        );
     }
 
     fn archive_names(zip_path: &Path) -> Vec<String> {
@@ -385,20 +410,20 @@ mod tests {
         assert!(names.contains(&ENTRY_SIGNATURE.to_string()), "签名应在 zip 内");
         assert!(names.contains(&ENTRY_DB.to_string()), "快照 db 应在 zip 内");
         assert!(names.contains(&ENTRY_MANIFEST.to_string()), "manifest 应在 zip 内");
-        assert!(names.contains(&"stickers/1-欢迎.md".to_string()));
-        assert!(names.contains(&"stickers/2-笔记.md".to_string()));
-        assert!(names.contains(&"assets/12/icon.png".to_string()));
-        assert!(names.contains(&"library/book.md".to_string()));
+        assert!(names.contains(&"stickers/欢迎.md".to_string()));
+        assert!(names.contains(&"stickers/随手记/想法.md".to_string()), "分组子目录要一起打包");
+        assert!(names.contains(&"assets/随手记/想法_3/icon.png".to_string()));
+        assert_no_legacy(&names);
         assert!(
-            !names.iter().any(|n| n.starts_with("cache/") || n.contains("backup-snapshot")),
-            "cache/ 与快照临时文件不得进入 zip"
+            !names.iter().any(|n| n.contains("backup-snapshot")),
+            "快照临时文件不得进入 zip"
         );
         // 快照临时文件已清理
         assert!(
-            std::fs::read_dir(layout.cache_dir())
-                .unwrap()
-                .all(|e| !e.unwrap().file_name().to_string_lossy().contains("backup-snapshot")),
-            "cache/ 不得残留快照"
+            std::fs::read_dir(layout.staging_dir())
+                .map(|d| d.flatten().all(|e| !e.file_name().to_string_lossy().contains("backup-snapshot")))
+                .unwrap_or(true),
+            "暂存目录不得残留快照"
         );
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&zip_path);
@@ -439,8 +464,8 @@ mod tests {
         assert_eq!(info.name, "备份测试");
         assert!(!info.workspace_id.is_empty());
         assert!(info.backup_at_ms > 0);
-        // 签名 + db + 2 md + 1 png + 1 库文件 = 6
-        assert_eq!(info.entries, 6);
+        // 签名 + db + 2 md + 1 png = 5
+        assert_eq!(info.entries, 5);
         assert!(info.bytes > 0);
         assert!(info.zip_bytes > 0);
         assert_eq!(info.schema_version, crate::db::schema::SCHEMA_VERSION);
@@ -452,7 +477,7 @@ mod tests {
     fn backup_rejects_dest_inside_workspace() {
         let root = temp_ws("inside");
         let layout = build_ws(&root);
-        let inside = layout.cache_dir().join("self.zip");
+        let inside = layout.root.join("self.zip");
         let conn = rusqlite::Connection::open(layout.db_path()).unwrap();
         let err = backup(&layout, &conn, &inside).unwrap_err().to_string();
         let _ = conn.close();
@@ -460,20 +485,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 工作空间缺少 stickers/assets/library 之一（用户手动删过）也必须能备份成功。
+    /// 工作空间缺少 stickers/assets 之一（用户手动删过）也必须能备份成功。
     #[test]
     fn backup_tolerates_missing_subdirs() {
         let root = temp_ws("missing");
         let layout = build_ws(&root);
         std::fs::remove_dir_all(layout.assets_dir()).unwrap();
-        std::fs::remove_dir_all(layout.library_dir()).unwrap();
         let zip_path = root.parent().unwrap().join(format!("missing-{}.zip", std::process::id()));
         let _ = std::fs::remove_file(&zip_path);
         let size = backup_ws(&layout, &zip_path);
         assert!(size > 0);
         let names = archive_names(&zip_path);
         assert!(names.contains(&ENTRY_DB.to_string()));
-        assert!(names.contains(&"stickers/1-欢迎.md".to_string()));
+        assert!(names.contains(&"stickers/欢迎.md".to_string()));
+        assert!(names.contains(&"stickers/随手记/想法.md".to_string()));
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_file(&zip_path);
     }
@@ -513,11 +538,19 @@ mod tests {
         assert_eq!(sig.name, "备份测试");
         assert!(dest.join(ENTRY_SIGNATURE).is_file());
         assert!(dest.join(ENTRY_DB).is_file());
-        assert!(dest.join("stickers").join("1-欢迎.md").is_file());
-        assert!(dest.join("assets").join("12").join("icon.png").is_file());
-        assert!(dest.join("library").join("book.md").is_file());
+        assert!(dest.join("stickers").join("欢迎.md").is_file());
+        assert!(dest.join("stickers").join("随手记").join("想法.md").is_file());
+        assert!(dest
+            .join("assets")
+            .join("随手记")
+            .join("想法_3")
+            .join("icon.png")
+            .is_file());
+        let names = archive_names(&zip_path);
+        assert_no_legacy(&names);
         assert!(!dest.join(ENTRY_MANIFEST).exists(), "manifest 属 zip 元数据，不落盘");
         assert!(!dest.join("cache").exists(), "cache/ 不应被解压");
+        assert!(!dest.join("library").exists(), "已废弃的 library/ 不应被解压");
         // 解压出的库可直接打开
         let conn = rusqlite::Connection::open(dest.join(ENTRY_DB)).unwrap();
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
@@ -562,15 +595,15 @@ mod tests {
         transfer(&src, &dest).unwrap();
         // 源未删、未变
         assert!(src.join(ENTRY_SIGNATURE).exists());
-        assert!(layout.stickers_dir().join("1-欢迎.md").exists());
-        // 目标有一切，且无 cache
+        assert!(layout.stickers_dir().join("欢迎.md").exists());
+        // 目标有一切，且无遗留目录
         assert!(dest.join(ENTRY_SIGNATURE).exists());
         assert!(dest.join("data").join("index.db").exists());
-        assert!(dest.join("stickers").join("1-欢迎.md").exists());
-        assert!(dest.join("stickers").join("2-笔记.md").exists());
-        assert!(dest.join("assets").join("12").join("icon.png").exists());
-        assert!(dest.join("library").join("book.md").exists());
+        assert!(dest.join("stickers").join("欢迎.md").exists());
+        assert!(dest.join("stickers").join("随手记").join("想法.md").exists());
+        assert!(dest.join("assets").join("随手记").join("想法_3").join("icon.png").exists());
         assert!(!dest.join("cache").exists(), "transfer 不得复制 cache/");
+        assert!(!dest.join("library").exists(), "transfer 不得复制已废弃的 library/");
         // 签名一致
         let s1 = read_signature(&src.join(ENTRY_SIGNATURE)).unwrap().unwrap();
         let s2 = read_signature(&dest.join(ENTRY_SIGNATURE)).unwrap().unwrap();
