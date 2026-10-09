@@ -120,7 +120,7 @@ onMounted(() => {
     onSlashConfirm: () => emit("slashConfirm"),
     onSlashCancel: () => emit("slashCancel"),
   });
-  // 粘贴图片：落盘到工作空间 assets/<id>/ 并插入 `![粘贴图片](相对路径)`
+  // 粘贴图片：落盘到工作空间 `assets/<分组路径>/<标题>_<id>/` 并插入 `![粘贴图片](相对路径)`
   attachImagePaste(view, props.stickerId, (message) => emit("error", message));
   view.focus();
 });

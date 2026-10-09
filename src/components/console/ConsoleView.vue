@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { invoke, listen } from "../../composables/useTauri";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type { NewSticker, Sticker, StickerGroup } from "../../types";
+import { GROUP_LABEL, nameError, uniqueName } from "../../utils/file-name-rules";
 import SettingsPanel from "./SettingsPanel.vue";
 import StickerCard from "./StickerCard.vue";
 import StickerPreview from "./StickerPreview.vue";
@@ -25,8 +26,16 @@ const openIds = ref<number[]>([]);
 const confirming = ref<Sticker | null>(null);
 const unlisteners: UnlistenFn[] = [];
 
+/** 便签标题即 md 文件名：同一分组内不能重名，默认标题自动顺延（后端会硬拒绝重名）。 */
+function nextStickerTitle(groupId: number | null): string {
+  const used = notes.stickers
+    .filter((s) => (s.group_id ?? null) === groupId)
+    .map((s) => s.title);
+  return uniqueName(used, "新建便签");
+}
+
 const newSticker = (groupId: number | null = null): NewSticker => ({
-  title: "新建便签",
+  title: nextStickerTitle(groupId),
   content: "# 标题\n\n在这里写内容...",
   pos_x: 200,
   pos_y: 150,
@@ -48,7 +57,8 @@ async function createStickerInGroup(groupId: number | null) {
   try {
     await notes.create(newSticker(groupId));
   } catch (e) {
-    console.error("[ui] 新建便签失败：", e);
+    // 命名规则 / 重名由后端拒绝，中文文案直接展示
+    showGroupToast(messageOf(e));
   }
 }
 
@@ -324,7 +334,18 @@ const newGroupName = ref("");
 async function onCreateGroup() {
   const name = newGroupName.value.trim();
   if (!name) return;
-  await notes.createGroup(name, null);
+  const bad = nameError(GROUP_LABEL, name);
+  if (bad) {
+    showGroupToast(bad);
+    return;
+  }
+  try {
+    await notes.createGroup(name, null);
+  } catch (e) {
+    // 系统命名规则 / 同级重名由后端拒绝，中文文案直接展示
+    showGroupToast(messageOf(e));
+    return;
+  }
   newGroupName.value = "";
   creatingGroup.value = false;
 }
@@ -343,15 +364,21 @@ async function onCreateChildGroup() {
     creatingChildUnder.value = null;
     return;
   }
+  const bad = nameError(GROUP_LABEL, name);
+  if (bad) {
+    showGroupToast(bad);
+    return; // 保留输入框，便于改名后重试
+  }
   try {
     await notes.createGroup(name, parentId);
     expandGroup(String(parentId)); // 展开父级，新子分组立即可见
   } catch (e) {
-    showGroupToast(String(e));
-  } finally {
-    creatingChildUnder.value = null;
-    newChildName.value = "";
+    // 同级重名等后端拒绝原因直接展示
+    showGroupToast(messageOf(e));
+    return;
   }
+  creatingChildUnder.value = null;
+  newChildName.value = "";
 }
 const renamingGroup = ref<number | null>(null);
 const groupNameDraft = ref("");
@@ -366,7 +393,21 @@ async function commitRenameGroup() {
     renamingGroup.value = null;
     return;
   }
-  await notes.renameGroup(renamingGroup.value, name);
+  if (name === notes.groups.find((g) => g.id === renamingGroup.value)?.name) {
+    renamingGroup.value = null; // 没改：直接收工
+    return;
+  }
+  const bad = nameError(GROUP_LABEL, name);
+  if (bad) {
+    showGroupToast(bad);
+    return; // 保留输入框，便于改完再提交
+  }
+  try {
+    await notes.renameGroup(renamingGroup.value, name);
+  } catch (e) {
+    showGroupToast(messageOf(e));
+    return;
+  }
   renamingGroup.value = null;
 }
 
@@ -898,6 +939,7 @@ onBeforeUnmount(() => {
                   @toggle="toggleSticker"
                   @remove="confirming = $event"
                   @reset-window="resetStickerWindow"
+                  @error="showGroupToast"
                 />
               </div>
             </div>
@@ -962,6 +1004,7 @@ onBeforeUnmount(() => {
                 @toggle="toggleSticker"
                 @remove="confirming = $event"
                 @reset-window="resetStickerWindow"
+                @error="showGroupToast"
               />
             </div>
           </div>

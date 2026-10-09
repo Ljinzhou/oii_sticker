@@ -170,6 +170,47 @@ describe("StickerCard 更多菜单", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("重命名：名称非法时不提交、就地提示，且留在编辑态", async () => {
+    const s = mkSticker(1, null, "旧标题");
+    useNotesStore().stickers[0] = s;
+    const wrapper = mountCard(s);
+
+    await openMenu(wrapper);
+    await wrapper.findAll(".card-dropdown > button")[0]!.trigger("click"); // 重命名
+    const input = wrapper.find<HTMLInputElement>(".card-title-edit");
+    await input.setValue("我的/笔记"); // 标题即 md 文件名：/ 是禁用字符
+    await input.trigger("keydown.enter");
+    await flushPromises();
+
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "update_sticker_cmd")).toBe(false);
+    expect(wrapper.find(".card-rename-error").text()).toContain("不能包含");
+    expect(wrapper.find(".card-title-edit").exists()).toBe(true); // 留着让用户改完再提交
+    // 同时上报主控台弹提示
+    expect(String(wrapper.emitted("error")?.[0]?.[0])).toContain("不能包含");
+  });
+
+  it("重命名：后端因重名拒绝时展示原因并留在编辑态", async () => {
+    const s = mkSticker(1, null, "旧标题");
+    useNotesStore().stickers[0] = s;
+    mocks.invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === "update_sticker_cmd") {
+        return Promise.reject(new Error("该分组下已有同名便签「新标题」（id=9），请换一个名字"));
+      }
+      return Promise.resolve(undefined);
+    });
+    const wrapper = mountCard(s);
+
+    await openMenu(wrapper);
+    await wrapper.findAll(".card-dropdown > button")[0]!.trigger("click");
+    const input = wrapper.find<HTMLInputElement>(".card-title-edit");
+    await input.setValue("新标题");
+    await input.trigger("keydown.enter");
+    await flushPromises();
+
+    expect(wrapper.find(".card-rename-error").text()).toContain("同名");
+    expect(wrapper.find(".card-title-edit").exists()).toBe(true);
+  });
+
   it("重置窗口大小与位置：点击菜单项触发 resetWindow 事件", async () => {
     const s = mkSticker(7, null);
     const wrapper = mountCard(s);

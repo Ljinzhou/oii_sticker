@@ -105,6 +105,27 @@ pub fn ids_in_group(conn: &Connection, group_id: Option<i64>) -> Result<Vec<i64>
     Ok(rows)
 }
 
+/// 组内重名检查：同分组下按标题查另一条便签（`exclude` = 改名的就是自己）。
+///
+/// 比较忽略大小写：Windows 文件名不区分大小写，`Note.md` 与 `note.md` 是同一个文件，
+/// 只按大小写敏感比较会让两个便签撞到同一个文件上。
+pub fn find_by_title_in_group(
+    conn: &Connection,
+    group_id: Option<i64>,
+    title: &str,
+    exclude: Option<i64>,
+) -> Result<Option<Sticker>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COLS} FROM stickers
+          WHERE group_id IS ?1 AND lower(title) = lower(?2) AND id IS NOT ?3
+          ORDER BY id LIMIT 1"
+    ))?;
+    let row = stmt
+        .query_row(params![group_id, title, exclude], row_to_sticker)
+        .optional()?;
+    Ok(row)
+}
+
 /// 组内重排（主控台拖拽调整位置）：`ids` 必须是**同一分组**且覆盖该组全部便签的完整新顺序。
 ///
 /// 与 `group_repo::reorder` 同一套防御：id 集合与库内不一致直接报错，
@@ -171,6 +192,17 @@ pub fn update(conn: &Connection, id: i64, patch: &StickerPatch) -> Result<()> {
         ],
     )
     .context("更新便签失败")?;
+    Ok(())
+}
+
+/// 只改所属分组（同步线程用：便签文件被用户搬到别的分组文件夹时跟随）。
+/// `None` = 未分组，因此这里不做 COALESCE——调用方只在确实要改的时候调用。
+pub fn set_group(conn: &Connection, id: i64, group_id: Option<i64>) -> Result<()> {
+    conn.execute(
+        "UPDATE stickers SET group_id = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![id, group_id],
+    )
+    .context("更新便签分组失败")?;
     Ok(())
 }
 

@@ -313,6 +313,46 @@ describe("ConsoleView", () => {
     expect(wrapper.text()).toContain("新建便签");
   });
 
+  it("新建便签默认标题与组内既有便签重名时自动加序号", async () => {
+    db.stickers.push(mkSticker(4, 10, "新建便签")); // 「工作」组里已有一张叫「新建便签」
+    const wrapper = await mountConsole();
+    await wrapper.findAll(".group-menu-btn")[0]!.trigger("click");
+    await wrapper.findAll(".dropdown button").find((b) => b.text().includes("新建便签"))!.trigger("click");
+    await flushPromises();
+
+    const call = mocks.invokeMock.mock.calls.find((c) => c[0] === "create_sticker_cmd");
+    // 标题即 md 文件名，组内重名会被后端拒绝：前端先算出不撞车的默认名
+    expect(call![1].new.title).toBe("新建便签 2");
+    expect(call![1].new.group_id).toBe(10);
+  });
+
+  it("分组名含禁用字符时不提交后端，只提示并保留输入框", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.find(".group-create button").trigger("click"); // ＋ 新建分组
+    await wrapper.find(".group-create-input").setValue("工作/备份"); // / 是路径分隔符，禁用
+    await wrapper.findAll(".group-create button").find((b) => b.text() === "确定")!.trigger("click");
+    await flushPromises();
+
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "group_create_cmd")).toBe(false);
+    expect(wrapper.find(".group-toast").text()).toContain("不能包含");
+    expect(wrapper.find(".group-create-input").exists()).toBe(true); // 留着让用户改名重试
+  });
+
+  it("分组重命名：非法名称不打后端且留在编辑态", async () => {
+    const wrapper = await mountConsole();
+    await wrapper.findAll(".group-menu-btn")[0]!.trigger("click");
+    await wrapper.findAll(".dropdown button").find((b) => b.text() === "重命名")!.trigger("click");
+    const input = wrapper.find(".group-rename");
+    expect(input.exists()).toBe(true);
+    await input.setValue("工作:存档"); // : 在 Windows 文件名里非法
+    await input.trigger("keydown.enter");
+    await flushPromises();
+
+    expect(mocks.invokeMock.mock.calls.some((c) => c[0] === "group_rename_cmd")).toBe(false);
+    expect(wrapper.find(".group-toast").text()).toContain("不能包含");
+    expect(wrapper.find(".group-rename").exists()).toBe(true);
+  });
+
   it("分组允许为空：无分组且无未分组便签时，不渲染任何分组块且可新建分组", async () => {
     db.stickers = [];
     db.groups = [];

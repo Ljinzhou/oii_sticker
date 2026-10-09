@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import type { Sticker } from "../../types";
 import { useNotesStore } from "../../stores/notes";
+import { stickerTitleError } from "../../utils/file-name-rules";
 import { setTitleInContent } from "../../utils/sticker-title";
 
 const props = defineProps<{ sticker: Sticker; isOpen: boolean; showGrip?: boolean }>();
@@ -9,6 +10,7 @@ const emit = defineEmits<{
   toggle: [s: Sticker]; // 显示/隐藏窗口
   remove: [s: Sticker]; // 打开删除确认弹窗
   resetWindow: [s: Sticker]; // 重置窗口大小与位置
+  error: [msg: string]; // 命名/重名等失败原因（由主控台弹提示）
 }>();
 
 const notes = useNotesStore();
@@ -24,6 +26,7 @@ const menuOpen = ref(false);
 const showMoveSub = ref(false);
 const renaming = ref(false);
 const titleDraft = ref("");
+const renameError = ref<string | null>(null);
 const renameInput = ref<HTMLInputElement | null>(null);
 
 /** 除当前分组外的其他分组（转移目标列表） */
@@ -44,35 +47,76 @@ function toggleMenu() {
 function startRename() {
   renaming.value = true;
   titleDraft.value = props.sticker.title;
+  renameError.value = null;
   closeMenu();
   void nextTick(() => renameInput.value?.focus());
 }
 
+/** 便签标题就是磁盘文件名：先按系统命名规则本地校验，再交给后端（后端仍会硬拒绝）。 */
 async function commitRename() {
   if (!renaming.value) return; // Esc 取消后 blur 触发的兜底守卫
   const t = titleDraft.value.trim();
-  if (t && t !== props.sticker.title) {
+  if (!t || t === props.sticker.title) {
+    renameError.value = null;
+    renaming.value = false;
+    return;
+  }
+  const bad = stickerTitleError(t);
+  if (bad) {
+    renameError.value = bad;
+    emit("error", bad);
+    return; // 留在编辑态，用户改完再提交
+  }
+  try {
+    renameError.value = null;
     // 标题 = 内容中第一个 # 一级标题 → 改名必须同步改写内容，否则下次保存会被内容覆盖
     await notes.update(props.sticker.id, {
       title: t,
       content: setTitleInContent(props.sticker.content, t),
     });
+  } catch (e) {
+    // 同分组重名 / 磁盘上已有同名文件等
+    const msg = messageOf(e);
+    renameError.value = msg;
+    emit("error", msg);
+    return;
   }
   renaming.value = false;
 }
 
+/** 失焦提交；已有错误时不清掉编辑态（否则用户没法改完重试）。 */
+function onRenameBlur() {
+  if (renameError.value) return;
+  void commitRename();
+}
+
 function cancelRename() {
   renaming.value = false;
+  renameError.value = null;
+}
+
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : String(error);
 }
 
 async function moveTo(gid: number) {
   closeMenu();
-  await notes.moveStickerToGroup(props.sticker.id, gid);
+  try {
+    await notes.moveStickerToGroup(props.sticker.id, gid);
+  } catch (e) {
+    // 目标分组目录里已有同名 md 等
+    emit("error", messageOf(e));
+  }
 }
 
 async function moveOut() {
   closeMenu();
-  await notes.moveStickerToGroup(props.sticker.id, null);
+  try {
+    await notes.moveStickerToGroup(props.sticker.id, null);
+  } catch (e) {
+    emit("error", messageOf(e));
+  }
 }
 
 function requestRemove() {
@@ -126,7 +170,7 @@ onBeforeUnmount(() => {
         @click.stop
         @keydown.enter.prevent="commitRename"
         @keydown.esc="cancelRename"
-        @blur="commitRename"
+        @blur="onRenameBlur"
       />
       <span v-else class="card-title">{{ props.sticker.title || "（无标题）" }}</span>
       <div class="card-btns">
@@ -161,6 +205,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+    <!-- 改名失败原因（命名规则 / 同分组重名 / 磁盘已有同名文件） -->
+    <p v-if="renaming && renameError" class="card-rename-error">{{ renameError }}</p>
     <div class="card-preview">{{ preview(props.sticker) }}</div>
     <div class="card-foot">
       <!-- 拖拽手柄：整张卡都可拖动，这里给出可拖的视觉提示（主控台分区视图启用） -->
@@ -217,6 +263,13 @@ onBeforeUnmount(() => {
   border: 1px solid #4f7cff;
   border-radius: 6px;
   outline: none;
+}
+
+.card-rename-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #d33;
+  line-height: 1.5;
 }
 
 .card-preview {
