@@ -7,6 +7,7 @@ pub mod backup;
 pub mod cmds;
 pub mod layout;
 pub mod md_store;
+pub mod naming;
 pub mod restore;
 pub mod sync;
 
