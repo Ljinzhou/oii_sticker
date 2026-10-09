@@ -6,7 +6,7 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6)
 ![Rust](https://img.shields.io/badge/Rust-2021-dea584)
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078d6)
-![Version](https://img.shields.io/badge/Version-0.1.0-orange)
+![Version](https://img.shields.io/badge/Version-0.4.3-orange)
 
 ## 简介
 
