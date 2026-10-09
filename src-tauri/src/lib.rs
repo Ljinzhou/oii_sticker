@@ -326,7 +326,7 @@ fn group_create_cmd(
     parent_id: Option<i64>,
 ) -> Result<models::StickerGroup, String> {
     let g = state
-        .with_conn(|c| commands::create_group(c, &name, parent_id))
+        .with_conn_path(|c, db| commands::create_group(c, db, &name, parent_id))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(g)
@@ -371,7 +371,7 @@ fn group_move_cmd(
     parent_id: Option<i64>,
 ) -> Result<(), String> {
     state
-        .with_conn(|c| commands::move_group(c, id, parent_id))
+        .with_conn_path(|c, db| commands::move_group(c, db, id, parent_id))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(())
@@ -385,7 +385,7 @@ fn group_rename_cmd(
     name: String,
 ) -> Result<(), String> {
     state
-        .with_conn(|c| commands::rename_group(c, id, &name))
+        .with_conn_path(|c, db| commands::rename_group(c, db, id, &name))
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(())
@@ -429,7 +429,9 @@ fn move_sticker_group_cmd(
     group_id: Option<i64>,
 ) -> Result<(), String> {
     state
-        .with_conn(|c| commands::move_sticker_group(c, sticker_id, group_id))
+        .with_conn_path(|c, db| {
+            commands::move_sticker_group(c, sticker_id, group_id, db)
+        })
         .map_err(|e| e.to_string())?;
     events::emit_push_update(&app, 0);
     Ok(())
@@ -449,7 +451,8 @@ fn reorder_stickers_cmd(
     Ok(())
 }
 
-/// 便签粘贴图片落盘：写入 `<工作空间>/assets/<便签 id>/`，返回 md 里可用的相对路径。
+/// 便签粘贴图片落盘：写入
+/// `<工作空间>/assets/<分组路径>/<便签标题>_<便签 id>/`，返回 md 里可用的相对路径。
 ///
 /// 前端把剪贴板图片读成 base64 传进来（blob → Uint8Array → base64），
 /// 由后端决定文件名与落盘位置（只收扩展名，不信任调用方路径）。
@@ -511,24 +514,27 @@ fn open_group_in_explorer_cmd(state: State<'_, AppState>, id: Option<i64>) -> Re
 }
 
 /// 在资源管理器中定位该便签的 md 文件（选中文件）；返回文件路径。
+///
+/// 路径由后端按 `stickers/<分组路径>/<标题>.md` 现算（不再依赖 `file_name` 缓存列，
+/// 该列只是同步用的一致性快照）；md 尚未落盘时退化为打开其所在目录。
 #[tauri::command]
 fn open_sticker_in_explorer_cmd(state: State<'_, AppState>, id: i64) -> Result<String, String> {
     let file = state
         .with_conn_path(|c, db| {
             let s = crate::db::sticker_repo::get(c, id)?
                 .ok_or_else(|| anyhow::anyhow!("便签不存在（id={id}）"))?;
-            let base = crate::workspace::layout::Layout::at(&commands::ws_root(db)).stickers_dir();
-            let rel = match s.file_name.as_deref().map(str::trim) {
-                Some(f) if !f.is_empty() => std::path::PathBuf::from(f),
-                // 文件层迁移前的命名规则：{id}-{标题}.md
-                _ => std::path::PathBuf::from(crate::workspace::layout::sticker_file_name(
-                    s.id, &s.title,
-                )),
-            };
-            Ok(base.join(rel))
+            let root = commands::ws_root(db);
+            let rel = commands::sticker_rel_path(c, &s)?;
+            crate::workspace::md_store::sticker_path(&root, &rel)
         })
         .map_err(|e| e.to_string())?;
-    reveal_in_explorer(&file, true).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    if file.exists() {
+        reveal_in_explorer(&file, true).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    } else {
+        let dir = file.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
+        reveal_in_explorer(&dir, false).map_err(|e| format!("打开资源管理器失败：{e}"))?;
+    }
     Ok(file.to_string_lossy().to_string())
 }
 
@@ -1468,6 +1474,12 @@ fn workspace_switch_cmd(
     }
     let db = PathBuf::from(&entry.path).join("data").join("index.db");
     state.switch_db(&db).map_err(|e| e.to_string())?;
+    // 历史版本的 cache/ 与 library/ 不属于工作空间数据
+    for name in workspace::layout::remove_legacy_dirs(&workspace::layout::Layout::at(Path::new(
+        &entry.path,
+    ))) {
+        tracing::info!("[switch] 清理历史目录 {name}/（工作空间已不再使用）");
+    }
     events::emit_push_update(&app, 0);
     Ok(())
 }
@@ -1485,7 +1497,7 @@ fn workspace_default_path_cmd() -> Result<String, String> {
         .ok_or_else(|| "无法定位用户文档目录，请手动输入工作空间路径".to_string())
 }
 
-/// 备份：在线快照 + zip 打包（排除 cache/）。
+/// 备份：在线快照 + zip 打包（只收 `stickers/` 与 `assets/` 的递归内容）。
 /// 仅允许备份当前激活的工作空间（离线快照只对当前 DB 语义成立）。
 /// 返回 zip 文件大小（字节）；不推送事件（保持静默）。
 #[tauri::command]
@@ -1509,7 +1521,7 @@ fn workspace_backup_cmd(
         .map_err(|e| e.to_string())
 }
 
-/// 转移：复制（跳过 cache/）→ 校验签名 → 注册表 relocate → switch_db → 删源目录。
+/// 转移：复制（跳过历史遗留的 `cache/` 与 `library/`）→ 校验签名 → 注册表 relocate → switch_db → 删源目录。
 /// 复制/校验失败时注册表与源目录均未动；relocate 成功后、删源前任何失败只会
 /// 留下「注册表已指向新路径」的不一致（数据完整，可手动重试或清理），
 /// 故注册表更新先于删源，保证任何时刻数据都可被发现。
@@ -1626,6 +1638,14 @@ pub fn run() {
                         .map_err(|e| format!("数据库迁移失败: {e}"))?;
                     let config = db::config_repo::load_all(&conn)
                         .map_err(|e| format!("读取配置失败: {e}"))?;
+                    // 历史版本的 cache/ 与 library/ 不属于工作空间数据：启动时清掉
+                    if let Some(root) = workspace::layout::root_from_db_path(db) {
+                        for name in workspace::layout::remove_legacy_dirs(
+                            &workspace::layout::Layout::at(&root),
+                        ) {
+                            tracing::info!("[setup] 清理历史目录 {name}/（工作空间已不再使用）");
+                        }
+                    }
                     (conn, config, db.to_string_lossy().into_owned())
                 }
                 None => {
