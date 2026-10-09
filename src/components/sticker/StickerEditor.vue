@@ -78,6 +78,16 @@ const editFontFamily = computed(() => settings.editFontFamily);
 // 是否显示行号（editor_line_numbers，默认开；及时预览与 Markdown 两种模式共用）
 const showLineNumbers = computed(() => settings.get("editor_line_numbers", "1") === "1");
 
+function messageOf(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : String(error);
+}
+
+/** 后端拒绝“改标题”的原因是否属于命名问题（命名规则 / 同分组重名 / 磁盘已有同名文件）。 */
+function isTitleRejection(msg: string): boolean {
+  return msg.includes("名称") || msg.includes("同名") || msg.includes("已经存在");
+}
+
 /** 保存：Markdown 原文直接落库，退出后进入交互模式才渲染。
  *  及时预览模式下先 flush（防抖窗口内的输入立即回写，不丢内容）。
  *  标题取内容中「第一个一级标题」（可不在第一行）。 */
@@ -85,6 +95,8 @@ async function save() {
   if (isLive.value) {
     liveRef.value?.flush();
   }
+  // 标题同时是磁盘上的 md 文件名：不合法或与同分组便签重名时不能硬失败，
+  // 否则用户改个错别字都会丢掉整篇正文。
   const title = extractTitleFromContent(draft.value);
   try {
     await invoke("update_sticker_cmd", {
@@ -92,8 +104,24 @@ async function save() {
       patch: { title, content: draft.value },
     });
   } catch (e) {
-    console.error("[ui] 保存失败：", e);
-    return;
+    const msg = messageOf(e);
+    if (!isTitleRejection(msg)) {
+      console.error("[ui] 保存失败：", e);
+      emit("error", msg);
+      return;
+    }
+    // 降级：正文照存，标题保持原样（改标题请在主控台「重命名」里输合法且不重名的名称）
+    try {
+      await invoke("update_sticker_cmd", {
+        id: props.stickerId,
+        patch: { content: draft.value },
+      });
+    } catch (e2) {
+      console.error("[ui] 保存失败：", e2);
+      emit("error", messageOf(e2));
+      return;
+    }
+    emit("error", `${msg}（正文已保存，标题未改动）`);
   }
   createdTodoIds.clear();
   dirty.value = false;
