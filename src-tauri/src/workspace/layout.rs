@@ -1,10 +1,22 @@
 //! 工作空间磁盘布局与注册表。
+//!
+//! 工作空间里只有四个顶层项，别无其他：
+//! - `stickers/` —— 便签正文（主存储），**按分组分目录**：`stickers/<分组…>/<标题>.md`
+//! - `assets/`   —— 附件（粘贴图片等）：`assets/<分组…>/<标题>_<id>/<文件>`
+//! - `data/`     —— SQLite（`data/index.db`）
+//! - `workspace.json` —— 可读签名
+//!
+//! 历史版本还会创建 `cache/` 与 `library/`，现已移除（见 `staging_dir`）：
+//! 临时文件一律放到工作空间**之外**的同卷兄弟目录。
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use super::naming;
+
 pub const DEFAULT_ROOT_NAME: &str = "oiistiker_workspace";
-const BAD_CHARS: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|', '%', '&', '{', '}', '$', '\'', '@', '+', '`', '=', ';', ',', '#'];
+/// 暂存目录名前缀（位于工作空间同级，见 [`Layout::staging_dir`]）。
+pub const STAGING_PREFIX: &str = ".oiisticker-tmp-";
 
 /// 工作空间目录布局（root = 工作空间根目录）。
 #[derive(Clone, Debug)]
@@ -17,11 +29,31 @@ impl Layout {
         Self { root: root.to_path_buf() }
     }
     pub fn db_path(&self) -> PathBuf { self.root.join("data").join("index.db") }
+    /// 便签 md 根目录（分组即其下的子目录）。
     pub fn stickers_dir(&self) -> PathBuf { self.root.join("stickers") }
+    /// 附件根目录（分组即其下的子目录）。
     pub fn assets_dir(&self) -> PathBuf { self.root.join("assets") }
-    pub fn library_dir(&self) -> PathBuf { self.root.join("library") }
-    pub fn cache_dir(&self) -> PathBuf { self.root.join("cache") }
     pub fn signature_path(&self) -> PathBuf { self.root.join("workspace.json") }
+
+    /// 暂存目录：工作空间**之外**的同卷兄弟目录 `<parent>/.oiisticker-tmp-<工作空间名>/`。
+    ///
+    /// 备份快照、恢复 staging、回滚点都放这里，理由三条：
+    /// - 工作空间里不该出现 `cache/` 这类程序目录（用户看到的就是他的文件）；
+    /// - 与工作空间同卷，`std::fs::rename` 仍是原子改名（跨卷 rename 会失败），
+    ///   覆盖式恢复"旧数据改名保存 + 新数据改名就位"的安全语义才能保住；
+    /// - 覆盖恢复会把整份 `data/` 换掉，暂存目录绝不能放在 `data/` 里。
+    pub fn staging_dir(&self) -> PathBuf {
+        let name = self
+            .root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "workspace".to_string());
+        match self.root.parent() {
+            // 盘符根目录（`E:\`）没有父目录，只能退化为放工作空间内
+            Some(parent) => parent.join(format!("{STAGING_PREFIX}{name}")),
+            None => self.root.join(format!("{STAGING_PREFIX}workspace")),
+        }
+    }
 }
 
 /// 从当前 DB 文件路径推算工作空间根目录（db 位于 <root>/data/index.db）。
@@ -29,9 +61,16 @@ pub fn root_from_db_path(db_path: &Path) -> Option<PathBuf> {
     db_path.parent()?.parent().map(Path::to_path_buf)
 }
 
-/// 创建完整目录结构 + 写入可读签名 workspace.json。
+/// 便签的 md 文件名（标题 + `.md`，按系统命名规则校验）。
+pub fn sticker_md_name(title: &str) -> Result<String> {
+    naming::sticker_md_name(title)
+}
+
+/// 创建目录结构 + 写入可读签名 workspace.json。
+///
+/// 只建 `stickers/`、`assets/`、`data/`：不再创建 `cache/`、`library/`。
 pub fn ensure_layout(layout: &Layout, name: &str) -> Result<()> {
-    for dir in [layout.stickers_dir(), layout.assets_dir(), layout.library_dir(), layout.cache_dir()] {
+    for dir in [layout.stickers_dir(), layout.assets_dir()] {
         std::fs::create_dir_all(&dir).with_context(|| format!("创建目录失败：{}", dir.display()))?;
     }
     std::fs::create_dir_all(layout.db_path().parent().unwrap()).context("创建 data 目录失败")?;
@@ -47,26 +86,25 @@ pub fn ensure_layout(layout: &Layout, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 清掉历史版本留在工作空间里的程序目录（`cache/`、`library/`）。
+///
+/// 新版本不再创建它们；对已有工作空间，用户已确认「都直接删除」。
+/// 返回被删除的目录名，供调用方记录日志。
+pub fn remove_legacy_dirs(layout: &Layout) -> Vec<String> {
+    let mut removed = Vec::new();
+    for name in ["cache", "library"] {
+        let dir = layout.root.join(name);
+        if dir.is_dir() && std::fs::remove_dir_all(&dir).is_ok() {
+            removed.push(name.to_string());
+        }
+    }
+    removed
+}
+
 pub fn read_signature(path: &Path) -> Result<Option<Signature>> {
     if !path.exists() { return Ok(None); }
     let raw = std::fs::read_to_string(path).context("读取 workspace.json 失败")?;
     Ok(Some(serde_json::from_str(&raw).context("解析 workspace.json 失败")?))
-}
-
-/// 文件名清洗：替换非法字符，限制长度，保留中文与常见符号。
-pub fn sanitize_file_name(title: &str) -> String {
-    let cleaned: String = title
-        .chars()
-        .map(|c| if BAD_CHARS.contains(&c) { '-' } else { c })
-        .take(80)
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('-');
-    let trimmed = if trimmed.is_empty() || trimmed.chars().all(|c| c == '.') { "未命名" } else { trimmed };
-    trimmed.to_string()
-}
-
-pub fn sticker_file_name(id: i64, title: &str) -> String {
-    format!("{id}-{}.md", sanitize_file_name(title))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -110,6 +148,11 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建目录失败：{}", parent.display()))?;
+    }
+    naming::ensure_path_fits(path)?;
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, bytes).with_context(|| format!("写临时文件失败：{}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("重命名失败：{}", path.display()))?;
@@ -162,32 +205,60 @@ pub fn ensure_empty_dest(dest: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sanitize_keeps_chinese_and_replaces_bad_chars() {
-        assert_eq!(sanitize_file_name("我的 笔记/啊？"), "我的 笔记-啊？");
-        assert_eq!(sanitize_file_name(".."), "未命名");
-        assert_eq!(sanitize_file_name("a").len(), 1);
+    fn tmp_root(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ws-layout-{tag}-{}", std::process::id()))
     }
 
     #[test]
-    fn sticker_file_name_uses_id_and_title() {
-        assert_eq!(sticker_file_name(12, "欢迎使用"), "12-欢迎使用.md");
-    }
-
-    #[test]
-    fn ensure_layout_creates_all_dirs_and_signature() {
-        let tmp = std::env::temp_dir().join(format!("ws-layout-test-{}", std::process::id()));
+    fn ensure_layout_creates_only_three_dirs_and_signature() {
+        let tmp = tmp_root("dirs");
         let _ = std::fs::remove_dir_all(&tmp);
         let layout = Layout::at(&tmp);
         ensure_layout(&layout, "默认值").unwrap();
         assert!(layout.db_path().parent().unwrap().is_dir());
         assert!(layout.stickers_dir().is_dir());
         assert!(layout.assets_dir().is_dir());
-        assert!(layout.library_dir().is_dir());
-        assert!(layout.cache_dir().is_dir());
+        // cache/ 与 library/ 不再创建
+        assert!(!tmp.join("cache").exists());
+        assert!(!tmp.join("library").exists());
         let sig = read_signature(&layout.signature_path()).unwrap().unwrap();
         assert_eq!(sig.name, "默认值");
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn remove_legacy_dirs_deletes_cache_and_library_only() {
+        let tmp = tmp_root("legacy");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let layout = Layout::at(&tmp);
+        ensure_layout(&layout, "旧目录").unwrap();
+        std::fs::create_dir_all(tmp.join("cache")).unwrap();
+        std::fs::create_dir_all(tmp.join("library")).unwrap();
+        std::fs::write(tmp.join("library").join("book.md"), b"x").unwrap();
+        assert!(tmp.join("stickers").is_dir());
+        let removed = remove_legacy_dirs(&layout);
+        assert_eq!(removed.len(), 2, "{removed:?}");
+        assert!(!tmp.join("cache").exists());
+        assert!(!tmp.join("library").exists());
+        assert!(tmp.join("stickers").is_dir(), "正常目录不受影响");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn staging_dir_is_outside_workspace_and_on_same_volume() {
+        let root = if cfg!(windows) { PathBuf::from(r"C:\ws-test\我的文档") } else { PathBuf::from("/ws-test/我的文档") };
+        let layout = Layout::at(&root);
+        let staging = layout.staging_dir();
+        assert!(!staging.starts_with(&root), "暂存目录必须在工作空间之外：{}", staging.display());
+        assert_eq!(staging.parent(), root.parent(), "必须与工作空间同卷（同父目录）");
+        assert!(staging.file_name().unwrap().to_string_lossy().starts_with(STAGING_PREFIX));
+        assert!(!staging.starts_with(layout.stickers_dir()));
+    }
+
+    #[test]
+    fn sticker_md_name_uses_title_only() {
+        assert_eq!(sticker_md_name("欢迎使用").unwrap(), "欢迎使用.md");
+        assert!(sticker_md_name("带/斜杠").is_err());
     }
 
     #[test]
