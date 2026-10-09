@@ -37,6 +37,27 @@ pub fn get(conn: &Connection, id: i64) -> Result<Option<StickerGroup>> {
     .map_err(Into::into)
 }
 
+/// 同级重名检查：同一父级下按名称查另一个分组（`exclude` = 改名的就是自己）。
+///
+/// 比较忽略大小写：Windows 文件夹名不区分大小写，`学习` 与 `学习 ` / `Note` 与 `note`
+/// 会落到同一个目录上。
+pub fn find_by_name_in_parent(
+    conn: &Connection,
+    parent_id: Option<i64>,
+    name: &str,
+    exclude: Option<i64>,
+) -> Result<Option<StickerGroup>> {
+    let mut stmt = conn.prepare_cached(&format!(
+        "SELECT {COLS} FROM sticker_groups
+          WHERE parent_id IS ?1 AND lower(name) = lower(?2) AND id IS NOT ?3
+          ORDER BY id LIMIT 1"
+    ))?;
+    let row = stmt
+        .query_row(params![parent_id, name, exclude], row_to_group)
+        .optional()?;
+    Ok(row)
+}
+
 /// 新建分组；`parent_id` 为 None 表示顶层。父分组必须存在，新组排在同级末尾。
 pub fn create(conn: &Connection, name: &str, parent_id: Option<i64>) -> Result<StickerGroup> {
     let name = name.trim();
